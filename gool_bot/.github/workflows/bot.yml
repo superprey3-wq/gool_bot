@@ -1,0 +1,49 @@
+name: Gool Bot Monitor
+
+on:
+  schedule:
+    # Запуск каждые 5 минут
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Ручной запуск для тестов
+
+jobs:
+  scan-matches:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          ref: qwen-code-616298fa-ed10-4ca4-9a23-69b033549c12
+          submodules: false
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Install dependencies
+        run: |
+          cd gool_bot
+          pip install -r requirements.txt
+          
+      - name: Run bot scan
+        env:
+          INFERSPORTS_API_KEY: ${{ secrets.INFERSPORTS_API_KEY }}
+          HIGHLIGHTLY_API_KEY: ${{ secrets.HIGHLIGHTLY_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          cd gool_bot
+          python main.py --once
+          
+      - name: Cleanup old data (daily at 23:00 UTC)
+        if: github.event.schedule == '0 23 * * *'
+        env:
+          INFERSPORTS_API_KEY: ${{ secrets.INFERSPORTS_API_KEY }}
+          HIGHLIGHTLY_API_KEY: ${{ secrets.HIGHLIGHTLY_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          cd gool_bot
+          python main.py --cleanup
