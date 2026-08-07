@@ -34,16 +34,35 @@ gool_bot/
 
 ## Установка
 
+### Развертывание на Render (рекомендуется)
+
+1. Создайте новый **Web Service** на https://render.com
+2. Подключите репозиторий GitHub: `superprey3-wq/gool_bot`
+3. Настройки сборки:
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python main.py`
+
+4. Добавьте переменные окружения в панели Render:
+
+| Переменная | Значение |
+|------------|----------|
+| `INFERSPORTS_API_KEY` | `isk_r7mHQpL6XtQCNkQascBBCyqEVxSzi2nf` |
+| `HIGHLIGHTLY_API_KEY` | `7372496a-664b-47bc-8844-b4fc602f109d` |
+| `TELEGRAM_BOT_TOKEN` | Ваш токен бота от @BotFather |
+| `TELEGRAM_CHAT_ID` | ID чата для уведомлений |
+
+### Локальный запуск
+
 ```bash
 # Установка зависимостей
-pip install aiohttp
+pip install -r requirements.txt
 
 # Настройка переменных окружения
 export TELEGRAM_BOT_TOKEN="your_bot_token"
 export TELEGRAM_CHAT_ID="your_chat_id"
 
 # Запуск бота
-python -m gool_bot.main
+python main.py
 ```
 
 ## Конфигурация
