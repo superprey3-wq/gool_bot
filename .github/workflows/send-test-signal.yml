@@ -1,0 +1,27 @@
+name: Send Telegram Test Signal
+
+on:
+  push:
+    paths:
+      - ".github/workflows/send-test-signal.yml"
+  workflow_dispatch:
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send test signal
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os, requests
+          token = os.environ['TELEGRAM_BOT_TOKEN']
+          chat_id = os.environ['TELEGRAM_CHAT_ID']
+          text = '''🧪 <b>ТЕСТ GOOL BOT</b>\n\n🔴 <b>LIVE GOAL SIGNAL</b>\n⚽ Kairat Almaty — Levski Sofia\n⏱ 65' | 0:1\n\n📊 <b>LIVE статистика</b>\nxG: 0.50 — 0.89\nУдары: 10 — 8\nВ створ: 3 — 2\nBig chances: 0 — 2\nУгловые: 5 — 3\n\n⚡ Momentum: 82/100\n🔥 Goal Pressure: 84/100\n\n💰 ТБ 1.5: 1.72\n📈 Prematch прогруз: не обязателен\n\n🎯 Возможен ещё один гол\n\n<i>Это тестовый пример сообщения, не реальный сигнал.</i>'''
+          r = requests.post(f'https://api.telegram.org/bot{token}/sendMessage', json={'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}, timeout=20)
+          print('telegram_status', r.status_code)
+          print(r.text[:500])
+          r.raise_for_status()
+          PY
