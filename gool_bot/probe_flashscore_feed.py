@@ -8,14 +8,21 @@ from playwright.async_api import async_playwright
 URL = "https://www.flashscore.com/football/"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36"
 
+PATTERNS = {
+    "AA_div": r"~AA÷([A-Za-z0-9]{8})",
+    "AA_not": r"~AA¬([A-Za-z0-9]{8})",
+    "AA_any": r"~AA[÷¬]([A-Za-z0-9]{8})",
+    "event_id": r"(?:~|^)AA[÷¬]([A-Za-z0-9]{8})",
+}
 
-def count_events(body: str) -> int:
-    # Flashscore feeds usually separate events with ~AA¬EVENTID
-    return len(set(re.findall(r"~AA¬([A-Za-z0-9]{8})", body)))
+
+def event_counts(body: str) -> dict[str, int]:
+    return {name: len(set(re.findall(pattern, body))) for name, pattern in PATTERNS.items()}
 
 
 async def probe(locale: str):
     feed_rows = []
+    master_sample = None
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
         context = await browser.new_context(
@@ -27,6 +34,7 @@ async def probe(locale: str):
         page = await context.new_page()
 
         async def on_response(response):
+            nonlocal master_sample
             url = response.url
             if "/x/feed/" not in url:
                 return
@@ -34,7 +42,10 @@ async def probe(locale: str):
                 body = await response.text()
             except Exception:
                 return
-            feed_rows.append((url, response.status, len(body), count_events(body)))
+            counts = event_counts(body)
+            feed_rows.append((url, response.status, len(body), counts))
+            if "f_1_0_0_en_1" in url and master_sample is None:
+                master_sample = body
 
         page.on("response", on_response)
         await page.goto(URL, wait_until="domcontentloaded", timeout=35000)
@@ -49,20 +60,26 @@ async def probe(locale: str):
         print(f"LOCALE {locale}: DOM all={await all_rows.count()} live={await live_rows.count()}")
 
         seen = set()
-        for url, status, size, events in sorted(feed_rows, key=lambda x: (-x[3], -x[2])):
-            key = (url, status, size, events)
+        for url, status, size, counts in sorted(feed_rows, key=lambda x: (-max(x[3].values(), default=0), -x[2])):
+            key = (url, status, size, tuple(sorted(counts.items())))
             if key in seen:
                 continue
             seen.add(key)
-            print(f"FEED {locale}: events={events} bytes={size} status={status} url={url}")
+            print(f"FEED {locale}: counts={counts} bytes={size} status={status} url={url}")
 
-        # Summarize feed path families.
         families = Counter()
-        for url, _status, _size, events in feed_rows:
+        for url, _status, _size, counts in feed_rows:
             path = url.split('/x/feed/', 1)[-1].split('?', 1)[0]
             family = path.split('_', 1)[0]
-            families[(family, events)] += 1
+            families[(family, max(counts.values(), default=0))] += 1
         print(f"FAMILIES {locale}: {families.most_common(20)}")
+
+        if master_sample is not None:
+            sample = master_sample[:3000]
+            print(f"MASTER_PREFIX {locale}: {sample!r}")
+            for token in ("AA÷", "AA¬", "AC÷", "AC¬", "AE÷", "AF÷", "AG÷", "AH÷", "AD÷"):
+                print(f"TOKEN {locale} {token}: {master_sample.count(token)}")
+
         await browser.close()
 
 
