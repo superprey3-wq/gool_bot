@@ -1,0 +1,45 @@
+name: GOOL BOT Daily Report
+
+on:
+  schedule:
+    # 23:59 Moscow = 20:59 UTC year-round
+    - cron: "59 20 * * *"
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: gool_bot/requirements.txt
+
+      - name: Restore signal journal
+        uses: actions/cache@v4
+        with:
+          path: |
+            gool_bot/signal_journal.json
+          key: daily-report-${{ github.run_id }}
+          restore-keys: |
+            live-state-
+
+      - name: Install dependencies
+        working-directory: gool_bot
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Send daily report
+        working-directory: gool_bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python daily_report.py
