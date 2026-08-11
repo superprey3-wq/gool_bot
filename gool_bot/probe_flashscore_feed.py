@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio,json,requests,re
 from playwright.async_api import async_playwright
+from live_engine import _feed
 URL='https://www.flashscore.com/football/'
 UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'
 H={'User-Agent':UA,'Accept':'application/json, text/plain, */*','Referer':'https://www.flashscore.com/'}
@@ -26,6 +27,10 @@ async def main():
   await b.close()
  for eid,txt in tests[:12]:
   print('\nMATCH',eid,txt)
+  hh=_feed(f'df_hh_1_{eid}')
+  print('H2H_BYTES',len(hh))
+  if hh:
+   print('H2H_RAW',hh[:12000])
   menu=get({'_hash':'lobtm','eventId':eid,'projectId':'2','geoIpCode':'US','geoIpSubdivisionCode':'USAZ'})
   obj=(menu.get('data') or {}).get('getLiveOddsBettingTypeMenu') or {}
   settings=obj.get('settings') or {}; book_names={}
@@ -43,5 +48,5 @@ async def main():
     if live:
      found=True; break
    if found:break
-  if found: break
+  if hh: break
 if __name__=='__main__':asyncio.run(main())
