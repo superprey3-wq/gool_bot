@@ -7,7 +7,7 @@ import prematch_scanner as base
 
 ALLOWED_LINES = {
     "FULL_TIME": {2.5},
-    "FIRST_HALF": {0.5, 1.0},
+    "FIRST_HALF": {0.5, 1.0, 1.5},
     "SECOND_HALF": {0.5, 1.0, 1.5},
 }
 
