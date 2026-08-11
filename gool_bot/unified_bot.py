@@ -77,7 +77,7 @@ def _record_live(match,pressure,stats,recs,reason):
     },key)
 
 async def scan_live_once():
-    live=await discover_live_matches(); state=_load_sent(); sent=0; live_ids={m.event_id for m in live}
+    live=await discover_live_matches(); logger.info("Найдено LIVE-матчей: %d",len(live)); state=_load_sent(); sent=0; live_ids={m.event_id for m in live}
     for key in list(state):
         if key.startswith("TRACK:") and key.split(":",1)[1] not in live_ids:state.pop(key,None)
     for match in live:
