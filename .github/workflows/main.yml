@@ -62,4 +62,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LIVE_SIGNAL_THRESHOLD: "75"
           LIVE_COOLDOWN_MINUTES: "12"
-        run: python feed_unified_bot.py
+        run: python visual_feed_unified_bot.py
