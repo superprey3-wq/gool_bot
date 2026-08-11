@@ -42,6 +42,7 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Run PREMATCH scanner
+        continue-on-error: true
         working-directory: gool_bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
