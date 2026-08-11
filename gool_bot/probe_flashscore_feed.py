@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from collections import Counter
 from playwright.async_api import async_playwright
 
@@ -34,12 +33,9 @@ async def probe(locale: str):
 
         async def on_response(response):
             nonlocal master
-            if "f_1_0_0_en_1" not in response.url:
-                return
-            try:
-                master = await response.text()
-            except Exception:
-                pass
+            if "f_1_0_0_en_1" in response.url:
+                try: master = await response.text()
+                except Exception: pass
 
         page.on("response", on_response)
         await page.goto(URL, wait_until="domcontentloaded", timeout=35000)
@@ -47,35 +43,23 @@ async def probe(locale: str):
         for _ in range(14):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await page.wait_for_timeout(450)
-        await page.wait_for_timeout(1000)
-
-        all_rows = page.locator("div[id*='g_1_']")
         live_rows = page.locator("div[id*='g_1_'].event__match--live")
-        print(f"LOCALE {locale}: DOM all={await all_rows.count()} live={await live_rows.count()}")
+        print(f"LOCALE {locale}: DOM live={await live_rows.count()}")
 
         if master:
             events = parse_events(master)
-            ac = Counter(fields.get("AC", "") for _, fields in events)
-            ab = Counter(fields.get("AB", "") for _, fields in events)
-            print(f"MASTER {locale}: events={len(events)} AC={dict(ac)} AB={dict(ab)} bytes={len(master)}")
-            for status in sorted(ac):
-                sample=[]
-                for eid, f in events:
-                    if f.get("AC", "") != status:
-                        continue
-                    sample.append(f"{eid}:{f.get('AE','?')}—{f.get('AF','?')} score={f.get('AG','?')}:{f.get('AH','?')} AD={f.get('AD','?')} AB={f.get('AB','?')}")
-                    if len(sample)>=8: break
-                print(f"AC={status!r} SAMPLE: {' || '.join(sample)}")
+            ab = Counter(f.get("AB", "") for _, f in events)
+            print(f"MASTER {locale}: events={len(events)} AB={dict(ab)}")
+            live=[(eid,f) for eid,f in events if f.get('AB')=='2']
+            print(f"MASTER LIVE {locale}: {len(live)}")
+            for eid,f in live[:12]:
+                keep={k:v for k,v in f.items() if k in {'AB','AC','AD','ADE','AE','AF','AG','AH','AO','AX','AW','BX','BC','BD','AT','AU','CR','RW'}}
+                print(f"LIVE_FIELDS {eid} {f.get('AE')}—{f.get('AF')} {keep}")
         await browser.close()
 
 
 async def main():
-    for locale in ("en-GB", "ru-RU"):
-        try:
-            await probe(locale)
-        except Exception as exc:
-            print(f"ERROR {locale}: {exc}")
-
+    await probe("en-GB")
 
 if __name__ == "__main__":
     asyncio.run(main())
