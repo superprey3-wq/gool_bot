@@ -1,6 +1,6 @@
 """Unified PREMATCH + LIVE bot runner."""
 from __future__ import annotations
-import asyncio, json, logging, os, statistics, time
+import asyncio, json, logging, math, os, statistics, time
 from pathlib import Path
 from typing import Any
 import requests
@@ -31,24 +31,80 @@ def telegram_send(text):
     try:return requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",json={"chat_id":CHAT_ID,"text":text,"parse_mode":"HTML","disable_web_page_preview":True},timeout=15).ok
     except requests.RequestException:return False
 
-def _model_confidence(pressure_score:float,momentum:float,line:float,current_goals:int,scope:str,minute:int)->int:
-    base=48+pressure_score*.28+momentum*.12
-    if scope=="SECOND_HALF":base+=3
-    base-=max(0.0,(line-current_goals)-.5)*13
-    if minute>=80: base-=12
-    elif minute>=75: base-=6
-    return max(35,min(94,round(base)))
+
+def _minutes_remaining(scope:str, minute:int)->float:
+    """Approximate betting time still available, including normal stoppage time."""
+    minute=max(0,int(minute or 0))
+    if scope=="FIRST_HALF":
+        return max(0.0,47.0-minute)
+    if scope=="SECOND_HALF":
+        # SECOND_HALF odds are period-only but match.minute is absolute.
+        return max(0.0,94.0-minute)
+    return max(0.0,94.0-minute)
+
+
+def _goals_needed_for_over(line:float,current_goals:int)->int:
+    """Minimum integer goals required for an OVER line to be fully won.
+
+    For quarter-lines this is intentionally conservative: e.g. O3.25 at 3 goals
+    needs one more goal to produce a winning outcome rather than a partial loss.
+    """
+    return max(1, math.floor(float(line)-float(current_goals))+1)
+
+
+def _poisson_tail(lam:float, needed:int)->float:
+    if needed<=0:return 1.0
+    lam=max(0.0,float(lam))
+    cumulative=0.0
+    term=math.exp(-lam)
+    cumulative+=term
+    for k in range(1,needed):
+        term*=lam/k
+        cumulative+=term
+    return max(0.0,min(1.0,1.0-cumulative))
+
+
+def _live_over_probability(pressure_score:float,momentum:float,line:float,current_goals:int,scope:str,minute:int,odd:float|None=None)->float:
+    """Calibrated probability of an OVER from now to the requested period end.
+
+    Core idea: pressure describes *rate*, while remaining time and goals needed
+    determine whether that pressure can realistically turn into enough goals.
+    The current market is used as a stabilising anchor when a verified LIVE price
+    is available, preventing unrealistic 70%+ claims at 85' against a 2.30 market.
+    """
+    mins=_minutes_remaining(scope,minute)
+    needed=_goals_needed_for_over(line,current_goals)
+    if mins<=0:return 0.0
+
+    # Football baseline ~2.7 goals / 90 min. Strong pressure can roughly double
+    # the near-term scoring rate, but cannot erase the time constraint.
+    base_rate=2.70/90.0
+    pressure_mult=0.60+1.35*max(0.0,min(1.0,pressure_score/100.0))
+    momentum_mult=0.85+0.30*max(0.0,min(1.0,momentum/100.0))
+    lam=base_rate*mins*pressure_mult*momentum_mult
+    model_p=_poisson_tail(lam,needed)
+
+    if odd and odd>1.01:
+        market_p=max(0.01,min(0.95,1.0/odd))
+        # Market receives more weight late because only a few possessions remain.
+        market_weight=0.55 if minute>=80 else 0.45 if minute>=70 else 0.35
+        model_p=model_p*(1.0-market_weight)+market_p*market_weight
+
+    # Extra conservative calibration in the final minutes.
+    if minute>=88:model_p*=0.90
+    elif minute>=85:model_p*=0.95
+    return max(0.01,min(0.94,model_p))
+
+
+def _model_confidence(pressure_score:float,momentum:float,line:float,current_goals:int,scope:str,minute:int,odd:float|None=None)->int:
+    return round(_live_over_probability(pressure_score,momentum,line,current_goals,scope,minute,odd)*100)
 
 def _scope_current_goals(match,scope:str)->int:
     if scope=="SECOND_HALF" and match.is_halftime:return 0
     return match.home_score+match.away_score
 
 def _collect_scope_recommendations(entries:list[dict[str,Any]],match,pressure,scope:str):
-    """Aggregate active bookmaker prices by line and use the market median.
-
-    Using the highest bookmaker price made a single stale/outlier quote look like the
-    live market. Median is much closer to the actual consensus price visible to users.
-    """
+    """Aggregate active bookmaker prices by line and use the market median."""
     current_goals=_scope_current_goals(match,scope)
     buckets:dict[float,list[float]]={}
     for entry in entries:
@@ -65,12 +121,11 @@ def _collect_scope_recommendations(entries:list[dict[str,Any]],match,pressure,sc
     rows=[]
     for line,prices in buckets.items():
         odd=float(statistics.median(prices))
-        rows.append({"scope":scope,"line":line,"odd":odd,"bookmakers":len(prices),"confidence":_model_confidence(pressure.score,pressure.momentum,line,current_goals,scope,match.minute)})
+        rows.append({"scope":scope,"line":line,"odd":odd,"bookmakers":len(prices),"confidence":_model_confidence(pressure.score,pressure.momentum,line,current_goals,scope,match.minute,odd)})
     rows.sort(key=lambda r:(abs(r["odd"]-1.80),-r["confidence"]))
     return rows[:3]
 
 def _recommendations(entries:list[dict[str,Any]],match,pressure):
-    # Before HT show two clearly separated questions: goal before HT and goal by FT.
     if match.minute<=45 and not match.is_halftime:
         return _collect_scope_recommendations(entries,match,pressure,"FIRST_HALF") + _collect_scope_recommendations(entries,match,pressure,"FULL_TIME")
     if match.is_halftime:
@@ -87,7 +142,7 @@ def _format_bets(recs):
         lines=[labels[scope]]
         for r in rows:
             books=f" · {r['bookmakers']} БК" if r.get("bookmakers") else ""
-            lines.append(f"ТБ {r['line']:g} — кэф <b>{r['odd']:.2f}</b> | уверенность модели <b>{r['confidence']}%</b>{books}")
+            lines.append(f"ТБ {r['line']:g} — кэф <b>{r['odd']:.2f}</b> | вероятность модели <b>{r['confidence']}%</b>{books}")
         groups.append("\n".join(lines))
     return "\n\n".join(groups)
 
