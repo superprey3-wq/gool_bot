@@ -94,7 +94,7 @@ async def _first_text(row, selectors:list[str])->str:
     return ""
 
 async def discover_live_matches():
-    matches=[]; skipped={"bad_id":0,"not_live":0,"no_names":0,"no_score":0}
+    matches=[]; skipped={"hidden":0,"bad_id":0,"no_minute":0,"no_names":0,"no_score":0}
     async with async_playwright() as p:
         browser=await p.chromium.launch(headless=True,args=["--no-sandbox","--disable-dev-shm-usage"])
         context=await browser.new_context(user_agent=UA,locale="en-GB",timezone_id="UTC",viewport={"width":1440,"height":1200})
@@ -113,19 +113,23 @@ async def discover_live_matches():
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)"); await page.wait_for_timeout(700)
         await page.evaluate("window.scrollTo(0, 0)"); await page.wait_for_timeout(300)
 
-        rows=page.locator("div[id*='g_1_']"); dom_count=await rows.count(); logger.info("Flashscore DOM-строк после прокрутки: %d",dom_count)
+        rows=page.locator("div[id*='g_1_']"); dom_count=await rows.count(); visible_count=0
         for i in range(dom_count):
-            row=rows.nth(i); rid=await row.get_attribute("id") or ""; event_id=rid.split("g_1_",1)[-1].split("_",1)[0]
+            row=rows.nth(i)
+            try:
+                if not await row.is_visible(): skipped["hidden"]+=1; continue
+            except Exception:pass
+            visible_count+=1
+            rid=await row.get_attribute("id") or ""; event_id=rid.split("g_1_",1)[-1].split("_",1)[0]
             if len(event_id)!=8 or not event_id.isalnum(): skipped["bad_id"]+=1; continue
-            text=" | ".join(x.strip() for x in (await row.inner_text()).splitlines() if x.strip())
-
-            stage=await _first_text(row,[".event__stage","[class*='event__stage']",".event__time","[class*='event__time']"])
-            status_text=f"{stage} {text[:60]}".strip()
-            is_halftime=bool(re.search(r"Half\s*Time|\bHT\b|Перерыв",status_text,re.I))
-            mm=re.search(r"(?:^|\s)(\d{1,3})(?:\+(\d+))?\s*'",stage)
-            if not mm: mm=re.search(r"(?:^|\s)(\d{1,3})(?:\+(\d+))?\s*'",text[:40])
+            lines=[x.strip() for x in (await row.inner_text()).splitlines() if x.strip()]
+            if not lines:skipped["no_minute"]+=1;continue
+            text=" | ".join(lines); first=lines[0]
+            is_halftime=bool(re.search(r"Half\s*Time|\bHT\b|Перерыв",first,re.I))
+            # In Flashscore LIVE-filtered visible rows the first cell is the live minute/status.
+            mm=re.match(r"^(\d{1,3})(?:\+(\d+))?(?:'|\b)",first)
             minute=int(mm.group(1)) if mm else 45 if is_halftime else 0
-            if minute<=0 or minute>130: skipped["not_live"]+=1; continue
+            if minute<=0 or minute>130: skipped["no_minute"]+=1; continue
 
             home=await _first_text(row,[".event__participant--home","[class*='participant--home']"])
             away=await _first_text(row,[".event__participant--away","[class*='participant--away']"])
@@ -137,17 +141,8 @@ async def discover_live_matches():
                 m=re.search(r"\d+",v or ""); return int(m.group()) if m else None
             home_score,away_score=score_num(hs),score_num(aas)
             if home_score is None or away_score is None:
-                # Fallback for Flashscore variants where score cells use generic classes.
-                score_cells=[]
-                for sel in ["[class*='event__score']","[class*='score']"]:
-                    try:
-                        loc=row.locator(sel)
-                        for j in range(min(await loc.count(),6)):
-                            v=(await loc.nth(j).inner_text()).strip()
-                            if re.fullmatch(r"\d+",v):score_cells.append(int(v))
-                    except Exception:pass
-                    if len(score_cells)>=2:break
-                if len(score_cells)>=2:home_score,away_score=score_cells[0],score_cells[1]
+                nums=[int(v) for v in lines[1:] if re.fullmatch(r"\d+",v)]
+                if len(nums)>=2:home_score,away_score=nums[-2],nums[-1]
             if home_score is None or away_score is None: skipped["no_score"]+=1; continue
 
             league=""
@@ -158,7 +153,7 @@ async def discover_live_matches():
             if league.lower().strip() in INVALID_LEAGUES:league=""
             matches.append(LiveMatch(event_id,minute,home,away,home_score,away_score,text[:180],league,is_halftime))
 
-        logger.info("LIVE discovery: DOM=%d, LIVE распознано=%d, пропущено=%s",dom_count,len(matches),skipped)
+        logger.info("LIVE discovery: DOM=%d, видимых после LIVE=%d, распознано=%d, пропущено=%s",dom_count,visible_count,len(matches),skipped)
         await browser.close()
     return matches
 
