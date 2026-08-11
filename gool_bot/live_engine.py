@@ -4,7 +4,6 @@ from __future__ import annotations
 import json, logging, os, re, time
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any
 import requests
 from playwright.async_api import async_playwright
 
@@ -83,80 +82,50 @@ def calculate_goal_pressure(match,values,previous=None):
     if not reasons and score>=70: reasons.append("высокое суммарное давление")
     return GoalPressureResult(round(score,1),round(momentum,1),round(quality,1),round(context,1),reasons)
 
-async def _first_text(row, selectors:list[str])->str:
-    for selector in selectors:
-        try:
-            loc=row.locator(selector)
-            if await loc.count():
-                value=(await loc.first.inner_text()).strip()
-                if value:return value
-        except Exception:pass
-    return ""
-
 async def discover_live_matches():
-    matches=[]; skipped={"bad_id":0,"no_minute":0,"no_names":0,"no_score":0}
+    matches=[]; skipped={"bad_id":0,"no_minute":0,"bad_row":0}
     async with async_playwright() as p:
         browser=await p.chromium.launch(headless=True,args=["--no-sandbox","--disable-dev-shm-usage"])
         context=await browser.new_context(user_agent=UA,locale="en-GB",timezone_id="UTC",viewport={"width":1440,"height":1200})
         page=await context.new_page(); await page.goto(FLASH_URL,wait_until="domcontentloaded",timeout=35000); await page.wait_for_timeout(4500)
-        # Log what looks clickable; Flashscore has changed this control several times.
-        try:
-            candidates=page.locator("text=LIVE")
-            logger.info("LIVE text candidates: %d",await candidates.count())
-            for j in range(min(await candidates.count(),5)):
-                el=candidates.nth(j)
-                logger.info("LIVE candidate %d tag=%s class=%s text=%s",j,await el.evaluate("e=>e.tagName"),await el.get_attribute("class"),(await el.inner_text())[:80])
-        except Exception as exc: logger.info("LIVE candidate diagnostic failed: %s",exc)
-        for selector in ["[data-testid='wcl-tab']:has-text('LIVE')","button:has-text('LIVE')","text=LIVE"]:
-            try:
-                loc=page.locator(selector)
-                if await loc.count(): await loc.first.click(timeout=3000); await page.wait_for_timeout(1800); logger.info("Clicked LIVE selector: %s",selector); break
-            except Exception: pass
-
-        last_count=-1; stable=0
-        for _ in range(14):
-            count=await page.locator("div[id*='g_1_']").count()
-            stable=stable+1 if count==last_count else 0; last_count=count
-            if stable>=3:break
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)"); await page.wait_for_timeout(700)
-        await page.evaluate("window.scrollTo(0, 0)"); await page.wait_for_timeout(300)
-
-        rows=page.locator("div[id*='g_1_']"); dom_count=await rows.count()
-        for i in range(min(dom_count,15)):
-            row=rows.nth(i)
-            try:
-                logger.info("ROW_SAMPLE %d id=%s class=%s text=%s",i,await row.get_attribute("id"),await row.get_attribute("class")," || ".join([x.strip() for x in (await row.inner_text()).splitlines() if x.strip()])[:300])
-            except Exception:pass
-
-        for i in range(dom_count):
-            row=rows.nth(i); rid=await row.get_attribute("id") or ""; event_id=rid.split("g_1_",1)[-1].split("_",1)[0]
+        # Flashscore exposes the authoritative live state in each match row class.
+        # Do not depend on clicking the LIVE tab: generic text=LIVE can hit page headings/news.
+        for _ in range(12):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)"); await page.wait_for_timeout(500)
+        await page.evaluate("window.scrollTo(0,0)"); await page.wait_for_timeout(250)
+        all_rows=page.locator("div[id*='g_1_']"); live_rows=page.locator("div[id*='g_1_'].event__match--live")
+        logger.info("Flashscore: всего строк=%d, строк с class --live=%d",await all_rows.count(),await live_rows.count())
+        for i in range(await live_rows.count()):
+            row=live_rows.nth(i); rid=await row.get_attribute("id") or ""; event_id=rid.split("g_1_",1)[-1].split("_",1)[0]
             if len(event_id)!=8 or not event_id.isalnum(): skipped["bad_id"]+=1; continue
             lines=[x.strip() for x in (await row.inner_text()).splitlines() if x.strip()]
-            if not lines:skipped["no_minute"]+=1;continue
-            text=" | ".join(lines); first=lines[0]
-            is_halftime=bool(re.search(r"Half\s*Time|\bHT\b|Перерыв",first,re.I))
-            mm=re.match(r"^(\d{1,3})(?:\+(\d+))?(?:'|\b)",first)
-            minute=int(mm.group(1)) if mm else 45 if is_halftime else 0
+            if len(lines)<5: skipped["bad_row"]+=1; continue
+            first=lines[0]; is_halftime=bool(re.search(r"Half\s*Time|\bHT\b|Break|Перерыв",first,re.I)); minute=0; offset=1
+            mm=re.match(r"^(\d{1,3})(?:\+(\d+))?$",first)
+            if mm: minute=int(mm.group(1))
+            elif is_halftime: minute=45
+            elif re.search(r"Extra\s*Time",first,re.I) and len(lines)>1:
+                mm2=re.search(r"(\d{1,3})",lines[1]); minute=int(mm2.group(1)) if mm2 else 105; offset=2
+            else:
+                mm3=re.search(r"(\d{1,3})",first); minute=int(mm3.group(1)) if mm3 else 0
             if minute<=0 or minute>130: skipped["no_minute"]+=1; continue
-            home=await _first_text(row,[".event__participant--home","[class*='participant--home']"])
-            away=await _first_text(row,[".event__participant--away","[class*='participant--away']"])
-            if not home or not away: skipped["no_names"]+=1; continue
-            hs=await _first_text(row,[".event__score--home","[class*='score--home']"]); aas=await _first_text(row,[".event__score--away","[class*='score--away']"])
-            def score_num(v:str):
-                m=re.search(r"\d+",v or ""); return int(m.group()) if m else None
-            home_score,away_score=score_num(hs),score_num(aas)
-            if home_score is None or away_score is None:
-                nums=[int(v) for v in lines[1:] if re.fullmatch(r"\d+",v)]
-                if len(nums)>=2:home_score,away_score=nums[-2],nums[-1]
-            if home_score is None or away_score is None: skipped["no_score"]+=1; continue
+            # Current Flashscore live row text is status/minute, home, away, home score, away score.
+            tail=lines[offset:]
+            if len(tail)<4: skipped["bad_row"]+=1; continue
+            home,away=tail[0],tail[1]
+            score_vals=[]
+            for v in tail[2:]:
+                if re.fullmatch(r"\d+",v):score_vals.append(int(v))
+            if len(score_vals)<2: skipped["bad_row"]+=1; continue
+            home_score,away_score=score_vals[0],score_vals[1]
             league=""
             try:
                 header=row.locator("xpath=preceding::div[contains(@class,'event__header') or contains(@class,'event__title')][1]")
-                if await header.count():league=" ".join((await header.first.inner_text()).split())[:120]
-            except Exception:pass
-            if league.lower().strip() in INVALID_LEAGUES:league=""
-            matches.append(LiveMatch(event_id,minute,home,away,home_score,away_score,text[:180],league,is_halftime))
-        logger.info("LIVE discovery: DOM=%d, распознано=%d, пропущено=%s",dom_count,len(matches),skipped)
+                if await header.count(): league=" ".join((await header.first.inner_text()).split())[:120]
+            except Exception: pass
+            if league.lower().strip() in INVALID_LEAGUES: league=""
+            matches.append(LiveMatch(event_id,minute,home,away,home_score,away_score," | ".join(lines)[:180],league,is_halftime))
+        logger.info("LIVE discovery: class_live=%d, распознано=%d, пропущено=%s",await live_rows.count(),len(matches),skipped)
         await browser.close()
     return matches
 
