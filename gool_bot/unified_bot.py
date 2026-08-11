@@ -1,6 +1,6 @@
 """Unified PREMATCH + LIVE bot runner."""
 from __future__ import annotations
-import asyncio, json, logging, os, time
+import asyncio, json, logging, os, statistics, time
 from pathlib import Path
 from typing import Any
 import requests
@@ -38,21 +38,59 @@ def _model_confidence(pressure_score:float,momentum:float,line:float,current_goa
     if minute>=80: base-=12
     elif minute>=75: base-=6
     return max(35,min(94,round(base)))
-def _recommendations(entries:list[dict[str,Any]],match,pressure):
-    scope="SECOND_HALF" if match.is_halftime else "FULL_TIME"; goals=0 if scope=="SECOND_HALF" else match.home_score+match.away_score; recs=[]
+
+def _scope_current_goals(match,scope:str)->int:
+    if scope=="SECOND_HALF" and match.is_halftime:return 0
+    return match.home_score+match.away_score
+
+def _collect_scope_recommendations(entries:list[dict[str,Any]],match,pressure,scope:str):
+    """Aggregate active bookmaker prices by line and use the market median.
+
+    Using the highest bookmaker price made a single stale/outlier quote look like the
+    live market. Median is much closer to the actual consensus price visible to users.
+    """
+    current_goals=_scope_current_goals(match,scope)
+    buckets:dict[float,list[float]]={}
     for entry in entries:
-        if str(entry.get("bettingType"))!="OVER_UNDER" or str(entry.get("bettingScope") or "FULL_TIME")!=scope:continue
+        if str(entry.get("bettingType"))!="OVER_UNDER":continue
+        if str(entry.get("bettingScope") or "FULL_TIME")!=scope:continue
         for item in entry.get("odds") or []:
-            if not isinstance(item,dict) or not item.get("active",True) or str(item.get("selection") or "").upper()!="OVER":continue
-            try:line=float((item.get("handicap") or {}).get("value")); odd=float(item.get("value"))
-            except (TypeError,ValueError):continue
-            if line<=goals or odd<=1.01:continue
-            recs.append({"scope":scope,"line":line,"odd":odd,"confidence":_model_confidence(pressure.score,pressure.momentum,line,goals,scope,match.minute)})
-    best={}
-    for r in recs:
-        if r["line"] not in best or r["odd"]>best[r["line"]]["odd"]:best[r["line"]]=r
-    rows=list(best.values()); rows.sort(key=lambda r:(-r["confidence"],abs(r["odd"]-1.8))); useful=[r for r in rows if r["odd"]>=1.20]
-    return (useful or rows)[:3]
+            if not isinstance(item,dict) or not item.get("active",True):continue
+            if str(item.get("selection") or "").upper()!="OVER":continue
+            try:
+                line=float((item.get("handicap") or {}).get("value")); odd=float(item.get("value"))
+            except (TypeError,ValueError,AttributeError):continue
+            if line<=current_goals or odd<=1.01:continue
+            buckets.setdefault(line,[]).append(odd)
+    rows=[]
+    for line,prices in buckets.items():
+        odd=float(statistics.median(prices))
+        rows.append({"scope":scope,"line":line,"odd":odd,"bookmakers":len(prices),"confidence":_model_confidence(pressure.score,pressure.momentum,line,current_goals,scope,match.minute)})
+    rows.sort(key=lambda r:(abs(r["odd"]-1.80),-r["confidence"]))
+    return rows[:3]
+
+def _recommendations(entries:list[dict[str,Any]],match,pressure):
+    # Before HT show two clearly separated questions: goal before HT and goal by FT.
+    if match.minute<=45 and not match.is_halftime:
+        return _collect_scope_recommendations(entries,match,pressure,"FIRST_HALF") + _collect_scope_recommendations(entries,match,pressure,"FULL_TIME")
+    if match.is_halftime:
+        return _collect_scope_recommendations(entries,match,pressure,"SECOND_HALF") + _collect_scope_recommendations(entries,match,pressure,"FULL_TIME")
+    return _collect_scope_recommendations(entries,match,pressure,"FULL_TIME")
+
+def _format_bets(recs):
+    if not recs:return "Сейчас подходящего рынка тоталов нет."
+    groups=[]
+    labels={"FIRST_HALF":"🕐 <b>ДО КОНЦА 1-ГО ТАЙМА</b>","SECOND_HALF":"🕑 <b>2-Й ТАЙМ</b>","FULL_TIME":"⚽ <b>ДО КОНЦА МАТЧА</b>"}
+    for scope in ("FIRST_HALF","SECOND_HALF","FULL_TIME"):
+        rows=[r for r in recs if r["scope"]==scope]
+        if not rows:continue
+        lines=[labels[scope]]
+        for r in rows:
+            books=f" · {r['bookmakers']} БК" if r.get("bookmakers") else ""
+            lines.append(f"ТБ {r['line']:g} — кэф <b>{r['odd']:.2f}</b> | уверенность модели <b>{r['confidence']}%</b>{books}")
+        groups.append("\n".join(lines))
+    return "\n\n".join(groups)
+
 def _format_signal(match,pressure,stats,recs,goal_times,reason="signal"):
     def pair(k):a,b=stats.get(k,(0,0)); return f"{a:g} — {b:g}"
     league=f"🏆 {match.league}\n" if match.league else "🏆 Турнир: данные уточняются\n"; status="Перерыв" if match.is_halftime else f"{match.minute}'"
@@ -61,20 +99,15 @@ def _format_signal(match,pressure,stats,recs,goal_times,reason="signal"):
     late_warning=""
     if match.minute>=80: late_warning="\n⚠️ <b>ОСОБО ВЫСОКИЙ РИСК: 80+ минута.</b> Времени мало, даже при сильном давлении вход значительно опаснее.\n"
     elif match.minute>=75: late_warning="\n⚠️ <b>ПОВЫШЕННЫЙ РИСК: поздняя стадия матча.</b>\n"
-    bet_lines=[]
-    for i,r in enumerate(recs,1):
-        label="2-й тайм" if r["scope"]=="SECOND_HALF" else "матч"; bet_lines.append(f"{i}. <b>ТБ {r['line']:g} ({label})</b> — кэф <b>{r['odd']:.2f}</b> | уверенность модели <b>{r['confidence']}%</b>")
-    bets="\n".join(bet_lines) if bet_lines else "Сейчас подходящего рынка тоталов нет."; verdict="🔥 Давление сохраняется, матч остаётся интересным." if pressure.score>=LIVE_SIGNAL_THRESHOLD else "⚠️ После изменения матча давление ниже порога — новый вход сейчас не подтверждён."; reasons="\n".join(f"• {x}" for x in pressure.reasons[:4]) or "• текущая динамика без сильного всплеска"
-    return f"{title}\n\n⚽ <b>{match.home} — {match.away}</b>\n{league}⏱ {status} | Счёт <b>{match.home_score}:{match.away_score}</b>\n{goals_line}{late_warning}\n📊 <b>Статистика</b>\nxG: <b>{pair('xg')}</b>\nУдары: {pair('shots')}\nУдары в створ: {pair('shots_on_target')}\nБольшие моменты: {pair('big_chances')}\nУдары из штрафной: {pair('shots_inside_box')}\nКасания в штрафной: {pair('touches_box')}\nУгловые: {pair('corners')}\n\n⚡ Динамика: <b>{pressure.momentum:.0f}/100</b>\n🔥 Давление на гол: <b>{pressure.score:.0f}/100</b>\n{verdict}\n\n🎯 <b>Варианты</b>\n{bets}\n\n{reasons}\n<i>Процент — оценка модели, а не гарантированная вероятность.</i>"
+    bets=_format_bets(recs)
+    verdict="🔥 Давление сохраняется, матч остаётся интересным." if pressure.score>=LIVE_SIGNAL_THRESHOLD else "⚠️ После изменения матча давление ниже порога — новый вход сейчас не подтверждён."
+    reasons="\n".join(f"• {x}" for x in pressure.reasons[:4]) or "• текущая динамика без сильного всплеска"
+    return f"{title}\n\n⚽ <b>{match.home} — {match.away}</b>\n{league}⏱ {status} | Счёт <b>{match.home_score}:{match.away_score}</b>\n{goals_line}{late_warning}\n📊 <b>Статистика</b>\nxG: <b>{pair('xg')}</b>\nУдары: {pair('shots')}\nУдары в створ: {pair('shots_on_target')}\nБольшие моменты: {pair('big_chances')}\nУдары из штрафной: {pair('shots_inside_box')}\nКасания в штрафной: {pair('touches_box')}\nУгловые: {pair('corners')}\n\n⚡ Динамика: <b>{pressure.momentum:.0f}/100</b>\n🔥 Давление на гол: <b>{pressure.score:.0f}/100</b>\n{verdict}\n\n🎯 <b>Варианты</b>\n{bets}\n\n{reasons}\n<i>Коэффициент — медиана активных букмекеров LSApp. Процент — оценка модели, а не гарантированная вероятность.</i>"
 
 def _record_live(match,pressure,stats,recs,reason):
-    primary=recs[0] if recs else None
+    primary=next((r for r in recs if r["scope"]=="FULL_TIME"),recs[0] if recs else None)
     key=f"live:{match.event_id}:{match.minute}:{match.home_score}:{match.away_score}:{reason}"
-    add_signal({
-        "kind":"live","event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,
-        "minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","pressure":pressure.score,
-        "momentum":pressure.momentum,"stats":stats,"primary":primary,"reason":reason,
-    },key)
+    add_signal({"kind":"live","event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","pressure":pressure.score,"momentum":pressure.momentum,"stats":stats,"primary":primary,"reason":reason},key)
 
 async def scan_live_once():
     live=await discover_live_matches(); logger.info("Найдено LIVE-матчей: %d",len(live)); state=_load_sent(); sent=0; live_ids={m.event_id for m in live}
@@ -91,15 +124,13 @@ async def scan_live_once():
             if pressure.score<LIVE_SIGNAL_THRESHOLD:continue
             recs=_recommendations(_fetch_event_odds(match.event_id),match,pressure)
             if telegram_send(_format_signal(match,pressure,stats,recs,goal_times,"signal")):
-                _record_live(match,pressure,stats,recs,"signal")
-                state[track_key]={"tracked_since":now,"ts":now,"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":match.is_halftime}; sent+=1
+                _record_live(match,pressure,stats,recs,"signal"); state[track_key]={"tracked_since":now,"ts":now,"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":match.is_halftime}; sent+=1
             continue
         previous_score=str(tracked.get("score",current_score)); score_changed=previous_score!=current_score; halftime_new=match.is_halftime and not bool(tracked.get("halftime_sent")); last_ts=float(tracked.get("ts",0)); last_pressure=float(tracked.get("pressure",0)); pressure_jump=pressure.score>=LIVE_SIGNAL_THRESHOLD and pressure.score>=last_pressure+8; regular_followup=pressure.score>=LIVE_SIGNAL_THRESHOLD and now-last_ts>=LIVE_COOLDOWN_MINUTES*60
         if score_changed or halftime_new or pressure_jump or regular_followup:
             reason="goal" if score_changed else "followup"; recs=_recommendations(_fetch_event_odds(match.event_id),match,pressure)
             if telegram_send(_format_signal(match,pressure,stats,recs,goal_times,reason)):
-                _record_live(match,pressure,stats,recs,reason)
-                tracked.update({"ts":now,"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":bool(tracked.get("halftime_sent")) or match.is_halftime}); state[track_key]=tracked; sent+=1
+                _record_live(match,pressure,stats,recs,reason); tracked.update({"ts":now,"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":bool(tracked.get("halftime_sent")) or match.is_halftime}); state[track_key]=tracked; sent+=1
         else:
             tracked.update({"score":current_score,"minute":match.minute}); state[track_key]=tracked
     _save_sent(state); logger.info("Отправлено LIVE-сигналов/обновлений: %d; сопровождается матчей: %d",sent,sum(1 for k in state if k.startswith('TRACK:'))); return sent
