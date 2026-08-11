@@ -1,0 +1,28 @@
+name: LSApp Diagnostic
+
+on:
+  push:
+    paths:
+      - "gool_bot/diagnose_lsapp.py"
+      - ".github/workflows/diagnose-lsapp.yml"
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: gool_bot/requirements.txt
+      - name: Install
+        working-directory: gool_bot
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+      - name: Diagnose
+        working-directory: gool_bot
+        run: python diagnose_lsapp.py
