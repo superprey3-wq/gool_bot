@@ -179,6 +179,7 @@ def calculate_goal_pressure(match: LiveMatch, values: dict[str, tuple[float, flo
 
 
 async def discover_live_matches() -> list[LiveMatch]:
+    """Discover true live rows from Flashscore. Uses the same DOM approach proven in diagnostics."""
     matches: list[LiveMatch] = []
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -186,30 +187,77 @@ async def discover_live_matches() -> list[LiveMatch]:
         page = await context.new_page()
         await page.goto(FLASH_URL, wait_until="domcontentloaded", timeout=35000)
         await page.wait_for_timeout(4500)
+
+        # Try the LIVE filter, but do not trust the filter alone because Flashscore can keep
+        # non-live rows in the DOM. Every row is still validated by its status text below.
+        for selector in ["text=LIVE", "[data-testid='wcl-tab']:has-text('LIVE')", "button:has-text('LIVE')"]:
+            try:
+                loc = page.locator(selector)
+                if await loc.count():
+                    await loc.first.click(timeout=3000)
+                    await page.wait_for_timeout(1800)
+                    break
+            except Exception:
+                pass
+
         rows = page.locator("div[id*='g_1_']")
-        for i in range(await rows.count()):
+        count = await rows.count()
+        logger.info("Flashscore rows for LIVE scan: %d", count)
+        for i in range(count):
             row = rows.nth(i)
             rid = await row.get_attribute("id") or ""
             event_id = rid.split("g_1_", 1)[-1].split("_", 1)[0]
-            if len(event_id) != 8:
+            if len(event_id) != 8 or not event_id.isalnum():
                 continue
+
             lines = [x.strip() for x in (await row.inner_text()).splitlines() if x.strip()]
-            text = " | ".join(lines)
-            mm = re.match(r"^(\d{1,2})(?:\+\d+)?\b", lines[0] if lines else "")
-            if not mm:
+            if not lines:
                 continue
-            minute = int(mm.group(1))
+            text = " | ".join(lines)
+
+            # Live status examples seen in production: 65, 90+, 45+2, Half Time.
+            minute = 0
+            first = lines[0]
+            mm = re.match(r"^(\d{1,2})(?:\+(\d+))?(?:'|\b)", first)
+            if mm:
+                minute = int(mm.group(1))
+            elif re.search(r"Half Time|HT", first, re.I):
+                minute = 45
+            else:
+                continue
             if minute < 1 or minute > 120:
                 continue
-            names = []
-            for selector in [".event__participant--home", ".event__participant--away"]:
+
+            names: list[str] = []
+            for selector in [
+                ".event__participant--home", ".event__participant--away",
+                "[class*='participant--home']", "[class*='participant--away']",
+            ]:
                 loc = row.locator(selector)
                 if await loc.count():
-                    names.append((await loc.first.inner_text()).strip())
-            scores = [int(x) for x in lines if re.fullmatch(r"\d+", x)]
-            if len(names) >= 2 and len(scores) >= 2:
-                matches.append(LiveMatch(event_id, minute, names[0], names[1], scores[-2], scores[-1], text[:180]))
+                    value = (await loc.first.inner_text()).strip()
+                    if value and value not in names:
+                        names.append(value)
+
+            # Flashscore DOM class names change frequently. The proven fallback is the
+            # row text itself: status | home | away | home_score | away_score.
+            if len(names) < 2 and len(lines) >= 3:
+                candidate_names = []
+                for value in lines[1:]:
+                    if re.fullmatch(r"\d+", value) or value in {"-", "PREVIEW"}:
+                        continue
+                    if re.search(r"[A-Za-zА-Яа-я]", value):
+                        candidate_names.append(value)
+                    if len(candidate_names) == 2:
+                        break
+                names = candidate_names
+
+            score_tokens = [int(x) for x in lines[1:] if re.fullmatch(r"\d+", x)]
+            if len(names) >= 2 and len(score_tokens) >= 2:
+                matches.append(LiveMatch(event_id, minute, names[0], names[1], score_tokens[-2], score_tokens[-1], text[:180]))
+
         await browser.close()
+    logger.info("Validated LIVE matches: %d", len(matches))
     return matches
 
 
