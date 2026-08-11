@@ -5,6 +5,7 @@ on:
     paths:
       - "gool_bot/live_engine.py"
       - "gool_bot/unified_bot.py"
+      - "gool_bot/probe_flashscore_feed.py"
       - ".github/workflows/test-live-engine.yml"
   workflow_dispatch:
 
@@ -24,6 +25,9 @@ jobs:
         run: |
           pip install -r requirements.txt
           playwright install --with-deps chromium
+      - name: Probe feed and locale coverage
+        working-directory: gool_bot
+        run: python probe_flashscore_feed.py 2>&1 | tee feed_probe.log
       - name: Run one live scan
         working-directory: gool_bot
         env:
@@ -36,5 +40,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: live-coverage-log
-          path: gool_bot/live_scan.log
+          path: |
+            gool_bot/live_scan.log
+            gool_bot/feed_probe.log
           retention-days: 1
