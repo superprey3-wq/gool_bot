@@ -8,9 +8,6 @@ from feed_live_discovery import discover_live_matches as discover_all_live_match
 from live_odds import fetch_live_odds
 from match_history import analyse_history, fetch_match_history
 
-
-# Built only when a signal/update is actually being prepared; LIVE scan of every
-# event does not fetch H2H/history.
 _SIGNAL_INSIGHTS: dict[str, str] = {}
 _SMART_BLOCK_TOKEN = "__SMART_LIVE_BET_BLOCK__"
 
@@ -114,27 +111,34 @@ def _model_pick(entries, match, pressure, ctx, analysis) -> str:
         )
 
     goals = match.home_score + match.away_score
-    hist_avg = float(analysis.get("historical_avg_total") or 0.0)
-    if hist_avg <= 0:
-        hist_avg = max(2.4, float(goals))
-    remaining = max(0.0, 90.0 - float(match.minute)) / 90.0
-    pressure_factor = 0.65 + min(1.0, pressure.score / 100.0) * 0.70
-    projected_final = goals + hist_avg * remaining * pressure_factor
-
     candidates = []
     for line, (odd, books) in prices.items():
-        if line <= goals or odd < 1.10 or odd > 5.0:
+        if line <= goals or odd < 1.10 or odd > 8.0:
             continue
+
+        live_p = unified_bot._live_over_probability(
+            pressure.score, pressure.momentum, line, goals, "FULL_TIME", match.minute, odd
+        )
         hist_rate = _weighted_history_rate(ctx, line)
-        hist_component = 0.50 if hist_rate is None else hist_rate
-        margin = projected_final - line
-        late_penalty = 10 if match.minute >= 80 else 5 if match.minute >= 75 else 0
-        confidence = 44 + pressure.score * 0.28 + hist_component * 20 + max(-10, min(10, margin * 7)) - late_penalty
-        confidence = max(35, min(91, round(confidence)))
-        # Prefer a meaningful but not extreme current price and a line that the
-        # projection clears by at least a little.
-        utility = confidence - abs(odd - 1.90) * 7 + max(-6, min(6, margin * 4))
-        candidates.append((utility, line, odd, books, confidence, hist_rate, margin))
+
+        # Historical form is context, not a license to override the clock. Its
+        # influence shrinks sharply late in the match, because at 85' the only
+        # thing that matters is whether enough goals can arrive in the remaining minutes.
+        if hist_rate is not None:
+            hist_weight = 0.04 if match.minute >= 80 else 0.08 if match.minute >= 70 else 0.15
+            calibrated_p = live_p * (1.0 - hist_weight) + hist_rate * hist_weight
+        else:
+            calibrated_p = live_p
+        calibrated_p = max(0.01, min(0.94, calibrated_p))
+        confidence = round(calibrated_p * 100)
+
+        market_p = min(0.95, 1.0 / odd)
+        edge = calibrated_p - market_p
+        needed = unified_bot._goals_needed_for_over(line, goals)
+        # Prefer realistic lines with positive/near-neutral model edge. Requiring
+        # multiple late goals is naturally penalised by the Poisson probability.
+        utility = confidence + edge * 80 - abs(odd - 1.90) * 3 - max(0, needed - 1) * 4
+        candidates.append((utility, line, odd, books, confidence, hist_rate, edge, needed))
 
     if not candidates:
         return (
@@ -143,14 +147,15 @@ def _model_pick(entries, match, pressure, ctx, analysis) -> str:
         )
 
     candidates.sort(reverse=True)
-    _, line, odd, books, confidence, hist_rate, margin = candidates[0]
+    _, line, odd, books, confidence, hist_rate, edge, needed = candidates[0]
     support = ""
     if hist_rate is not None:
         support = f" · исторический проход линии {round(hist_rate * 100):d}%"
+    needed_text = f"Нужно ещё голов: <b>{needed}</b>."
     return (
         "🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n"
         f"ТБ {line:g} — LIVE-кэф <b>{odd:.2f}</b> · модель <b>{confidence}%</b> · {books} БК{support}\n"
-        f"Проекция модели по текущему темпу: около <b>{projected_final:.1f}</b> гола к финалу."
+        f"{needed_text} Вероятность учитывает оставшееся время, текущее давление и LIVE-рынок."
     )
 
 
@@ -167,7 +172,6 @@ def _build_insight(entries, match, pressure) -> str:
 
 
 def _recommendations(entries, match, pressure):
-    """Keep raw recommendation rows for journal, but build one clear user pick."""
     if match.minute <= 45 and not match.is_halftime:
         recs = (
             unified_bot._collect_scope_recommendations(entries, match, pressure, "FIRST_HALF")
@@ -189,8 +193,6 @@ def _recommendations(entries, match, pressure):
 
 
 def _format_bets(recs):
-    # Original formatter has no match/event context. The token is replaced below
-    # by the event-aware block built in _recommendations().
     return _SMART_BLOCK_TOKEN
 
 
@@ -208,7 +210,6 @@ def _format_signal(*args, **kwargs):
     )
 
 
-# Replace data sources/policy. Pressure, stats, Telegram and tracking remain unchanged.
 unified_bot.discover_live_matches = discover_live_matches
 unified_bot._fetch_event_odds = fetch_live_odds
 unified_bot._scope_current_goals = _scope_current_goals
