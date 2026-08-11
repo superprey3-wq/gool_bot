@@ -51,7 +51,7 @@ jobs:
           MIN_CONSENSUS: "0.65"
           MIN_MEDIAN_DROP: "8.0"
           MAX_SIGNALS_PER_MATCH: "4"
-        run: python prematch_scanner.py
+        run: python prematch_standard_scanner.py
 
       - name: Run LIVE scanner
         working-directory: gool_bot
