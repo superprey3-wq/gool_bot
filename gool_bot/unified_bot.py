@@ -30,11 +30,13 @@ def telegram_send(text):
     try:return requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",json={"chat_id":CHAT_ID,"text":text,"parse_mode":"HTML","disable_web_page_preview":True},timeout=15).ok
     except requests.RequestException:return False
 
-def _model_confidence(pressure_score:float,momentum:float,line:float,current_goals:int,scope:str)->int:
+def _model_confidence(pressure_score:float,momentum:float,line:float,current_goals:int,scope:str,minute:int)->int:
     base=48+pressure_score*.28+momentum*.12
     if scope=="SECOND_HALF":base+=3
     base-=max(0.0,(line-current_goals)-.5)*13
-    return max(45,min(94,round(base)))
+    if minute>=80: base-=12
+    elif minute>=75: base-=6
+    return max(35,min(94,round(base)))
 def _recommendations(entries:list[dict[str,Any]],match,pressure):
     scope="SECOND_HALF" if match.is_halftime else "FULL_TIME"; goals=0 if scope=="SECOND_HALF" else match.home_score+match.away_score; recs=[]
     for entry in entries:
@@ -44,7 +46,7 @@ def _recommendations(entries:list[dict[str,Any]],match,pressure):
             try:line=float((item.get("handicap") or {}).get("value")); odd=float(item.get("value"))
             except (TypeError,ValueError):continue
             if line<=goals or odd<=1.01:continue
-            recs.append({"scope":scope,"line":line,"odd":odd,"confidence":_model_confidence(pressure.score,pressure.momentum,line,goals,scope)})
+            recs.append({"scope":scope,"line":line,"odd":odd,"confidence":_model_confidence(pressure.score,pressure.momentum,line,goals,scope,match.minute)})
     best={}
     for r in recs:
         if r["line"] not in best or r["odd"]>best[r["line"]]["odd"]:best[r["line"]]=r
@@ -55,11 +57,16 @@ def _format_signal(match,pressure,stats,recs,goal_times,reason="signal"):
     league=f"🏆 {match.league}\n" if match.league else "🏆 Турнир: данные уточняются\n"; status="Перерыв" if match.is_halftime else f"{match.minute}'"
     title="⚽ <b>ГОЛ — МАТЧ ПЕРЕСЧИТАН</b>" if reason=="goal" else "🔵 <b>ПРОГНОЗ НА 2-Й ТАЙМ</b>" if match.is_halftime else "🔄 <b>ОБНОВЛЕНИЕ ПО МАТЧУ</b>" if reason=="followup" else "🔴 <b>LIVE-СИГНАЛ НА ГОЛ</b>"
     goals_line=f"⚽ Голы: <b>{', '.join(goal_times)}</b>\n" if goal_times else "⚽ Голы: пока нет\n"
+    late_warning=""
+    if match.minute>=80:
+        late_warning="\n⚠️ <b>ОСОБО ВЫСОКИЙ РИСК: 80+ минута.</b> Времени мало, даже при сильном давлении вход значительно опаснее.\n"
+    elif match.minute>=75:
+        late_warning="\n⚠️ <b>ПОВЫШЕННЫЙ РИСК: поздняя стадия матча.</b>\n"
     bet_lines=[]
     for i,r in enumerate(recs,1):
         label="2-й тайм" if r["scope"]=="SECOND_HALF" else "матч"; bet_lines.append(f"{i}. <b>ТБ {r['line']:g} ({label})</b> — кэф <b>{r['odd']:.2f}</b> | уверенность модели <b>{r['confidence']}%</b>")
     bets="\n".join(bet_lines) if bet_lines else "Сейчас подходящего рынка тоталов нет."; verdict="🔥 Давление сохраняется, матч остаётся интересным." if pressure.score>=LIVE_SIGNAL_THRESHOLD else "⚠️ После изменения матча давление ниже порога — новый вход сейчас не подтверждён."; reasons="\n".join(f"• {x}" for x in pressure.reasons[:4]) or "• текущая динамика без сильного всплеска"
-    return f"{title}\n\n⚽ <b>{match.home} — {match.away}</b>\n{league}⏱ {status} | Счёт <b>{match.home_score}:{match.away_score}</b>\n{goals_line}\n📊 <b>Статистика</b>\nxG: <b>{pair('xg')}</b>\nУдары: {pair('shots')}\nУдары в створ: {pair('shots_on_target')}\nБольшие моменты: {pair('big_chances')}\nУдары из штрафной: {pair('shots_inside_box')}\nКасания в штрафной: {pair('touches_box')}\nУгловые: {pair('corners')}\n\n⚡ Динамика: <b>{pressure.momentum:.0f}/100</b>\n🔥 Давление на гол: <b>{pressure.score:.0f}/100</b>\n{verdict}\n\n🎯 <b>Варианты</b>\n{bets}\n\n{reasons}\n<i>Процент — оценка модели, а не гарантированная вероятность.</i>"
+    return f"{title}\n\n⚽ <b>{match.home} — {match.away}</b>\n{league}⏱ {status} | Счёт <b>{match.home_score}:{match.away_score}</b>\n{goals_line}{late_warning}\n📊 <b>Статистика</b>\nxG: <b>{pair('xg')}</b>\nУдары: {pair('shots')}\nУдары в створ: {pair('shots_on_target')}\nБольшие моменты: {pair('big_chances')}\nУдары из штрафной: {pair('shots_inside_box')}\nКасания в штрафной: {pair('touches_box')}\nУгловые: {pair('corners')}\n\n⚡ Динамика: <b>{pressure.momentum:.0f}/100</b>\n🔥 Давление на гол: <b>{pressure.score:.0f}/100</b>\n{verdict}\n\n🎯 <b>Варианты</b>\n{bets}\n\n{reasons}\n<i>Процент — оценка модели, а не гарантированная вероятность.</i>"
 
 async def scan_live_once():
     live=await discover_live_matches(); state=_load_sent(); sent=0; live_ids={m.event_id for m in live}
