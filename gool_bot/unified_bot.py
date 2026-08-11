@@ -6,6 +6,7 @@ from typing import Any
 import requests
 from live_engine import StatsSnapshot, calculate_goal_pressure, discover_live_matches, fetch_stats, fetch_summary, get_previous_values, parse_goal_timeline, parse_stats, save_snapshot
 from prematch_scanner import _fetch_event_odds
+from signal_journal import add_signal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("unified_bot")
@@ -58,15 +59,22 @@ def _format_signal(match,pressure,stats,recs,goal_times,reason="signal"):
     title="⚽ <b>ГОЛ — МАТЧ ПЕРЕСЧИТАН</b>" if reason=="goal" else "🔵 <b>ПРОГНОЗ НА 2-Й ТАЙМ</b>" if match.is_halftime else "🔄 <b>ОБНОВЛЕНИЕ ПО МАТЧУ</b>" if reason=="followup" else "🔴 <b>LIVE-СИГНАЛ НА ГОЛ</b>"
     goals_line=f"⚽ Голы: <b>{', '.join(goal_times)}</b>\n" if goal_times else "⚽ Голы: пока нет\n"
     late_warning=""
-    if match.minute>=80:
-        late_warning="\n⚠️ <b>ОСОБО ВЫСОКИЙ РИСК: 80+ минута.</b> Времени мало, даже при сильном давлении вход значительно опаснее.\n"
-    elif match.minute>=75:
-        late_warning="\n⚠️ <b>ПОВЫШЕННЫЙ РИСК: поздняя стадия матча.</b>\n"
+    if match.minute>=80: late_warning="\n⚠️ <b>ОСОБО ВЫСОКИЙ РИСК: 80+ минута.</b> Времени мало, даже при сильном давлении вход значительно опаснее.\n"
+    elif match.minute>=75: late_warning="\n⚠️ <b>ПОВЫШЕННЫЙ РИСК: поздняя стадия матча.</b>\n"
     bet_lines=[]
     for i,r in enumerate(recs,1):
         label="2-й тайм" if r["scope"]=="SECOND_HALF" else "матч"; bet_lines.append(f"{i}. <b>ТБ {r['line']:g} ({label})</b> — кэф <b>{r['odd']:.2f}</b> | уверенность модели <b>{r['confidence']}%</b>")
     bets="\n".join(bet_lines) if bet_lines else "Сейчас подходящего рынка тоталов нет."; verdict="🔥 Давление сохраняется, матч остаётся интересным." if pressure.score>=LIVE_SIGNAL_THRESHOLD else "⚠️ После изменения матча давление ниже порога — новый вход сейчас не подтверждён."; reasons="\n".join(f"• {x}" for x in pressure.reasons[:4]) or "• текущая динамика без сильного всплеска"
     return f"{title}\n\n⚽ <b>{match.home} — {match.away}</b>\n{league}⏱ {status} | Счёт <b>{match.home_score}:{match.away_score}</b>\n{goals_line}{late_warning}\n📊 <b>Статистика</b>\nxG: <b>{pair('xg')}</b>\nУдары: {pair('shots')}\nУдары в створ: {pair('shots_on_target')}\nБольшие моменты: {pair('big_chances')}\nУдары из штрафной: {pair('shots_inside_box')}\nКасания в штрафной: {pair('touches_box')}\nУгловые: {pair('corners')}\n\n⚡ Динамика: <b>{pressure.momentum:.0f}/100</b>\n🔥 Давление на гол: <b>{pressure.score:.0f}/100</b>\n{verdict}\n\n🎯 <b>Варианты</b>\n{bets}\n\n{reasons}\n<i>Процент — оценка модели, а не гарантированная вероятность.</i>"
+
+def _record_live(match,pressure,stats,recs,reason):
+    primary=recs[0] if recs else None
+    key=f"live:{match.event_id}:{match.minute}:{match.home_score}:{match.away_score}:{reason}"
+    add_signal({
+        "kind":"live","event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,
+        "minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","pressure":pressure.score,
+        "momentum":pressure.momentum,"stats":stats,"primary":primary,"reason":reason,
+    },key)
 
 async def scan_live_once():
     live=await discover_live_matches(); state=_load_sent(); sent=0; live_ids={m.event_id for m in live}
@@ -83,12 +91,14 @@ async def scan_live_once():
             if pressure.score<LIVE_SIGNAL_THRESHOLD:continue
             recs=_recommendations(_fetch_event_odds(match.event_id),match,pressure)
             if telegram_send(_format_signal(match,pressure,stats,recs,goal_times,"signal")):
+                _record_live(match,pressure,stats,recs,"signal")
                 state[track_key]={"tracked_since":now,"ts":now,"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":match.is_halftime}; sent+=1
             continue
         previous_score=str(tracked.get("score",current_score)); score_changed=previous_score!=current_score; halftime_new=match.is_halftime and not bool(tracked.get("halftime_sent")); last_ts=float(tracked.get("ts",0)); last_pressure=float(tracked.get("pressure",0)); pressure_jump=pressure.score>=LIVE_SIGNAL_THRESHOLD and pressure.score>=last_pressure+8; regular_followup=pressure.score>=LIVE_SIGNAL_THRESHOLD and now-last_ts>=LIVE_COOLDOWN_MINUTES*60
         if score_changed or halftime_new or pressure_jump or regular_followup:
             reason="goal" if score_changed else "followup"; recs=_recommendations(_fetch_event_odds(match.event_id),match,pressure)
             if telegram_send(_format_signal(match,pressure,stats,recs,goal_times,reason)):
+                _record_live(match,pressure,stats,recs,reason)
                 tracked.update({"ts":now,"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":bool(tracked.get("halftime_sent")) or match.is_halftime}); state[track_key]=tracked; sent+=1
         else:
             tracked.update({"score":current_score,"minute":match.minute}); state[track_key]=tracked
