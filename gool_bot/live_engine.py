@@ -40,7 +40,6 @@ def fetch_stats(event_id): return _feed(f"df_st_1_{event_id}")
 def fetch_summary(event_id): return _feed(f"df_sui_1_{event_id}")
 
 def parse_goal_timeline(body:str)->list[str]:
-    """Parse scoring events from Flashscore match-summary feed using cumulative score fields INX/IOX."""
     goals=[]; last=(0,0)
     for chunk in body.split("~III"):
         if not chunk: continue
@@ -49,8 +48,7 @@ def parse_goal_timeline(body:str)->list[str]:
         if not minute_m or (not h_m and not a_m): continue
         h=int(h_m.group(1)) if h_m else last[0]; a=int(a_m.group(1)) if a_m else last[1]
         if h>last[0] or a>last[1]:
-            side="хозяева" if h>last[0] else "гости"; goals.append(f"{minute_m.group(1)}' {side}")
-            last=(h,a)
+            side="хозяева" if h>last[0] else "гости"; goals.append(f"{minute_m.group(1)}' {side}"); last=(h,a)
     return goals
 
 def parse_stats(body):
@@ -87,21 +85,36 @@ def calculate_goal_pressure(match,values,previous=None):
 
 async def discover_live_matches():
     matches=[]
+    skipped={"bad_id":0,"empty":0,"no_minute":0,"no_names_or_score":0}
     async with async_playwright() as p:
-        browser=await p.chromium.launch(headless=True,args=["--no-sandbox","--disable-dev-shm-usage"]); context=await browser.new_context(user_agent=UA,locale="en-GB",timezone_id="UTC",viewport={"width":1440,"height":1200}); page=await context.new_page(); await page.goto(FLASH_URL,wait_until="domcontentloaded",timeout=35000); await page.wait_for_timeout(4500)
+        browser=await p.chromium.launch(headless=True,args=["--no-sandbox","--disable-dev-shm-usage"])
+        context=await browser.new_context(user_agent=UA,locale="en-GB",timezone_id="UTC",viewport={"width":1440,"height":1200})
+        page=await context.new_page(); await page.goto(FLASH_URL,wait_until="domcontentloaded",timeout=35000); await page.wait_for_timeout(4500)
         for selector in ["text=LIVE","[data-testid='wcl-tab']:has-text('LIVE')","button:has-text('LIVE')"]:
             try:
                 loc=page.locator(selector)
                 if await loc.count(): await loc.first.click(timeout=3000); await page.wait_for_timeout(1800); break
             except Exception: pass
-        rows=page.locator("div[id*='g_1_']")
-        for i in range(await rows.count()):
+
+        # Flashscore lazy-renders the fixture list. Scroll until row count stops growing.
+        last_count=-1; stable=0
+        for _ in range(14):
+            rows_now=page.locator("div[id*='g_1_']"); count=await rows_now.count()
+            if count==last_count: stable+=1
+            else: stable=0; last_count=count
+            if stable>=3: break
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(700)
+        await page.evaluate("window.scrollTo(0, 0)"); await page.wait_for_timeout(300)
+
+        rows=page.locator("div[id*='g_1_']"); dom_count=await rows.count(); logger.info("Flashscore LIVE DOM-строк после прокрутки: %d",dom_count)
+        for i in range(dom_count):
             row=rows.nth(i); rid=await row.get_attribute("id") or ""; event_id=rid.split("g_1_",1)[-1].split("_",1)[0]
-            if len(event_id)!=8 or not event_id.isalnum(): continue
+            if len(event_id)!=8 or not event_id.isalnum(): skipped["bad_id"]+=1; continue
             lines=[x.strip() for x in (await row.inner_text()).splitlines() if x.strip()]
-            if not lines: continue
-            text=" | ".join(lines); first=lines[0]; is_halftime=bool(re.search(r"Half Time|HT|Перерыв",first,re.I)); mm=re.match(r"^(\d{1,2})(?:\+(\d+))?(?:'|\b)",first); minute=int(mm.group(1)) if mm else 45 if is_halftime else 0
-            if not minute: continue
+            if not lines: skipped["empty"]+=1; continue
+            text=" | ".join(lines); first=lines[0]; is_halftime=bool(re.search(r"Half Time|HT|Перерыв",first,re.I)); mm=re.match(r"^(\d{1,3})(?:\+(\d+))?(?:'|\b)",first); minute=int(mm.group(1)) if mm else 45 if is_halftime else 0
+            if not minute: skipped["no_minute"]+=1; continue
             names=[]
             for selector in [".event__participant--home",".event__participant--away","[class*='participant--home']","[class*='participant--away']"]:
                 loc=row.locator(selector)
@@ -117,6 +130,8 @@ async def discover_live_matches():
             except Exception: pass
             if league.lower().strip() in INVALID_LEAGUES: league=""
             if len(names)>=2 and len(scores)>=2: matches.append(LiveMatch(event_id,minute,names[0],names[1],scores[-2],scores[-1],text[:180],league,is_halftime))
+            else: skipped["no_names_or_score"]+=1
+        logger.info("LIVE discovery: DOM=%d, распознано=%d, пропущено=%s",dom_count,len(matches),skipped)
         await browser.close()
     return matches
 
