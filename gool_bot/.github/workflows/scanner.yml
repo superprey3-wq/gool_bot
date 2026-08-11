@@ -1,4 +1,4 @@
-name: GOOL BOT Scanner
+name: GOOL BOT Prematch Scanner
 
 on:
   schedule:
@@ -7,34 +7,37 @@ on:
 
 jobs:
   scanner:
-
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
-
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
+          cache: "pip"
+          cache-dependency-path: gool_bot/requirements.txt
 
       - name: Install dependencies
         working-directory: gool_bot
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+          playwright install --with-deps chromium
 
-
-      - name: Run GOOL BOT
+      - name: Run prematch totals scanner
         working-directory: gool_bot
         env:
-          INFERSPORTS_API_KEY: ${{ secrets.INFERSPORTS_API_KEY }}
-          HIGHLIGHTLY_API_KEY: ${{ secrets.HIGHLIGHTLY_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
+          MIN_MINUTES_TO_KICKOFF: "2"
+          MAX_MINUTES_TO_KICKOFF: "9"
+          MIN_BOOKMAKERS: "3"
+          MIN_CONSENSUS: "0.65"
+          MIN_MEDIAN_DROP: "8.0"
+          MAX_SIGNALS_PER_MATCH: "4"
         run: |
-          python main.py
+          python prematch_scanner.py
