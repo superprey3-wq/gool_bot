@@ -23,12 +23,13 @@ jobs:
           cache: "pip"
           cache-dependency-path: gool_bot/requirements.txt
 
-      - name: Restore LIVE state
+      - name: Restore bot state
         uses: actions/cache@v4
         with:
           path: |
             gool_bot/live_state.json
             gool_bot/live_sent.json
+            gool_bot/signal_journal.json
           key: live-state-${{ github.run_id }}
           restore-keys: |
             live-state-
