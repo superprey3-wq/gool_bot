@@ -62,4 +62,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LIVE_SIGNAL_THRESHOLD: "75"
           LIVE_COOLDOWN_MINUTES: "12"
-        run: python -c "import asyncio; from unified_bot import scan_live_once; asyncio.run(scan_live_once())"
+        run: python feed_unified_bot.py
