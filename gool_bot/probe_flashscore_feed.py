@@ -8,44 +8,38 @@ from playwright.async_api import async_playwright
 URL = "https://www.flashscore.com/football/"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36"
 
-PATTERNS = {
-    "AA_div": r"~AA÷([A-Za-z0-9]{8})",
-    "AA_not": r"~AA¬([A-Za-z0-9]{8})",
-    "AA_any": r"~AA[÷¬]([A-Za-z0-9]{8})",
-    "event_id": r"(?:~|^)AA[÷¬]([A-Za-z0-9]{8})",
-}
 
-
-def event_counts(body: str) -> dict[str, int]:
-    return {name: len(set(re.findall(pattern, body))) for name, pattern in PATTERNS.items()}
+def parse_events(body: str):
+    events = []
+    for raw in body.split("~AA÷")[1:]:
+        event_id, sep, rest = raw.partition("¬")
+        if not sep or len(event_id) != 8:
+            continue
+        fields = {}
+        for token in rest.split("¬"):
+            if "÷" in token:
+                k, v = token.split("÷", 1)
+                if k and k not in fields:
+                    fields[k] = v
+        events.append((event_id, fields))
+    return events
 
 
 async def probe(locale: str):
-    feed_rows = []
-    master_sample = None
+    master = None
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = await browser.new_context(
-            user_agent=UA,
-            locale=locale,
-            timezone_id="UTC",
-            viewport={"width": 1440, "height": 1200},
-        )
+        context = await browser.new_context(user_agent=UA, locale=locale, timezone_id="UTC", viewport={"width":1440,"height":1200})
         page = await context.new_page()
 
         async def on_response(response):
-            nonlocal master_sample
-            url = response.url
-            if "/x/feed/" not in url:
+            nonlocal master
+            if "f_1_0_0_en_1" not in response.url:
                 return
             try:
-                body = await response.text()
+                master = await response.text()
             except Exception:
-                return
-            counts = event_counts(body)
-            feed_rows.append((url, response.status, len(body), counts))
-            if "f_1_0_0_en_1" in url and master_sample is None:
-                master_sample = body
+                pass
 
         page.on("response", on_response)
         await page.goto(URL, wait_until="domcontentloaded", timeout=35000)
@@ -53,33 +47,25 @@ async def probe(locale: str):
         for _ in range(14):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await page.wait_for_timeout(450)
-        await page.wait_for_timeout(1200)
+        await page.wait_for_timeout(1000)
 
         all_rows = page.locator("div[id*='g_1_']")
         live_rows = page.locator("div[id*='g_1_'].event__match--live")
         print(f"LOCALE {locale}: DOM all={await all_rows.count()} live={await live_rows.count()}")
 
-        seen = set()
-        for url, status, size, counts in sorted(feed_rows, key=lambda x: (-max(x[3].values(), default=0), -x[2])):
-            key = (url, status, size, tuple(sorted(counts.items())))
-            if key in seen:
-                continue
-            seen.add(key)
-            print(f"FEED {locale}: counts={counts} bytes={size} status={status} url={url}")
-
-        families = Counter()
-        for url, _status, _size, counts in feed_rows:
-            path = url.split('/x/feed/', 1)[-1].split('?', 1)[0]
-            family = path.split('_', 1)[0]
-            families[(family, max(counts.values(), default=0))] += 1
-        print(f"FAMILIES {locale}: {families.most_common(20)}")
-
-        if master_sample is not None:
-            sample = master_sample[:3000]
-            print(f"MASTER_PREFIX {locale}: {sample!r}")
-            for token in ("AA÷", "AA¬", "AC÷", "AC¬", "AE÷", "AF÷", "AG÷", "AH÷", "AD÷"):
-                print(f"TOKEN {locale} {token}: {master_sample.count(token)}")
-
+        if master:
+            events = parse_events(master)
+            ac = Counter(fields.get("AC", "") for _, fields in events)
+            ab = Counter(fields.get("AB", "") for _, fields in events)
+            print(f"MASTER {locale}: events={len(events)} AC={dict(ac)} AB={dict(ab)} bytes={len(master)}")
+            for status in sorted(ac):
+                sample=[]
+                for eid, f in events:
+                    if f.get("AC", "") != status:
+                        continue
+                    sample.append(f"{eid}:{f.get('AE','?')}—{f.get('AF','?')} score={f.get('AG','?')}:{f.get('AH','?')} AD={f.get('AD','?')} AB={f.get('AB','?')}")
+                    if len(sample)>=8: break
+                print(f"AC={status!r} SAMPLE: {' || '.join(sample)}")
         await browser.close()
 
 
