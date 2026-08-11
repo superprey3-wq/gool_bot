@@ -1,4 +1,4 @@
-name: GOOL BOT Prematch Scanner
+name: GOOL BOT Unified Scanner
 
 on:
   push:
@@ -23,6 +23,16 @@ jobs:
           cache: "pip"
           cache-dependency-path: gool_bot/requirements.txt
 
+      - name: Restore LIVE state
+        uses: actions/cache@v4
+        with:
+          path: |
+            gool_bot/live_state.json
+            gool_bot/live_sent.json
+          key: live-state-${{ github.run_id }}
+          restore-keys: |
+            live-state-
+
       - name: Install dependencies
         working-directory: gool_bot
         run: |
@@ -30,7 +40,7 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Run prematch totals scanner
+      - name: Run PREMATCH scanner
         working-directory: gool_bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -41,5 +51,13 @@ jobs:
           MIN_CONSENSUS: "0.65"
           MIN_MEDIAN_DROP: "8.0"
           MAX_SIGNALS_PER_MATCH: "4"
-        run: |
-          python prematch_scanner.py
+        run: python prematch_scanner.py
+
+      - name: Run LIVE scanner
+        working-directory: gool_bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LIVE_SIGNAL_THRESHOLD: "75"
+          LIVE_COOLDOWN_MINUTES: "12"
+        run: python -c "import asyncio; from unified_bot import scan_live_once; asyncio.run(scan_live_once())"
