@@ -4,12 +4,11 @@ from __future__ import annotations
 import asyncio
 import re
 import requests
-from datetime import UTC, datetime, timedelta
-
-from prematch_scanner import _discover_from_browser, HEADERS
+from playwright.async_api import async_playwright
 
 FSIGN = "SW9D1eZo"
 HOSTS = ["global", "2", "46"]
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36"
 STAT_MAP = {
     "432": "expected_goals",
     "499": "xg_on_target",
@@ -28,8 +27,14 @@ STAT_MAP = {
 
 
 def fetch_stats(mid: str):
-    headers = dict(HEADERS)
-    headers.update({"x-fsign": FSIGN, "Origin": "https://www.flashscore.com", "Referer": "https://www.flashscore.com/"})
+    headers = {
+        "User-Agent": UA,
+        "x-fsign": FSIGN,
+        "Origin": "https://www.flashscore.com",
+        "Referer": "https://www.flashscore.com/",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
     for host in HOSTS:
         url = f"https://{host}.flashscore.ninja/2/x/feed/df_st_1_{mid}"
         try:
@@ -42,52 +47,63 @@ def fetch_stats(mid: str):
     return ""
 
 
-def parse_stats(body: str):
-    # Flashscore feed format: stat groups/records use ~ and ¬ separators.
-    rows = []
-    for chunk in body.split("~"):
-        if "SD¬" not in chunk:
-            continue
-        fields = {}
-        toks = chunk.split("¬")
-        for i in range(len(toks) - 1):
-            key = toks[i][-2:] if len(toks[i]) >= 2 else toks[i]
-            if key in {"SD", "SE", "SF", "SG", "SH", "SI"}:
-                fields[key] = toks[i + 1]
-        sid = fields.get("SD")
-        if sid in STAT_MAP:
-            rows.append((STAT_MAP[sid], fields))
-    return rows
+def raw_stat_fragments(body: str):
+    for sid, name in STAT_MAP.items():
+        pos = body.find(f"SD¬{sid}")
+        if pos >= 0:
+            print(f"RAW_{name}: {body[max(0,pos-90):pos+210]}")
+
+
+async def discover_live_rows():
+    found = []
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = await browser.new_context(user_agent=UA, locale="en-GB", timezone_id="UTC", viewport={"width":1440,"height":1200})
+        page = await context.new_page()
+        await page.goto("https://www.flashscore.com/football/", wait_until="domcontentloaded", timeout=35000)
+        await page.wait_for_timeout(4500)
+        # Click LIVE filter when available so candidates are true live events.
+        clicked = False
+        for selector in ["text=LIVE", "[data-testid='wcl-tab']:has-text('LIVE')", "button:has-text('LIVE')"]:
+            try:
+                loc = page.locator(selector)
+                if await loc.count():
+                    await loc.first.click(timeout=3000)
+                    await page.wait_for_timeout(2500)
+                    clicked = True
+                    print(f"CLICKED_LIVE selector={selector}")
+                    break
+            except Exception:
+                pass
+        rows = page.locator("div[id*='g_1_']")
+        count = await rows.count()
+        print(f"ROWS_AFTER_LIVE_FILTER {count} clicked={clicked}")
+        for i in range(count):
+            row = rows.nth(i)
+            rid = await row.get_attribute("id") or ""
+            mid = rid.split("g_1_",1)[-1].split("_",1)[0]
+            if len(mid) != 8 or not mid.isalnum():
+                continue
+            text = " | ".join(x.strip() for x in (await row.inner_text()).splitlines() if x.strip())
+            # If LIVE click failed, only accept rows visibly showing minute/HT/2nd-half style statuses.
+            liveish = bool(re.search(r"(?:^|\|\s)(?:HT|LIVE|\d{1,2}'|\d{1,2}:\d{2})", text, re.I))
+            if clicked or liveish:
+                found.append((mid, text))
+                print(f"LIVE_ROW {mid} {text[:220]}")
+        await browser.close()
+    return found
 
 
 async def main():
-    matches = await _discover_from_browser()
-    now = datetime.now(UTC)
-    print(f"DISCOVERED {len(matches)} matches at {now.isoformat()}")
-    # Browser discovery currently parses today's kickoff clock in UTC. Treat fixtures
-    # started within last 120 minutes as live candidates; try several until stats exist.
-    candidates = []
-    for m in matches:
-        age = (now - m.kickoff).total_seconds() / 60
-        if 0 <= age <= 130:
-            candidates.append((age, m))
-    candidates.sort(key=lambda x: x[0])
-    print(f"LIVE_CANDIDATES {len(candidates)}")
-    for age, m in candidates[:20]:
-        print(f"TRY {m.event_id} {m.home} - {m.away} started~{age:.0f}m ago")
-        body = fetch_stats(m.event_id)
+    rows = await discover_live_rows()
+    print(f"TRUE_LIVE_CANDIDATES {len(rows)}")
+    for mid, text in rows[:40]:
+        print(f"TRY {mid} {text[:180]}")
+        body = fetch_stats(mid)
         if not body:
             continue
-        print(f"SUCCESS match={m.event_id} body_prefix={body[:220]!r}")
-        parsed = parse_stats(body)
-        print(f"PARSED_ROWS {len(parsed)}")
-        for name, fields in parsed[:40]:
-            print(name, fields)
-        # Also print short raw fragments for known stat IDs to verify parser mapping.
-        for sid, name in STAT_MAP.items():
-            pos = body.find(f"SD¬{sid}")
-            if pos >= 0:
-                print(f"RAW_{name}: {body[max(0,pos-80):pos+180]}")
+        print(f"SUCCESS match={mid} bytes={len(body)} prefix={body[:240]!r}")
+        raw_stat_fragments(body)
         return
     print("NO_LIVE_STATS_FOUND")
 
