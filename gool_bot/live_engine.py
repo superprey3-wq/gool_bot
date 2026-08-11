@@ -88,8 +88,6 @@ async def discover_live_matches():
         browser=await p.chromium.launch(headless=True,args=["--no-sandbox","--disable-dev-shm-usage"])
         context=await browser.new_context(user_agent=UA,locale="en-GB",timezone_id="UTC",viewport={"width":1440,"height":1200})
         page=await context.new_page(); await page.goto(FLASH_URL,wait_until="domcontentloaded",timeout=35000); await page.wait_for_timeout(4500)
-        # Flashscore exposes the authoritative live state in each match row class.
-        # Do not depend on clicking the LIVE tab: generic text=LIVE can hit page headings/news.
         for _ in range(12):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)"); await page.wait_for_timeout(500)
         await page.evaluate("window.scrollTo(0,0)"); await page.wait_for_timeout(250)
@@ -109,7 +107,6 @@ async def discover_live_matches():
             else:
                 mm3=re.search(r"(\d{1,3})",first); minute=int(mm3.group(1)) if mm3 else 0
             if minute<=0 or minute>130: skipped["no_minute"]+=1; continue
-            # Current Flashscore live row text is status/minute, home, away, home score, away score.
             tail=lines[offset:]
             if len(tail)<4: skipped["bad_row"]+=1; continue
             home,away=tail[0],tail[1]
@@ -124,7 +121,9 @@ async def discover_live_matches():
                 if await header.count(): league=" ".join((await header.first.inner_text()).split())[:120]
             except Exception: pass
             if league.lower().strip() in INVALID_LEAGUES: league=""
-            matches.append(LiveMatch(event_id,minute,home,away,home_score,away_score," | ".join(lines)[:180],league,is_halftime))
+            match=LiveMatch(event_id,minute,home,away,home_score,away_score," | ".join(lines)[:180],league,is_halftime)
+            matches.append(match)
+            logger.info("LIVE_MATCH %02d | %d' | %s — %s | %d:%d | %s",len(matches),minute,home,away,home_score,away_score,league or "без турнира")
         logger.info("LIVE discovery: class_live=%d, распознано=%d, пропущено=%s",await live_rows.count(),len(matches),skipped)
         await browser.close()
     return matches
