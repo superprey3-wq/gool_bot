@@ -132,3 +132,5 @@ def get_previous_values(event_id,current_minute,lookback_minutes=8):
     state=load_state().get(event_id,[]); target=current_minute-lookback_minutes; candidates=[r for r in state if int(r.get("minute",999))<=target]
     if not candidates:return None
     return {k:tuple(v) for k,v in candidates[-1].get("values",{}).items()}
+
+# Diagnostic trigger: 2026-08-11 fresh coverage check.
