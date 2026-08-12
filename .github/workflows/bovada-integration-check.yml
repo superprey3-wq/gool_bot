@@ -19,7 +19,7 @@ jobs:
           git fetch origin main
           git checkout origin/main -- gool_bot/bovada_live_odds.py gool_bot/live_candidate_patch.py gool_bot/period_market_patch.py gool_bot/signal_card.py gool_bot/unified_bot.py gool_bot/main.py
       - name: Install runtime deps
-        run: pip install requests pillow
+        run: pip install requests pillow playwright
       - name: Compile integration
         run: |
           python -m py_compile gool_bot/bovada_live_odds.py gool_bot/live_candidate_patch.py gool_bot/period_market_patch.py gool_bot/signal_card.py gool_bot/unified_bot.py gool_bot/main.py
