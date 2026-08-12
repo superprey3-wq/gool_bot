@@ -29,9 +29,10 @@ logger = logging.getLogger("gool_live_24x7")
 
 import visual_feed_unified_bot  # noqa: E402
 import live_candidate_patch  # noqa: E402,F401 - installs multi-logic LIVE gate
+import halftime_hazard_patch  # noqa: E402,F401 - correct HT remaining-time probability
 import period_market_patch  # noqa: E402,F401 - FT best bet + first-half price support
 import phase_market_patch  # noqa: E402,F401 - 1H +1/+2 goals, then remainder-of-match markets
-import score_sync_patch  # noqa: E402,F401 - correct stale live-card scores from summary before evaluation
+import score_sync_patch  # noqa: E402,F401 - reconcile stale list score with event summary
 import prematch_standard_scanner  # noqa: E402
 from telegram_subscribers import get_subscribers, polling_loop  # noqa: E402
 
