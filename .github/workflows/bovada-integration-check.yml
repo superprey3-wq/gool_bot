@@ -1,0 +1,43 @@
+name: Bovada integration check
+on:
+  push:
+    branches:
+      - test/oddsharvester-live
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Sync current main integration files
+        run: |
+          git fetch origin main
+          git checkout origin/main -- gool_bot/bovada_live_odds.py gool_bot/live_candidate_patch.py gool_bot/signal_card.py gool_bot/unified_bot.py
+      - name: Install runtime deps
+        run: pip install requests pillow
+      - name: Compile integration
+        run: |
+          python -m py_compile gool_bot/bovada_live_odds.py gool_bot/live_candidate_patch.py gool_bot/signal_card.py gool_bot/unified_bot.py
+      - name: Verify real Bovada live feed
+        run: |
+          cd gool_bot
+          python - <<'PY'
+          import bovada_live_odds as b
+          events=b._live_events()
+          print('LIVE EVENTS',len(events))
+          assert events, 'Bovada returned no live soccer events'
+          found=0
+          for event in events:
+              prices=b._full_time_over_prices(event)
+              if prices:
+                  print('EVENT',event.get('description'))
+                  print('FT OVER LINES',sorted(prices.items())[:12])
+                  found+=1
+                  if found>=3: break
+          assert found, 'No live FT total markets parsed'
+          PY
