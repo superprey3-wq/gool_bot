@@ -23,15 +23,6 @@ jobs:
           cache: "pip"
           cache-dependency-path: gool_bot/requirements.txt
 
-      - name: Restore PREMATCH state
-        uses: actions/cache@v4
-        with:
-          path: |
-            gool_bot/signal_journal.json
-          key: prematch-state-${{ github.run_id }}
-          restore-keys: |
-            prematch-state-
-
       - name: Install dependencies
         working-directory: gool_bot
         run: |
@@ -45,9 +36,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MIN_MINUTES_TO_KICKOFF: "2"
-          MAX_MINUTES_TO_KICKOFF: "9"
-          MIN_BOOKMAKERS: "3"
-          MIN_CONSENSUS: "0.65"
-          MIN_MEDIAN_DROP: "8.0"
+          MAX_MINUTES_TO_KICKOFF: "15"
+          MIN_BOOKMAKERS: "2"
+          MIN_CONSENSUS: "0.60"
+          MIN_MEDIAN_DROP: "5.0"
           MAX_SIGNALS_PER_MATCH: "4"
         run: python prematch_standard_scanner.py
