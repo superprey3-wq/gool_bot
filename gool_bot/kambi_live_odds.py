@@ -12,7 +12,12 @@ import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
-from curl_cffi import requests
+try:
+    from curl_cffi import requests as http_requests
+    _HAS_CURL_CFFI = True
+except ImportError:
+    import requests as http_requests
+    _HAS_CURL_CFFI = False
 
 logger = logging.getLogger("kambi_live_odds")
 OPERATOR = "rsiusnj"
@@ -26,6 +31,13 @@ EVENT_URL = (
 )
 _CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
 _CACHE_SECONDS = 20
+
+
+def _get(url: str, timeout: int = 15):
+    kwargs = {"timeout": timeout, "headers": {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}}
+    if _HAS_CURL_CFFI:
+        kwargs["impersonate"] = "chrome120"
+    return http_requests.get(url, **kwargs)
 
 
 def _norm(value: str) -> str:
@@ -58,7 +70,7 @@ def _live_events() -> list[dict[str, Any]]:
     if now - _CACHE[0] < _CACHE_SECONDS and _CACHE[1]:
         return _CACHE[1]
     try:
-        r = requests.get(LIST_URL, impersonate="chrome120", timeout=15)
+        r = _get(LIST_URL, timeout=15)
         r.raise_for_status()
         wrappers = r.json().get("events") or []
     except Exception as exc:
@@ -102,7 +114,7 @@ def get_live_goal_totals(home: str, away: str) -> list[dict[str, Any]]:
         return []
     event_id = event.get("id")
     try:
-        r = requests.get(EVENT_URL.format(event_id=event_id), impersonate="chrome120", timeout=15)
+        r = _get(EVENT_URL.format(event_id=event_id), timeout=15)
         r.raise_for_status()
         data = r.json()
     except Exception as exc:
@@ -116,7 +128,6 @@ def get_live_goal_totals(home: str, away: str) -> list[dict[str, Any]]:
         key = f"{type_name} {criterion}".lower()
         if not any(x in key for x in ("over/under", "over_under", "total goals", "asian total")):
             continue
-        # Exclude team totals/corners/cards/shots. We only want match goal totals.
         if any(x in key for x in ("corners", "cards", "shots", " by ")):
             continue
         scope = _scope_from_offer(criterion, type_name)
