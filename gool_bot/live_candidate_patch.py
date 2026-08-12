@@ -5,6 +5,7 @@ import unified_bot
 from live_engine import StatsSnapshot, calculate_goal_pressure, fetch_stats, fetch_summary, get_previous_values, parse_goal_timeline, parse_stats, save_snapshot
 from match_history import analyse_history, fetch_match_history
 logger=logging.getLogger("live_candidate_patch"); _HISTORY_CACHE={}; _HISTORY_CACHE_SECONDS=900
+MAX_NEW_SIGNAL_MINUTE=75
 
 def _pair(s,k): a,b=s.get(k,(0.,0.)); return float(a),float(b)
 def _total(s,k): return sum(_pair(s,k))
@@ -52,7 +53,6 @@ def _market(entries,m,p):
     """Use the same real LIVE LSApp prices as recommendations and derive a fair market baseline."""
     recs=unified_bot._recommendations(entries,m,p)
     if not recs:return recs,{"available":False}
-    # Prefer the nearest attainable total with the strongest bookmaker coverage.
     rows=sorted(recs,key=lambda r:(-int(r.get("bookmakers",0)),abs(float(r.get("odd",9))-1.90)))
     r=rows[0]; odd=float(r["odd"]); raw=100/odd
     return recs,{"available":True,"scope":r["scope"],"line":r["line"],"odd":odd,"bookmakers":r.get("bookmakers",0),"market_probability":round(raw,1)}
@@ -63,19 +63,38 @@ def _evaluate(m,s,p,goals,market):
     ranked=sorted([(k,v) for k,v in sc.items() if v>0],key=lambda x:x[1],reverse=True); core=[x for x in ranked if x[0] not in ("HOME_PRESSURE","AWAY_PRESSURE")];top=core[:4]; master=_clamp(sum(v*w for (k,v),w in zip(top,(.40,.28,.20,.12))) if top else 0)
     hz=_hazards(m,master); model_period=hz[3]; edge=None; market_score=0.
     if market.get("available"):
-        mp=float(market["market_probability"]); edge=round(model_period-mp,1)
-        # Confirmation rewards agreement; positive value edge helps but never creates a signal alone.
-        market_score=_clamp(50+edge*2)
-        sc["MARKET_VALUE"]=market_score
+        mp=float(market["market_probability"]); edge=round(model_period-mp,1); market_score=_clamp(50+edge*2); sc["MARKET_VALUE"]=market_score
     strong=[(k,v) for k,v in core if v>=72]; corroborated=[v for k,v in core if v>=64]
     qualifies=bool(strong) or len(corroborated)>=3
-    # If market exists and strongly contradicts us, require at least two genuinely strong football routes.
     if edge is not None and edge<=-18 and len(strong)<2:qualifies=False
-    # Positive edge is confirmation, not a substitute for match evidence.
     if edge is not None and edge>=8 and len(corroborated)>=2:qualifies=True
     route="+".join(k for k,v in strong[:3]) if strong else ("MULTI_CONFIRM" if qualifies else "REJECT")
     market.update({"model_period_probability":model_period,"edge_pp":edge,"market_value_score":market_score})
     return qualifies,route,master,sc,hz,market
+
+def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
+    def pair(k):
+        a,b=s.get(k,(0,0)); return f"{a:g} — {b:g}"
+    status="Перерыв" if m.is_halftime else f"{m.minute}'"
+    if reason=="goal": title="⚽ <b>ГОЛ — МАТЧ ПЕРЕСЧИТАН</b>"
+    elif reason=="followup": title="🔄 <b>ОБНОВЛЕНИЕ ПО МАТЧУ</b>"
+    elif m.is_halftime: title="🔵 <b>ПРОГНОЗ НА 2-Й ТАЙМ</b>"
+    else: title="🔴 <b>LIVE-СИГНАЛ НА ГОЛ</b>"
+    league=f"🏆 {m.league}\n" if m.league else "🏆 Турнир: данные уточняются\n"
+    goals_line=f"⚽ Голы: <b>{', '.join(goals)}</b>\n" if goals else "⚽ Голы: пока нет\n"
+    model_goal=max(1,min(92,round(hz[3])))
+    pick=f"🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n✅ Ещё <b>1 гол</b> до конца текущего периода\n📈 Оценка модели: <b>{model_goal}%</b>"
+    if market.get("available"):
+        pick+=f"\n💰 Рынок: ТБ {market['line']:g} @ <b>{market['odd']:.2f}</b> · implied {market['market_probability']:.1f}% · edge {market['edge_pp']:+.1f} п.п."
+    else:
+        pick+="\nℹ️ Подтверждённого LIVE-коэффициента сейчас нет — прогноз модели всё равно публикуется."
+    strategy=f"✅ Стратегии подтверждают вход: <b>{route}</b> · рейтинг <b>{master:.0f}/100</b>"
+    late=""
+    if m.minute>=70: late="\n⚠️ <b>Поздняя стадия:</b> первоначальные сигналы после 75' бот не открывает.\n"
+    bets=unified_bot._format_bets(recs) if recs else "Подтверждённых LIVE-котировок на тоталы сейчас нет."
+    horizon=f"• Гол: 5м {hz[0]:.0f}% · 10м {hz[1]:.0f}% · 15м {hz[2]:.0f}% · до конца периода {hz[3]:.0f}%"
+    odds_note="\n<i>Коэффициенты — текущие LIVE-котировки LSApp. Процент — оценка модели, а не гарантированная вероятность.</i>" if recs else "\n<i>Процент — оценка модели, а не гарантированная вероятность.</i>"
+    return f"{title}\n\n⚽ <b>{m.home} — {m.away}</b>\n{league}⏱ {status} | Счёт <b>{m.home_score}:{m.away_score}</b>\n{goals_line}{late}\n📊 <b>Статистика</b>\nxG: <b>{pair('xg')}</b>\nУдары: {pair('shots')}\nУдары в створ: {pair('shots_on_target')}\nБольшие моменты: {pair('big_chances')}\nУдары из штрафной: {pair('shots_inside_box')}\nКасания в штрафной: {pair('touches_box')}\nУгловые: {pair('corners')}\n\n⚡ Динамика: <b>{p.momentum:.0f}/100</b>\n🔥 Давление на гол: <b>{p.score:.0f}/100</b>\n{strategy}\n\n🎯 {pick}\n\n📉 <b>Рыночные варианты</b>\n{bets}\n\n{horizon}{odds_note}"
 
 async def scan_live_once_multi():
     live=await unified_bot.discover_live_matches();logger.info("Найдено LIVE-матчей: %d | FULL STRATEGY + REAL MARKET PIPELINE",len(live));state=unified_bot._load_sent();sent=0;ids={m.event_id for m in live}
@@ -87,17 +106,20 @@ async def scan_live_once_multi():
         goals=parse_goal_timeline(fetch_summary(m.event_id));entries=unified_bot._fetch_event_odds(m.event_id);recs,market=_market(entries,m,p);qualifies,route,master,sc,hz,market=_evaluate(m,s,p,goals,market)
         ranked=sorted(sc.items(),key=lambda x:x[1],reverse=True);score_text=" ".join(f"{k}={v:.0f}" for k,v in ranked[:8]);mk=(f"{market['scope']} O{market['line']:g}@{market['odd']:.2f} market={market['market_probability']:.1f}% model={market['model_period_probability']:.1f}% edge={market['edge_pp']:+.1f}pp" if market.get("available") else "market=N/A")
         logger.info("LIVE_EVAL %d' %s — %s %d:%d | stats=%s | %s | MASTER=%.0f | P5=%.1f P10=%.1f P15=%.1f Pend=%.1f | %s | %s %s",m.minute,m.home,m.away,m.home_score,m.away_score,status,score_text,master,*hz,mk,"✅" if qualifies else "❌",route)
-        now=time.time();key=f"TRACK:{m.event_id}";tracked=state.get(key);current=f"{m.home_score}:{m.away_score}";p.reasons.insert(0,f"Стратегии: {route} | рейтинг {master:.0f}/100");p.reasons.insert(1,f"Гол: 5м {hz[0]:.0f}% · 10м {hz[1]:.0f}% · 15м {hz[2]:.0f}% · до конца периода {hz[3]:.0f}%")
-        if market.get("available"):p.reasons.insert(2,f"Рынок: ТБ {market['line']:g} @ {market['odd']:.2f} · implied {market['market_probability']:.1f}% · model {market['model_period_probability']:.1f}% · edge {market['edge_pp']:+.1f} п.п.")
+        now=time.time();key=f"TRACK:{m.event_id}";tracked=state.get(key);current=f"{m.home_score}:{m.away_score}"
         if not tracked:
             if not qualifies:continue
-            if unified_bot.telegram_send(unified_bot._format_signal(m,p,s,recs,goals,"signal")):
+            if not m.is_halftime and m.minute>MAX_NEW_SIGNAL_MINUTE:
+                logger.info("LATE_ENTRY_BLOCKED %d' %s — %s | qualified MASTER=%.0f route=%s but new entries stop after %d'",m.minute,m.home,m.away,master,route,MAX_NEW_SIGNAL_MINUTE)
+                continue
+            text=_format_strategy_signal(m,p,s,recs,goals,"signal",route,master,hz,market)
+            if unified_bot.telegram_send(text):
                 unified_bot._record_live(m,p,s,recs,"signal");state[key]={"tracked_since":now,"ts":now,"score":current,"minute":m.minute,"pressure":p.score,"candidate_score":master,"route":route,"strategies":sc,"hazards":hz,"market":market,"halftime_sent":m.is_halftime};sent+=1
             continue
         changed=str(tracked.get("score",current))!=current;ht=m.is_halftime and not bool(tracked.get("halftime_sent"));last=float(tracked.get("ts",0));lastm=float(tracked.get("candidate_score",0));jump=qualifies and master>=lastm+10;follow=qualifies and now-last>=unified_bot.LIVE_COOLDOWN_MINUTES*60
         if changed or ht or jump or follow:
-            reason="goal" if changed else "followup"
-            if unified_bot.telegram_send(unified_bot._format_signal(m,p,s,recs,goals,reason)):
+            reason="goal" if changed else "followup";text=_format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market)
+            if unified_bot.telegram_send(text):
                 unified_bot._record_live(m,p,s,recs,reason);tracked.update({"ts":now,"score":current,"minute":m.minute,"pressure":p.score,"candidate_score":master,"route":route,"strategies":sc,"hazards":hz,"market":market,"halftime_sent":bool(tracked.get("halftime_sent")) or m.is_halftime});state[key]=tracked;sent+=1
         else:tracked.update({"score":current,"minute":m.minute,"candidate_score":master,"route":route,"strategies":sc,"hazards":hz,"market":market});state[key]=tracked
     unified_bot._save_sent(state);logger.info("Отправлено LIVE-сигналов/обновлений: %d; сопровождается матчей: %d",sent,sum(1 for k in state if k.startswith("TRACK:")));return sent
