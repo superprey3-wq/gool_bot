@@ -88,10 +88,17 @@ def get_goal_total_odds(home:str,away:str,home_score:int,away_score:int)->list[d
         if r:r["goal_step"]=idx; rows.append(r)
     return rows
 
-def get_first_half_goal_odds(home:str,away:str,home_score:int,away_score:int)->dict[str,Any]|None:
-    """Return the exact live price for at least one more goal before half-time."""
+def get_first_half_total_odds(home:str,away:str,home_score:int,away_score:int)->list[dict[str,Any]]:
+    """Return exact +1 and +2 goal total lines for the remainder of the first half."""
     event=_find_event(home,away)
-    if not event:return None
-    goals=int(home_score or 0)+int(away_score or 0); target=goals+.5; vals=_over_prices(event,"FIRST_HALF").get(float(target),[])
-    if not vals:return None
-    return {"scope":"FIRST_HALF","line":float(target),"odd":float(min(vals)),"bookmakers":1,"source":"Bovada","goal_step":1,"event_id":event.get("id"),"event_name":event.get("description")}
+    if not event:return []
+    goals=int(home_score or 0)+int(away_score or 0); targets=(goals+.5,goals+1.5); available=_over_prices(event,"FIRST_HALF"); rows=[]
+    for idx,target in enumerate(targets,1):
+        vals=available.get(float(target),[])
+        if vals:
+            rows.append({"scope":"FIRST_HALF","line":float(target),"odd":float(min(vals)),"bookmakers":1,"source":"Bovada","goal_step":idx,"event_id":event.get("id"),"event_name":event.get("description")})
+    return rows
+
+def get_first_half_goal_odds(home:str,away:str,home_score:int,away_score:int)->dict[str,Any]|None:
+    rows=get_first_half_total_odds(home,away,home_score,away_score)
+    return rows[0] if rows else None
