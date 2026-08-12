@@ -1,0 +1,44 @@
+name: Diagnose Arsenal Como live odds
+on:
+  workflow_dispatch:
+  push:
+    branches: ["test/prematch-prediction-models"]
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Probe Bovada live soccer
+        run: |
+          python - <<'PY'
+          import requests,re
+          u='https://www.bovada.lv/services/sports/event/v2/events/A/description/soccer?lang=en&liveOnly=true'
+          data=requests.get(u,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'},timeout=20).json()
+          events=[]
+          def walk(x):
+            if isinstance(x,dict):
+              if isinstance(x.get('displayGroups'),list) and x.get('description'): events.append(x)
+              for v in x.values(): walk(v)
+            elif isinstance(x,list):
+              for v in x: walk(v)
+          walk(data)
+          print('events',len(events))
+          for e in events:
+            d=str(e.get('description',''))
+            if 'arsenal' in d.lower() or 'como' in d.lower():
+              print('MATCH',d,'id',e.get('id'))
+              for g in e.get('displayGroups') or []:
+                for m in g.get('markets') or []:
+                  md=str(m.get('description',''))
+                  if 'total' not in md.lower(): continue
+                  outs=[]
+                  for o in m.get('outcomes') or []:
+                    if str(o.get('description','')).lower().startswith('over'):
+                      p=o.get('price') or {}
+                      outs.append((o.get('description'),p.get('handicap'),p.get('decimal')))
+                  if outs: print('TOTAL',g.get('description'),md,outs)
+          PY
