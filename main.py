@@ -1,7 +1,8 @@
-"""24/7 LIVE-only runner for lightweight bot-hosting platforms.
+"""24/7 LIVE runner with Telegram command polling for multi-user subscriptions.
 
 PREMATCH remains on GitHub Actions, where Chromium is available.
-This process only runs the LIVE scanner continuously to keep resource usage low.
+This process runs the LIVE scanner continuously and also handles /start, /stop
+and /status commands so multiple Telegram users can receive signals.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ logger = logging.getLogger("gool_live_24x7")
 
 import visual_feed_unified_bot  # noqa: E402
 import live_candidate_patch  # noqa: E402,F401 - installs multi-logic LIVE gate
+from telegram_subscribers import polling_loop  # noqa: E402
 
 
 async def run_live() -> None:
@@ -43,13 +45,22 @@ async def main() -> None:
     else:
         logger.error("Telegram configuration: INVALID — %s", tg_reason)
 
-    logger.info("GOOL BOT LIVE 24/7 started | every %ss | logic=FULL_MULTI_STRATEGY+REAL_MARKET", LIVE_INTERVAL_SECONDS)
+    poller = asyncio.create_task(polling_loop(), name="telegram-command-poller")
+    logger.info("Telegram /start /stop /status polling enabled")
+    logger.info(
+        "GOOL BOT LIVE 24/7 started | every %ss | logic=FULL_MULTI_STRATEGY+REAL_MARKET",
+        LIVE_INTERVAL_SECONDS,
+    )
 
-    while True:
-        started = time.monotonic()
-        await run_live()
-        elapsed = time.monotonic() - started
-        await asyncio.sleep(max(2.0, LIVE_INTERVAL_SECONDS - elapsed))
+    try:
+        while True:
+            started = time.monotonic()
+            await run_live()
+            elapsed = time.monotonic() - started
+            await asyncio.sleep(max(2.0, LIVE_INTERVAL_SECONDS - elapsed))
+    finally:
+        poller.cancel()
+        await asyncio.gather(poller, return_exceptions=True)
 
 
 if __name__ == "__main__":
