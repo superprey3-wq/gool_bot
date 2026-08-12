@@ -1,0 +1,26 @@
+name: Test main live stack
+on:
+  push:
+    branches: ["test/main-live-stack"]
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r gool_bot/requirements.txt
+      - name: Import patches and fetch Kambi sample
+        env:
+          PYTHONPATH: gool_bot
+        run: |
+          python - <<'PY'
+          import phase_market_patch, score_sync_patch, market_math_patch
+          from kambi_live_odds import get_live_goal_totals
+          print('IMPORT_OK')
+          rows=get_live_goal_totals('PSG','Aston Villa')
+          print('KAMBI_ROWS', len(rows))
+          print(rows[:8])
+          PY
