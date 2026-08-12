@@ -25,12 +25,6 @@ def _today_rows():
 
 
 def _live_signal_rows(rows):
-    """Only real signal cycles count in statistics.
-
-    followup = informational update of an existing signal and must not inflate the
-    number of bets/signals. A goal row is a fresh signal cycle only when the bot
-    continued tracking after that goal (<= 80').
-    """
     result = []
     for row in rows:
         if row.get("kind") != "live":
@@ -43,8 +37,6 @@ def _live_signal_rows(rows):
                 minute = int(row.get("minute") or 0)
             except Exception:
                 minute = 0
-            # A late goal closes tracking; it is the success of the preceding
-            # signal, not a new entry after 80'.
             if minute > 80:
                 continue
         result.append(row)
@@ -56,15 +48,32 @@ def build_report_text() -> str:
     live_rows = _live_signal_rows(rows)
     pre_rows = [r for r in rows if r.get("kind") == "prematch"]
 
+    summary_cache: dict[str, str | None] = {}
+
+    def get_summary(event_id: str):
+        event_id = str(event_id or "")
+        if not event_id:
+            return None
+        if event_id not in summary_cache:
+            try:
+                summary_cache[event_id] = fetch_summary(event_id)
+            except Exception:
+                summary_cache[event_id] = None
+        return summary_cache[event_id]
+
     live_ok = 0
     live_wait = 0
     live_details = []
     for row in live_rows:
-        body = fetch_summary(str(row.get("event_id", "")))
+        body = get_summary(str(row.get("event_id", "")))
         if not body:
             live_wait += 1
             continue
-        fh, fa, _, _ = _score_from_summary(body)
+        try:
+            fh, fa, _, _ = _score_from_summary(body)
+        except Exception:
+            live_wait += 1
+            continue
         try:
             sh, sa = map(int, str(row.get("score_at_signal", "0:0")).split(":"))
         except Exception:
@@ -84,13 +93,13 @@ def build_report_text() -> str:
     pre_ok = pre_bad = pre_wait = 0
     pre_details = []
     for row in pre_rows:
-        body = fetch_summary(str(row.get("event_id", "")))
+        body = get_summary(str(row.get("event_id", "")))
         if not body:
             pre_wait += 1
             continue
-        fh, fa, hh, ha = _score_from_summary(body)
-        goals = _market_goals(str(row.get("scope", "Матч")), fh, fa, hh, ha)
         try:
+            fh, fa, hh, ha = _score_from_summary(body)
+            goals = _market_goals(str(row.get("scope", "Матч")), fh, fa, hh, ha)
             res = _settle_total(str(row.get("side", "ТБ")), float(row.get("line", 0)), goals)
         except Exception:
             pre_wait += 1
