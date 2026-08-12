@@ -9,6 +9,15 @@ from bovada_live_odds import get_first_half_total_odds
 logger=logging.getLogger("phase_market_patch")
 _orig_market=lc._market
 
+# A price can be real/visible even when it is too short to recommend as a bet.
+# Keep lc._sane_price() for recommendation/value selection, but do not hide a
+# genuine 1.01-1.04 market from the user.
+def _visible_price(row):
+    try:
+        return float(row.get("odd")) > 1.001
+    except (TypeError, ValueError, AttributeError):
+        return False
+
 
 def _first_half_rows(entries,m,p):
     goals=int(m.home_score)+int(m.away_score)
@@ -16,13 +25,13 @@ def _first_half_rows(entries,m,p):
     ls_rows=[r for r in unified_bot._recommendations(entries,m,p)
              if r.get("scope")=="FIRST_HALF"
              and float(r.get("line",-99)) in targets
-             and lc._sane_price(r)]
+             and _visible_price(r)]
     ls_by={float(r["line"]):dict(r,source="LSApp") for r in ls_rows}
     try:
         bov=get_first_half_total_odds(m.home,m.away,m.home_score,m.away_score)
     except Exception as exc:
         logger.info("FIRST_HALF_BOVADA_FAILED %s: %s",m.event_id,exc); bov=[]
-    bov_by={float(r["line"]):r for r in bov if lc._sane_price(r)}
+    bov_by={float(r["line"]):r for r in bov if _visible_price(r)}
     rows=[]
     for step,line in enumerate(targets,1):
         row=dict(bov_by.get(float(line)) or ls_by.get(float(line)) or {})
@@ -34,8 +43,6 @@ def _first_half_rows(entries,m,p):
 
 
 def _market(entries,m,p):
-    # Full-time rows are always calculated, because the first-half signal also
-    # needs a separate best bet for the whole match.
     ft_rows,market=_orig_market(entries,m,p)
     if m.minute<=45 and not m.is_halftime:
         return _first_half_rows(entries,m,p)+ft_rows,market
@@ -43,7 +50,7 @@ def _market(entries,m,p):
 
 
 def _row_map(recs,scope):
-    return {float(r["line"]):r for r in recs if r.get("scope")==scope and lc._sane_price(r)}
+    return {float(r["line"]):r for r in recs if r.get("scope")==scope and _visible_price(r)}
 
 
 def _period_prices(recs,m):
@@ -62,9 +69,11 @@ def _period_prices(recs,m):
         r=by.get(float(line))
         if r:
             source=f" · {r.get('source')}" if r.get("source") else ""
-            lines.append(f"💰 {label}: <b>ТБ {line:g} — {float(r['odd']):.2f}</b>{source}")
+            odd=float(r['odd'])
+            note=" <i>(низкий кэф)</i>" if odd < lc.MIN_SANE_LIVE_ODD else ""
+            lines.append(f"💰 {label}: <b>ТБ {line:g} — {odd:.2f}</b>{source}{note}")
         else:
-            lines.append(f"💰 {label}: <b>ТБ {line:g} — нет адекватного LIVE-кэфа</b>")
+            lines.append(f"💰 {label}: <b>ТБ {line:g} — LIVE-кэф не найден</b>")
     return "\n".join(lines)
 
 
@@ -93,10 +102,10 @@ def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
     best=next((r for r in recs if r.get("best_bet") and r.get("scope")=="FULL_TIME" and lc._sane_price(r)),None)
     if m.minute<=45 and not m.is_halftime:
         best_line=(f"⭐ Лучшая ставка на весь матч: <b>ТБ {float(best['line']):g} @ {float(best['odd']):.2f}</b>"
-                   if best else "⭐ Лучшая ставка на весь матч: <b>сейчас нет адекватного LIVE-кэфа</b>")
+                   if best else "⭐ Лучшая ставка на весь матч: <b>сейчас нет подходящего LIVE-кэфа</b>")
     else:
         best_line=(f"⭐ Лучшая ставка на остаток матча: <b>ТБ {float(best['line']):g} @ {float(best['odd']):.2f}</b>"
-                   if best else "⭐ Лучшая ставка на остаток матча: <b>сейчас нет адекватного LIVE-кэфа</b>")
+                   if best else "⭐ Лучшая ставка на остаток матча: <b>сейчас нет подходящего LIVE-кэфа</b>")
     stats=f"📊 xG {pair('xg')} | Удары {pair('shots')} | В створ {pair('shots_on_target')}"
     return f"{title}\n\n⚽ <b>{m.home} — {m.away}</b>\n⏱ {status} | <b>{m.home_score}:{m.away_score}</b>\n\n{action}\n📈 Вероятность ещё гола: <b>{model_goal}%</b>\n{prices}\n{best_line}\n\n{stats}\n🧠 Рейтинг сигнала: <b>{master:.0f}/100</b>"
 
