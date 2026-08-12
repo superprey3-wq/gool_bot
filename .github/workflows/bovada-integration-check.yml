@@ -17,13 +17,13 @@ jobs:
       - name: Sync current main integration files
         run: |
           git fetch origin main
-          git checkout origin/main -- gool_bot/bovada_live_odds.py gool_bot/live_candidate_patch.py gool_bot/signal_card.py gool_bot/unified_bot.py
+          git checkout origin/main -- gool_bot/bovada_live_odds.py gool_bot/live_candidate_patch.py gool_bot/period_market_patch.py gool_bot/signal_card.py gool_bot/unified_bot.py gool_bot/main.py
       - name: Install runtime deps
         run: pip install requests pillow
       - name: Compile integration
         run: |
-          python -m py_compile gool_bot/bovada_live_odds.py gool_bot/live_candidate_patch.py gool_bot/signal_card.py gool_bot/unified_bot.py
-      - name: Verify real Bovada live feed
+          python -m py_compile gool_bot/bovada_live_odds.py gool_bot/live_candidate_patch.py gool_bot/period_market_patch.py gool_bot/signal_card.py gool_bot/unified_bot.py gool_bot/main.py
+      - name: Verify real Bovada FT and first-half markets
         run: |
           cd gool_bot
           python - <<'PY'
@@ -31,13 +31,15 @@ jobs:
           events=b._live_events()
           print('LIVE EVENTS',len(events))
           assert events, 'Bovada returned no live soccer events'
-          found=0
+          ft_found=0; h1_found=0
           for event in events:
-              prices=b._full_time_over_prices(event)
-              if prices:
-                  print('EVENT',event.get('description'))
-                  print('FT OVER LINES',sorted(prices.items())[:12])
-                  found+=1
-                  if found>=3: break
-          assert found, 'No live FT total markets parsed'
+              ft=b._over_prices(event,'FULL_TIME')
+              h1=b._over_prices(event,'FIRST_HALF')
+              if ft and ft_found<3:
+                  print('FT',event.get('description'),sorted(ft.items())[:10]); ft_found+=1
+              if h1 and h1_found<3:
+                  print('1H',event.get('description'),sorted(h1.items())[:10]); h1_found+=1
+              if ft_found>=3 and h1_found>=1: break
+          assert ft_found, 'No live FT totals parsed'
+          print('FIRST_HALF_EVENTS_FOUND',h1_found)
           PY
