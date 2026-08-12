@@ -1,0 +1,72 @@
+name: OddsHarvester LIVE isolated test
+
+on:
+  push:
+    branches:
+      - test/oddsharvester-live
+  workflow_dispatch:
+
+jobs:
+  live-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install OddsHarvester
+        run: |
+          python -m pip install --upgrade pip
+          pip install oddsharvester
+          python -m playwright install --with-deps chromium
+          oddsharvester --help
+
+      - name: Discover real LIVE football matches
+        continue-on-error: true
+        run: |
+          oddsharvester live -s football --links-only -f json -o live_links.json --headless
+          echo '=== LIVE LINKS ==='
+          test -f live_links.json && cat live_links.json || true
+
+      - name: Scrape LIVE football Over Under markets
+        continue-on-error: true
+        run: |
+          oddsharvester live -s football -m over_under -f json -o live_odds.json --headless --concurrency 2 --request-delay 2
+          echo '=== LIVE ODDS OUTPUT ==='
+          test -f live_odds.json && cat live_odds.json || true
+
+      - name: Summarize captured totals
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          for name in ('live_links.json','live_odds.json'):
+              p=pathlib.Path(name)
+              print(f'\n--- {name} ---')
+              if not p.exists():
+                  print('NO FILE')
+                  continue
+              try:
+                  data=json.loads(p.read_text())
+              except Exception as e:
+                  print('PARSE ERROR',e)
+                  print(p.read_text()[:4000])
+                  continue
+              rows=data if isinstance(data,list) else data.get('data',[]) if isinstance(data,dict) else []
+              print('ROWS',len(rows))
+              for r in rows[:10]:
+                  if not isinstance(r,dict):
+                      print(r); continue
+                  print({k:r.get(k) for k in ('home_team','away_team','live_period','live_score_raw','match_url','market','bookmaker','odds') if k in r})
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oddsharvester-live-test
+          path: |
+            live_links.json
+            live_odds.json
+          if-no-files-found: ignore
