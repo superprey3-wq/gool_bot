@@ -1,10 +1,11 @@
 """Build an on-demand snapshot of today's GOOL BOT signal journal."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from live_engine import fetch_summary
+from live_engine import discover_live_matches, fetch_summary
 from daily_report import _score_from_summary, _market_goals, _settle_total
 from signal_journal import all_signals
 
@@ -43,10 +44,19 @@ def _live_signal_rows(rows):
     return result
 
 
+def _current_live_ids() -> set[str]:
+    try:
+        matches = asyncio.run(discover_live_matches())
+    except Exception:
+        return set()
+    return {str(m.event_id) for m in matches}
+
+
 def build_report_text() -> str:
     rows = _today_rows()
     live_rows = _live_signal_rows(rows)
     pre_rows = [r for r in rows if r.get("kind") == "prematch"]
+    current_live_ids = _current_live_ids()
 
     summary_cache: dict[str, str | None] = {}
 
@@ -61,11 +71,11 @@ def build_report_text() -> str:
                 summary_cache[event_id] = None
         return summary_cache[event_id]
 
-    live_ok = 0
-    live_wait = 0
+    live_ok = live_bad = live_wait = 0
     live_details = []
     for row in live_rows:
-        body = get_summary(str(row.get("event_id", "")))
+        event_id = str(row.get("event_id", ""))
+        body = get_summary(event_id)
         if not body:
             live_wait += 1
             continue
@@ -82,9 +92,12 @@ def build_report_text() -> str:
         if hit:
             live_ok += 1
             mark = "✅"
-        else:
+        elif event_id in current_live_ids:
             live_wait += 1
             mark = "⏳"
+        else:
+            live_bad += 1
+            mark = "❌"
         live_details.append(
             f"{mark} {row.get('home')} — {row.get('away')} | "
             f"{row.get('minute')}' {row.get('score_at_signal')} → {fh}:{fa}"
@@ -115,18 +128,21 @@ def build_report_text() -> str:
             f"{row.get('scope')} {row.get('side')} {row.get('line')} → {fh}:{fa}"
         )
 
+    settled = live_ok + live_bad
+    live_rate = round(live_ok / settled * 100) if settled else 0
     lines = [
         "📊 <b>GOOL BOT — ОТЧЁТ НА СЕЙЧАС</b>",
         f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}",
         "",
         "🔴 <b>LIVE</b>",
         f"Реальных сигналов: <b>{len(live_rows)}</b>",
-        f"✅ Уже дали следующий гол: <b>{live_ok}</b>",
-        f"⏳ Ещё не закрыты: <b>{live_wait}</b>",
+        f"✅ Зашло: <b>{live_ok}</b>",
+        f"❌ Не зашло: <b>{live_bad}</b>",
+        f"⏳ Ещё в игре: <b>{live_wait}</b>",
         "ℹ️ Повторные обновления матча в число сигналов не входят.",
     ]
-    if live_rows:
-        lines.append(f"🎯 Текущая доля с голом: <b>{round(live_ok / len(live_rows) * 100)}%</b>")
+    if settled:
+        lines.append(f"🎯 Проходимость завершённых сигналов: <b>{live_rate}%</b>")
     lines += [
         "",
         "🔥 <b>ПРЕМАТЧ</b>",
