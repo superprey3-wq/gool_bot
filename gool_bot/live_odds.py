@@ -1,9 +1,10 @@
-"""Verified current in-play totals from Flashscore/LSApp.
+"""Current in-play totals from Flashscore/LSApp with a resilient fallback.
 
-LIVE menu:  lobtm -> getLiveOddsBettingTypeMenu
-LIVE prices: ole2  -> findLiveOddsForBookmaker
-
-Prematch/odds-comparison operations (oce/ope/ope2) are deliberately NOT used here.
+Primary route uses the dedicated LIVE menu/bookmaker endpoints (lobtm + ole2).
+If that route returns no usable O/U rows, fall back to the event odds-comparison
+payload already used successfully elsewhere in the project, but keep only active
+OVER/UNDER rows for the live event. Fallback rows are explicitly tagged so logs
+show which source produced the price.
 """
 from __future__ import annotations
 
@@ -58,7 +59,7 @@ def _live_bookmaker_market(event_id: str, bookmaker_id: int, scope: str) -> dict
 
 def _normalise_over_under(event_id: str, bookmaker_id: int, scope: str, market: dict[str, Any]) -> dict[str, Any] | None:
     overview = market.get("eventOddsOverview") or {}
-    if overview.get("type") != "OVER_UNDER":
+    if str(overview.get("type") or "") != "OVER_UNDER":
         return None
     odds: list[dict[str, Any]] = []
     for opportunity in overview.get("opportunities") or []:
@@ -93,27 +94,26 @@ def _normalise_over_under(event_id: str, bookmaker_id: int, scope: str, market: 
         "bettingScope": scope,
         "hasLiveBettingOffers": True,
         "liveVerified": True,
+        "source": "LIVE_OLE2",
         "odds": odds,
     }
 
 
-def fetch_live_odds(event_id: str) -> list[dict[str, Any]]:
-    """Return only current LIVE OVER/UNDER markets confirmed by lobtm + ole2."""
+def _primary_live_rows(event_id: str) -> list[dict[str, Any]]:
     menu = _live_menu(event_id)
     if not menu:
-        logger.info("LIVE odds menu unavailable: %s", event_id)
         return []
-
-    live_items = [
-        item for item in (menu.get("items") or [])
-        if item.get("isActive") is True
-        and item.get("bettingType") == "OVER_UNDER"
-        and "LIVE" in (item.get("types") or [])
-    ]
+    items = menu.get("items") or []
     rows: list[dict[str, Any]] = []
     seen: set[tuple[int, str]] = set()
-    for item in live_items:
-        scope = str(item.get("bettingScope") or "")
+    for item in items:
+        # LSApp has changed these flags/labels before, so accept active O/U rows
+        # even when the auxiliary types list does not literally contain LIVE.
+        if item.get("isActive") is False:
+            continue
+        if str(item.get("bettingType") or "") != "OVER_UNDER":
+            continue
+        scope = str(item.get("bettingScope") or "FULL_TIME")
         if scope not in {"FIRST_HALF", "SECOND_HALF", "FULL_TIME"}:
             continue
         for bookmaker_id in item.get("bookmakerIds") or []:
@@ -125,9 +125,68 @@ def fetch_live_odds(event_id: str) -> list[dict[str, Any]]:
             if key in seen:
                 continue
             seen.add(key)
-            market = _live_bookmaker_market(event_id, bid, scope)
-            row = _normalise_over_under(event_id, bid, scope, market)
+            row = _normalise_over_under(event_id, bid, scope, _live_bookmaker_market(event_id, bid, scope))
             if row:
                 rows.append(row)
-    logger.info("LIVE odds %s: %d verified O/U bookmaker-scope rows", event_id, len(rows))
     return rows
+
+
+def _fallback_current_rows(event_id: str) -> list[dict[str, Any]]:
+    """Fallback to the event odds-comparison payload and keep current active O/U rows."""
+    try:
+        from prematch_scanner import _fetch_event_odds
+        raw = _fetch_event_odds(event_id)
+    except Exception as exc:
+        logger.info("LIVE odds fallback unavailable %s: %s", event_id, exc)
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for entry in raw or []:
+        if str(entry.get("bettingType") or "") != "OVER_UNDER":
+            continue
+        scope = str(entry.get("bettingScope") or "FULL_TIME")
+        if scope not in {"FIRST_HALF", "SECOND_HALF", "FULL_TIME"}:
+            continue
+        clean = []
+        for item in entry.get("odds") or []:
+            if not isinstance(item, dict) or item.get("active") is False:
+                continue
+            if str(item.get("selection") or "").upper() not in {"OVER", "UNDER"}:
+                continue
+            try:
+                value = float(item.get("value"))
+                line = float((item.get("handicap") or {}).get("value"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if value <= 1.0:
+                continue
+            copy = dict(item)
+            copy["value"] = value
+            copy["handicap"] = {"value": line}
+            copy["active"] = True
+            copy["source"] = "LIVE_FALLBACK_OCE"
+            clean.append(copy)
+        if clean:
+            row = dict(entry)
+            row["bettingType"] = "OVER_UNDER"
+            row["bettingScope"] = scope
+            row["liveVerified"] = False
+            row["source"] = "LIVE_FALLBACK_OCE"
+            row["odds"] = clean
+            rows.append(row)
+    return rows
+
+
+def fetch_live_odds(event_id: str) -> list[dict[str, Any]]:
+    rows = _primary_live_rows(event_id)
+    if rows:
+        logger.info("LIVE odds %s: %d O/U rows via LIVE_OLE2", event_id, len(rows))
+        return rows
+
+    fallback = _fallback_current_rows(event_id)
+    if fallback:
+        logger.info("LIVE odds %s: %d O/U rows via LIVE_FALLBACK_OCE", event_id, len(fallback))
+        return fallback
+
+    logger.info("LIVE odds %s: no usable O/U rows from primary or fallback", event_id)
+    return []
