@@ -11,17 +11,55 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install requests playwright
-      - name: Arsenal Como math forecast
+      - run: pip install requests pandas
+      - name: Backtest EPL and Serie A 2025-26
         env:
           PYTHONPATH: gool_bot
         run: |
           python - <<'PY'
-          from match_history import fetch_match_history
+          import io, requests, pandas as pd
+          from collections import defaultdict, deque
           from math_forecast import forecast_from_history
-          ctx=fetch_match_history('pCmS9Hj5','Arsenal (Eng)','Como (Ita)',limit=8)
-          print('HOME_ROWS',[(r.home,r.away,r.home_goals,r.away_goals) for r in ctx.home_recent])
-          print('AWAY_ROWS',[(r.home,r.away,r.home_goals,r.away_goals) for r in ctx.away_recent])
-          print('H2H_ROWS',[(r.home,r.away,r.home_goals,r.away_goals) for r in ctx.h2h])
-          print('FORECAST',forecast_from_history(ctx.home_recent,ctx.away_recent,home_elo=1725,away_elo=1600))
+
+          URLS={
+            'EPL':'https://www.football-data.co.uk/mmz4281/2526/E0.csv',
+            'SerieA':'https://www.football-data.co.uk/mmz4281/2526/I1.csv',
+          }
+
+          def row_obj(gf,ga): return {'goals_for':gf,'goals_against':ga}
+          all_results=[]
+          for league,url in URLS.items():
+            r=requests.get(url,timeout=30); r.raise_for_status()
+            df=pd.read_csv(io.BytesIO(r.content))
+            df=df.dropna(subset=['HomeTeam','AwayTeam','FTHG','FTAG']).reset_index(drop=True)
+            hist=defaultdict(lambda:deque(maxlen=8))
+            metrics={'n':0,'o15_pred':0,'o15_hit':0,'o25_pred':0,'o25_hit':0,'btts_pred':0,'btts_hit':0,'brier_o25':0.0,'brier_btts':0.0}
+            preds=[]
+            for _,m in df.iterrows():
+              h,a=str(m.HomeTeam),str(m.AwayTeam); hg,ag=int(m.FTHG),int(m.FTAG)
+              if len(hist[h])>=5 and len(hist[a])>=5:
+                fc=forecast_from_history(list(hist[h]),list(hist[a]))
+                p15=fc['overs']['1.5']/100; p25=fc['overs']['2.5']/100; pb=fc['btts']/100
+                y15=1 if hg+ag>=2 else 0; y25=1 if hg+ag>=3 else 0; yb=1 if hg>0 and ag>0 else 0
+                metrics['n']+=1
+                metrics['brier_o25']+=(p25-y25)**2; metrics['brier_btts']+=(pb-yb)**2
+                if p15>=0.60: metrics['o15_pred']+=1; metrics['o15_hit']+=y15
+                if p25>=0.55: metrics['o25_pred']+=1; metrics['o25_hit']+=y25
+                if pb>=0.55: metrics['btts_pred']+=1; metrics['btts_hit']+=yb
+                preds.append((h,a,hg,ag,fc))
+              hist[h].append(row_obj(hg,ag)); hist[a].append(row_obj(ag,hg))
+            print('\nLEAGUE',league,'matches',len(df),'tested',metrics['n'])
+            for key,hitk in [('o15_pred','o15_hit'),('o25_pred','o25_hit'),('btts_pred','btts_hit')]:
+              n=metrics[key]; hits=metrics[hitk]
+              print(key,'signals',n,'hits',hits,'rate',round(hits/n*100,1) if n else None)
+            print('Brier O2.5',round(metrics['brier_o25']/metrics['n'],4) if metrics['n'] else None)
+            print('Brier BTTS',round(metrics['brier_btts']/metrics['n'],4) if metrics['n'] else None)
+            all_results.append(metrics)
+          total={k:sum(x[k] for x in all_results) for k in all_results[0]}
+          print('\nTOTAL tested',total['n'])
+          for key,hitk in [('o15_pred','o15_hit'),('o25_pred','o25_hit'),('btts_pred','btts_hit')]:
+            n=total[key]; hits=total[hitk]
+            print(key,'signals',n,'hits',hits,'rate',round(hits/n*100,1) if n else None)
+          print('Brier O2.5',round(total['brier_o25']/total['n'],4))
+          print('Brier BTTS',round(total['brier_btts']/total['n'],4))
           PY
