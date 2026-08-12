@@ -2,6 +2,8 @@
 
 Keeps the existing PREMATCH and LIVE analysis code intact while scheduling it
 inside one persistent Python process instead of relying on GitHub cron.
+The hosting runner deliberately uses Flashscore HTTP feeds for PREMATCH
+discovery and does not launch Chromium, which keeps RAM/disk usage low.
 """
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ import logging
 import os
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -38,6 +41,33 @@ import prematch_standard_scanner  # noqa: E402
 import visual_feed_unified_bot  # noqa: E402
 
 
+def _feed_only_discover_matches():
+    """Discover upcoming PREMATCH events without starting Playwright/Chromium."""
+    base = prematch_standard_scanner.base
+    now = datetime.now(UTC)
+    matches = base._discover_from_feeds()
+    upcoming = [
+        match
+        for match in matches
+        if base.MIN_MINUTES_TO_KICKOFF
+        <= (match.kickoff - now).total_seconds() / 60
+        <= base.MAX_MINUTES_TO_KICKOFF
+    ]
+    logger.info(
+        "PREMATCH feed-only discovery: %d total, %d in %d-%d minute window",
+        len(matches),
+        len(upcoming),
+        base.MIN_MINUTES_TO_KICKOFF,
+        base.MAX_MINUTES_TO_KICKOFF,
+    )
+    return sorted(upcoming, key=lambda match: match.kickoff)
+
+
+# Only the persistent hosting runner gets the lightweight discovery path.
+# GitHub Actions still uses the original scanner with its browser fallback.
+prematch_standard_scanner.base._discover_matches = _feed_only_discover_matches
+
+
 async def run_live() -> None:
     try:
         await visual_feed_unified_bot.unified_bot.scan_live_once()
@@ -57,7 +87,7 @@ async def main() -> None:
         logger.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
 
     logger.info(
-        "GOOL BOT 24/7 started | LIVE every %ss | PREMATCH every %ss",
+        "GOOL BOT 24/7 started | LIVE every %ss | PREMATCH every %ss | browser=OFF",
         LIVE_INTERVAL_SECONDS,
         PREMATCH_INTERVAL_SECONDS,
     )
