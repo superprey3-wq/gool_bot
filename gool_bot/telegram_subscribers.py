@@ -124,7 +124,8 @@ def _handle_message(message: dict) -> None:
             "✅ <b>GOOL AI подключён</b>" + greeting + "!\n\n"
             "Теперь сюда будут приходить PREMATCH и LIVE-сигналы бота.\n"
             "Чтобы отключить рассылку, отправь /stop.\n"
-            "Проверить подписку: /status",
+            "Проверить подписку: /status\n"
+            "Текущий итог за день: /report",
         )
         logger.info("Telegram subscriber activated: %s", chat_id)
     elif command == "/stop":
@@ -139,6 +140,14 @@ def _handle_message(message: dict) -> None:
         active = str(chat_id) in set(get_subscribers())
         text = "✅ Подписка активна." if active else "🔕 Подписка отключена. Отправь /start."
         _send_reply(chat_id, text)
+    elif command == "/report":
+        try:
+            from report_now import build_report_text
+            _send_reply(chat_id, build_report_text())
+            logger.info("Telegram report sent to: %s", chat_id)
+        except Exception as exc:
+            logger.exception("Telegram /report failed: %s", exc)
+            _send_reply(chat_id, "⚠️ Не удалось собрать отчёт прямо сейчас. Попробуй ещё раз через минуту.")
 
 
 def _poll_once(offset: int | None) -> int | None:
@@ -172,7 +181,7 @@ def _poll_once(offset: int | None) -> int | None:
 
 
 async def polling_loop() -> None:
-    """Continuously process /start, /stop and /status without blocking LIVE scans."""
+    """Continuously process Telegram bot commands without blocking LIVE scans."""
     offset: int | None = None
     logger.info("Telegram command polling started")
     while True:
