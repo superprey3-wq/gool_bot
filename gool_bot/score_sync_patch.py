@@ -1,8 +1,8 @@
 """Synchronize Flashscore live-card state with event summary before analysis.
 
-The football live list can lag behind df_sui by one refresh.  Downstream LIVE
+The football live list can lag behind df_sui by one refresh. Downstream LIVE
 logic must never evaluate a stale score or a clock that predates an already
-registered goal.  This patch reconciles both cumulative score and latest goal
+registered goal. This patch reconciles both cumulative score and latest goal
 minute before any signal/odds calculation runs.
 """
 from __future__ import annotations
@@ -11,59 +11,47 @@ import logging
 import re
 
 import unified_bot
-from live_engine import fetch_summary, parse_goal_timeline
+from live_engine import fetch_summary
 
 logger = logging.getLogger("score_sync_patch")
 _orig_discover = unified_bot.discover_live_matches
 
 
-def _summary_score(body: str) -> tuple[int, int] | None:
+def _summary_state(body: str) -> tuple[tuple[int, int] | None, int | None]:
+    """Return cumulative score and latest minute from a real score-changing event."""
     if not body:
-        return None
+        return None, None
+
     home = away = 0
-    seen = False
+    seen_score = False
+    last_goal_minute: int | None = None
+
     for chunk in body.split("~III"):
         hm = re.search(r"INX(?:÷|¬)(\d+)", chunk)
         am = re.search(r"IOX(?:÷|¬)(\d+)", chunk)
         if not hm and not am:
             continue
-        seen = True
-        if hm:
-            home = max(home, int(hm.group(1)))
-        if am:
-            away = max(away, int(am.group(1)))
-    return (home, away) if seen else None
 
+        prev_home, prev_away = home, away
+        new_home = int(hm.group(1)) if hm else home
+        new_away = int(am.group(1)) if am else away
+        seen_score = True
 
-def _latest_goal_minute(body: str) -> int | None:
-    """Return the latest goal minute known by summary, including 45+N/90+N."""
-    latest: int | None = None
+        # Score fields in summary can also appear on non-goal rows. A goal minute
+        # is accepted only if this particular row actually increases the score.
+        score_changed = new_home > prev_home or new_away > prev_away
+        home = max(home, new_home)
+        away = max(away, new_away)
 
-    # Prefer the project's existing goal parser so score-change semantics stay
-    # identical to the LIVE engine.
-    try:
-        for item in parse_goal_timeline(body):
-            m = re.match(r"(\d{1,3})'", str(item))
-            if m:
-                value = int(m.group(1))
-                latest = value if latest is None else max(latest, value)
-    except Exception:
-        pass
+        if score_changed:
+            mm = re.search(r"(?:IB|IBX)(?:÷|¬)(\d{1,3})(?:\+(\d{1,2}))?", chunk)
+            if mm:
+                base = int(mm.group(1))
+                added = int(mm.group(2) or 0)
+                minute = base + added
+                last_goal_minute = minute if last_goal_minute is None else max(last_goal_minute, minute)
 
-    # Some feed variants expose added time in the raw IB/IBX value.  Accept a
-    # simple 45+N / 90+N form as a defensive fallback.
-    for chunk in (body or "").split("~III"):
-        mm = re.search(r"(?:IB|IBX)(?:÷|¬)(\d{1,3})(?:\+(\d{1,2}))?", chunk)
-        hm = re.search(r"INX(?:÷|¬)(\d+)", chunk)
-        am = re.search(r"IOX(?:÷|¬)(\d+)", chunk)
-        if not mm or (not hm and not am):
-            continue
-        base = int(mm.group(1))
-        added = int(mm.group(2) or 0)
-        value = base + added
-        latest = value if latest is None else max(latest, value)
-
-    return latest
+    return ((home, away) if seen_score else None), last_goal_minute
 
 
 async def _discover_synced():
@@ -71,14 +59,12 @@ async def _discover_synced():
     for match in matches:
         try:
             body = fetch_summary(match.event_id)
-            score = _summary_score(body)
-            last_goal_minute = _latest_goal_minute(body)
+            score, last_goal_minute = _summary_state(body)
         except Exception as exc:
             logger.info("SUMMARY_STATE_SYNC_FAILED %s: %s", match.event_id, exc)
             continue
 
-        # Keep diagnostics available to downstream patches without changing the
-        # LiveMatch dataclass contract.
+        # Attach diagnostics without changing the LiveMatch dataclass contract.
         match.summary_last_goal_minute = last_goal_minute
 
         if score:
@@ -86,7 +72,7 @@ async def _discover_synced():
             old_total = int(match.home_score) + int(match.away_score)
             new_total = sh + sa
 
-            # Only move score forward. Never let an older/incomplete summary
+            # Move score only forward. Never let an older/incomplete summary
             # overwrite a newer live-card score.
             if new_total > old_total:
                 old = f"{match.home_score}:{match.away_score}"
@@ -102,15 +88,13 @@ async def _discover_synced():
         else:
             match.summary_goal_ahead = False
 
-        # The displayed match clock may never be behind an event that summary
-        # already confirms.  Example: card says 51' while summary has a goal at
-        # 52'.  Advance to 52 so every probability/window calculation uses a
-        # chronologically valid state.
+        # The displayed clock may never be behind a goal summary already confirms.
+        # Example: live card says 51', summary already contains a goal at 52'.
         if last_goal_minute is not None and int(match.minute) < last_goal_minute:
             old_minute = int(match.minute)
             match.minute = last_goal_minute
             logger.warning(
-                "STALE_MINUTE_FIXED %s %s — %s | %d' -> %d' due to summary goal",
+                "STALE_MINUTE_FIXED %s %s — %s | %d' -> %d' due to confirmed goal",
                 match.event_id, match.home, match.away, old_minute, match.minute,
             )
 
