@@ -7,31 +7,24 @@ from live_engine import StatsSnapshot, calculate_goal_pressure, fetch_stats, fet
 from match_history import analyse_history, fetch_match_history
 logger=logging.getLogger("live_candidate_patch"); _HISTORY_CACHE={}; _HISTORY_CACHE_SECONDS=900
 
-# Notification policy. We may keep tracking a match to register a goal/result,
-# but we do not start a new signal late and we do not spam ordinary follow-ups
-# near full time.
 MAX_NEW_SIGNAL_MINUTE=75
 MAX_FOLLOWUP_MINUTE=80
 OBSERVE_MIN_SCORE=45
 ENTRY_MIN_SCORE=60
 STRONG_MIN_SCORE=70
 FOLLOWUP_SCORE_JUMP=12
-
+MIN_SANE_LIVE_ODD=1.05
+MAX_SANE_LIVE_ODD=5.00
 
 def _pair(s,k): a,b=s.get(k,(0.,0.)); return float(a),float(b)
 def _total(s,k): return sum(_pair(s,k))
 def _clamp(v): return round(max(0.,min(100.,v)),1)
-
 def _signal_grade(master):
-    """Return compact user-facing signal tier for a master score."""
     if master>=STRONG_MIN_SCORE:return "STRONG"
     if master>=ENTRY_MIN_SCORE:return "ENTRY"
     if master>=OBSERVE_MIN_SCORE:return "OBSERVE"
     return "SILENT"
-
-def _grade_rank(grade):
-    return {"SILENT":0,"OBSERVE":1,"ENTRY":2,"STRONG":3}.get(str(grade or "SILENT"),0)
-
+def _grade_rank(grade): return {"SILENT":0,"OBSERVE":1,"ENTRY":2,"STRONG":3}.get(str(grade or "SILENT"),0)
 def _history(m):
     now=time.time(); c=_HISTORY_CACHE.get(m.event_id)
     if c and now-c[0]<_HISTORY_CACHE_SECONDS:return c[1],c[2]
@@ -42,7 +35,6 @@ def _history(m):
     else:
         avg=float(a.get("historical_avg_total",0) or 0); score=_clamp(min(45,avg/4*45)+25*sum(float(x.get("over25",0) or 0) for x in valid)/len(valid)+18*sum(float(x.get("over35",0) or 0) for x in valid)/len(valid)+12*sum(float(x.get("over45",0) or 0) for x in valid)/len(valid))
     _HISTORY_CACHE[m.event_id]=(now,score,a); return score,a
-
 def _dom(m,s):
     minute=max(1,m.minute); pace=min(1.45,45/minute) if minute<=45 else min(1.25,90/minute)
     return _clamp(min(25,_total(s,"shots")*pace/10*25)+min(25,_total(s,"shots_on_target")*pace/5*25)+min(18,_total(s,"xg")*pace/1.2*18)+min(12,(m.home_score+m.away_score)/2*12)+min(8,_total(s,"corners")*pace/5*8)+min(7,_total(s,"big_chances")*pace/2*7)+min(5,(_total(s,"shots_inside_box")*.22+_total(s,"touches_box")*.08)*pace))
@@ -70,18 +62,24 @@ def _side(s,i):return _clamp(_pair(s,"shots")[i]*3+_pair(s,"shots_on_target")[i]
 def _hazards(m,master):
     rate=(2.7/90)*(.45+1.35*master/100); vals=[(1-math.exp(-rate*x))*100 for x in (5,10,15)]; remain=(47-m.minute) if m.minute<=45 else (94-m.minute);vals.append((1-math.exp(-rate*max(0,remain)))*100);return tuple(round(min(92,x),1) for x in vals)
 
-def _target_goal_markets(entries,m,p):
-    """Return only FT Over lines for +1 and +2 goals from the current score.
+def _sane_price(row):
+    try: odd=float(row.get("odd"))
+    except (TypeError,ValueError,AttributeError): return False
+    return MIN_SANE_LIVE_ODD <= odd <= MAX_SANE_LIVE_ODD
 
-    Bovada is preferred because its live feed was verified end-to-end. LSApp is a
-    fallback for the exact same target line, never for a different/nearby market.
-    """
+def _target_goal_markets(entries,m,p):
     goals=int(m.home_score)+int(m.away_score); targets=(goals+.5,goals+1.5)
-    ls_rows=[r for r in unified_bot._recommendations(entries,m,p) if r.get("scope")=="FULL_TIME" and float(r.get("line",-99)) in targets]
+    ls_rows=[r for r in unified_bot._recommendations(entries,m,p) if r.get("scope")=="FULL_TIME" and float(r.get("line",-99)) in targets and _sane_price(r)]
     ls_by_line={float(r["line"]):dict(r,source="LSApp") for r in ls_rows}
     try:bovada=get_goal_total_odds(m.home,m.away,m.home_score,m.away_score)
     except Exception as e:logger.info("Bovada target markets failed %s: %s",m.event_id,e); bovada=[]
-    bov_by_line={float(r["line"]):r for r in bovada}
+    bov_by_line={}
+    for r in bovada:
+        line=float(r["line"])
+        if _sane_price(r):
+            bov_by_line[line]=r
+        else:
+            logger.info("BOVADA_PRICE_REJECTED %s %s — %s line=%.1f odd=%s",m.event_id,m.home,m.away,line,r.get("odd"))
     rows=[]
     for step,line in enumerate(targets,1):
         r=dict(bov_by_line.get(float(line)) or ls_by_line.get(float(line)) or {})
@@ -90,15 +88,18 @@ def _target_goal_markets(entries,m,p):
         odd=float(r["odd"]); conf=unified_bot._model_confidence(p.score,p.momentum,float(line),goals,"FULL_TIME",m.minute,odd)
         r["confidence"]=conf; r["value_edge"]=round(conf-(100/odd),1)
         rows.append(r)
-    if rows:
-        best=max(rows,key=lambda r:(float(r.get("value_edge",-999)),int(r.get("confidence",0)),-int(r.get("goal_step",9))))
+    eligible=[r for r in rows if _sane_price(r)]
+    if eligible:
+        best=max(eligible,key=lambda r:(float(r.get("value_edge",-999)),int(r.get("confidence",0)),-int(r.get("goal_step",9))))
         best["best_bet"]=True
     return rows
 
 def _market(entries,m,p):
     recs=_target_goal_markets(entries,m,p)
     if not recs:return recs,{"available":False}
-    r=next((x for x in recs if x.get("best_bet")),recs[0]); odd=float(r["odd"]); raw=100/odd
+    r=next((x for x in recs if x.get("best_bet")),None)
+    if r is None:return recs,{"available":False}
+    odd=float(r["odd"]); raw=100/odd
     return recs,{"available":True,"scope":"FULL_TIME","line":r["line"],"odd":odd,"bookmakers":r.get("bookmakers",1),"source":r.get("source",""),"goal_step":r.get("goal_step"),"market_probability":round(raw,1)}
 def _evaluate(m,s,p,goals,market):
     hist,_=_history(m);d=_dom(m,s);t=_threat(s);u=_under(m,s);f=_fast(m,s,d,hist);sec=_second(m,s,d,hist,u);ch=_chase(m,s);late=_late(m,d,p.momentum,ch,t,hist);chaos=_chaos(m,goals,p.momentum,d);home=_side(s,0);away=_side(s,1)
@@ -111,43 +112,35 @@ def _evaluate(m,s,p,goals,market):
     if edge is not None and edge<=-18 and len(strong)<2:qualifies=False
     if edge is not None and edge>=8 and len(corroborated)>=2:qualifies=True
     route="+".join(k for k,v in strong[:3]) if strong else ("MULTI_CONFIRM" if qualifies else "REJECT"); market.update({"model_period_probability":model_period,"edge_pp":edge,"market_value_score":market_score}); return qualifies,route,master,sc,hz,market
-
 def _price_lines(recs,m):
     goals=int(m.home_score)+int(m.away_score); targets=(goals+.5,goals+1.5); by={float(r["line"]):r for r in recs if r.get("scope")=="FULL_TIME"}
     lines=[]
     for step,line in enumerate(targets,1):
         r=by.get(float(line)); label="Ещё 1 гол" if step==1 else "Ещё 2 гола"
-        if r:
+        if r and _sane_price(r):
             source=f" · {r.get('source')}" if r.get("source") else ""
             lines.append(f"💰 {label}: <b>ТБ {line:g} — {float(r['odd']):.2f}</b>{source}")
-        else:lines.append(f"💰 {label}: <b>ТБ {line:g} — нет данных</b>")
+        else:lines.append(f"💰 {label}: <b>ТБ {line:g} — нет адекватного LIVE-кэфа</b>")
     return "\n".join(lines)
-
 def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
     def pair(k):a,b=s.get(k,(0,0)); return f"{a:g}–{b:g}"
-    status="Перерыв" if m.is_halftime else f"{m.minute}'"
-    grade=_signal_grade(master)
+    status="Перерыв" if m.is_halftime else f"{m.minute}'"; grade=_signal_grade(master)
     if reason=="goal":
         if m.minute>MAX_FOLLOWUP_MINUTE:
-            title="✅ <b>ГОЛ — СИГНАЛ СРАБОТАЛ!</b>"
-            action="🏁 <b>МАТЧ ЗАКРЫТ — ДАЛЬШЕ НЕ СЧИТАЮ</b>"
+            title="✅ <b>ГОЛ — СИГНАЛ СРАБОТАЛ!</b>"; action="🏁 <b>МАТЧ ЗАКРЫТ — ДАЛЬШЕ НЕ СЧИТАЮ</b>"
         else:
-            title="✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>\n🔄 Матч пересчитан"
-            action="✅ <b>ГОЛ ЗАФИКСИРОВАН</b>"
+            title="✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>\n🔄 Матч и LIVE-линии пересчитаны"; action="✅ <b>ГОЛ ЗАФИКСИРОВАН</b>"
     elif reason=="followup":title="🔄 <b>ОБНОВЛЕНИЕ ПО МАТЧУ</b>"
     elif m.is_halftime:title="🔵 <b>ПРОГНОЗ НА 2-Й ТАЙМ</b>"
     else:title="🔴 <b>LIVE-СИГНАЛ</b>"
-
     if reason!="goal":
         if grade=="STRONG": action="🔥 <b>МОЖНО ЗАХОДИТЬ — СИЛЬНЫЙ СИГНАЛ</b>"
         elif grade=="ENTRY": action="🟡 <b>МОЖНО РАССМАТРИВАТЬ ВХОД</b>"
         elif grade=="OBSERVE": action="👀 <b>НАБЛЮДАЮ МАТЧ — ПОКА БЕЗ ВХОДА</b>"
         else: action="⚪ <b>СИГНАЛ ОСЛАБ — НОВЫЙ ВХОД НЕ НУЖЕН</b>"
-        if m.is_halftime and grade in ("ENTRY","STRONG"):
-            action += "\n🔵 Приоритет: ещё 1 гол во 2-м тайме"
-
-    model_goal=max(1,min(92,round(hz[3]))); prices=_price_lines(recs,m); best=next((r for r in recs if r.get("best_bet")),None)
-    best_line=f"⭐ Лучшая ставка: <b>ТБ {float(best['line']):g} @ {float(best['odd']):.2f}</b>" if best else "⭐ Лучшая ставка: <b>нет точного LIVE-кэфа</b>"
+        if m.is_halftime and grade in ("ENTRY","STRONG"): action += "\n🔵 Приоритет: ещё 1 гол во 2-м тайме"
+    model_goal=max(1,min(92,round(hz[3]))); prices=_price_lines(recs,m); best=next((r for r in recs if r.get("best_bet") and _sane_price(r)),None)
+    best_line=f"⭐ Лучшая ставка на матч: <b>ТБ {float(best['line']):g} @ {float(best['odd']):.2f}</b>" if best else "⭐ Лучшая ставка на матч: <b>сейчас нет адекватного LIVE-кэфа</b>"
     stats=f"📊 xG {pair('xg')} | Удары {pair('shots')} | В створ {pair('shots_on_target')}"
     return f"{title}\n\n⚽ <b>{m.home} — {m.away}</b>\n⏱ {status} | <b>{m.home_score}:{m.away_score}</b>\n\n{action}\n📈 Вероятность ещё гола: <b>{model_goal}%</b>\n{prices}\n{best_line}\n\n{stats}\n🧠 Рейтинг сигнала: <b>{master:.0f}/100</b>"
 def _send(m,p,recs,text):return unified_bot.telegram_send_signal(m,p,recs,text)
@@ -167,14 +160,9 @@ async def scan_live_once_multi():
             text=_format_strategy_signal(m,p,s,recs,goals,"signal",route,master,hz,market)
             if _send(m,p,recs,text):unified_bot._record_live(m,p,s,recs,"signal");state[key]={"tracked_since":now,"ts":now,"score":current,"minute":m.minute,"pressure":p.score,"candidate_score":master,"grade":grade,"route":route,"strategies":sc,"hazards":hz,"market":market,"halftime_sent":m.is_halftime};sent+=1
             continue
-
         changed=str(tracked.get("score",current))!=current
-        last=float(tracked.get("ts",0));lastm=float(tracked.get("candidate_score",0));last_grade=str(tracked.get("grade") or _signal_grade(lastm))
-        cooldown_ok=now-last>=unified_bot.LIVE_COOLDOWN_MINUTES*60
-        upgraded=_grade_rank(grade)>_grade_rank(last_grade)
-        jump=qualifies and grade!="SILENT" and master>=lastm+FOLLOWUP_SCORE_JUMP and cooldown_ok
-        halftime_new=m.is_halftime and not bool(tracked.get("halftime_sent")) and grade!="SILENT"
-        ordinary_update=(upgraded or jump or halftime_new) and cooldown_ok
+        last=float(tracked.get("ts",0));lastm=float(tracked.get("candidate_score",0));last_grade=str(tracked.get("grade") or _signal_grade(lastm));cooldown_ok=now-last>=unified_bot.LIVE_COOLDOWN_MINUTES*60
+        upgraded=_grade_rank(grade)>_grade_rank(last_grade);jump=qualifies and grade!="SILENT" and master>=lastm+FOLLOWUP_SCORE_JUMP and cooldown_ok;halftime_new=m.is_halftime and not bool(tracked.get("halftime_sent")) and grade!="SILENT";ordinary_update=(upgraded or jump or halftime_new) and cooldown_ok
         should_send=changed or (m.minute<=MAX_FOLLOWUP_MINUTE and ordinary_update)
         if should_send:
             reason="goal" if changed else "followup"
@@ -183,9 +171,7 @@ async def scan_live_once_multi():
             if _send(m,p,recs,text):
                 unified_bot._record_live(m,p,s,recs,reason);sent+=1
                 if reason=="goal" and m.minute>MAX_FOLLOWUP_MINUTE:
-                    state.pop(key,None)
-                    logger.info("LATE_GOAL_TRACK_CLOSED %d' %s — %s | %s",m.minute,m.home,m.away,current)
-                    continue
+                    state.pop(key,None);logger.info("LATE_GOAL_TRACK_CLOSED %d' %s — %s | %s",m.minute,m.home,m.away,current);continue
                 tracked.update({"ts":now,"score":current,"minute":m.minute,"pressure":p.score,"candidate_score":master,"grade":grade,"route":route,"strategies":sc,"hazards":hz,"market":market,"halftime_sent":bool(tracked.get("halftime_sent")) or m.is_halftime});state[key]=tracked
         else:
             tracked.update({"score":current,"minute":m.minute,"candidate_score":master,"grade":grade,"route":route,"strategies":sc,"hazards":hz,"market":market});state[key]=tracked
