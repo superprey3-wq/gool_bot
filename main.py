@@ -29,6 +29,8 @@ logger = logging.getLogger("gool_live_24x7")
 
 import visual_feed_unified_bot  # noqa: E402
 import live_candidate_patch  # noqa: E402,F401 - installs multi-logic LIVE gate
+import period_market_patch  # noqa: E402,F401 - FT best bet + first-half price support
+import phase_market_patch  # noqa: E402,F401 - 1H +1/+2 goals, then remainder-of-match markets
 import prematch_standard_scanner  # noqa: E402
 from telegram_subscribers import get_subscribers, polling_loop  # noqa: E402
 
@@ -85,7 +87,7 @@ async def main() -> None:
 
     poller = asyncio.create_task(polling_loop(), name="telegram-command-poller")
     prematch = asyncio.create_task(prematch_loop(), name="subscriber-prematch-scanner")
-    logger.info("Telegram /start /stop /status polling enabled")
+    logger.info("Telegram /start /stop /status /report polling enabled")
     logger.info(
         "GOOL BOT 24/7 started | LIVE every %ss | subscriber PREMATCH every %ss",
         LIVE_INTERVAL_SECONDS,
