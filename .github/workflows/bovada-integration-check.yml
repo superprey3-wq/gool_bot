@@ -43,3 +43,13 @@ jobs:
           assert ft_found, 'No live FT totals parsed'
           print('FIRST_HALF_EVENTS_FOUND',h1_found)
           PY
+      - name: Verify extreme-price rejection
+        run: |
+          cd gool_bot
+          python - <<'PY'
+          import live_candidate_patch as p
+          assert p._sane_price({'odd':1.80})
+          assert not p._sane_price({'odd':9.00})
+          assert not p._sane_price({'odd':1.01})
+          print('EXTREME PRICE FILTER OK')
+          PY
