@@ -1,13 +1,10 @@
-"""Visual Telegram wrapper with reliable text-first delivery.
-
-Text is the signal of record. A PNG card is best-effort only and can never block
-or hide a valid LIVE signal.
-"""
+"""Visual Telegram wrapper with reliable text-first delivery and safe diagnostics."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import re
 
 import requests
 
@@ -19,6 +16,7 @@ logger = logging.getLogger("visual_feed_unified_bot")
 
 _ORIGINAL_FORMAT = unified_bot._format_signal
 _CARD_CONTEXT = None
+_TOKEN_RE = re.compile(r"^\d{6,15}:[A-Za-z0-9_-]{20,}$")
 
 
 def _format_signal(match, pressure, stats, recs, goal_times, reason="signal"):
@@ -28,15 +26,33 @@ def _format_signal(match, pressure, stats, recs, goal_times, reason="signal"):
 
 
 def _telegram_credentials():
-    # Read env at SEND time. This avoids stale empty values captured when
-    # unified_bot was imported before the hosting environment was fully ready.
-    return os.getenv("TELEGRAM_BOT_TOKEN", "").strip(), os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    # Optional split-token support for hosts where users prefer storing bot id
+    # and secret separately. We NEVER infer bot id from chat id.
+    if token and ":" not in token:
+        bot_id = os.getenv("TELEGRAM_BOT_ID", "").strip()
+        if bot_id.isdigit():
+            token = f"{bot_id}:{token}"
+    return token, chat_id
+
+
+def telegram_config_status() -> tuple[bool, str]:
+    token, chat_id = _telegram_credentials()
+    if not token:
+        return False, "TELEGRAM_BOT_TOKEN is missing"
+    if not _TOKEN_RE.match(token):
+        return False, "TELEGRAM_BOT_TOKEN has invalid format (expected numeric_bot_id:secret)"
+    if not chat_id:
+        return False, "TELEGRAM_CHAT_ID is missing"
+    return True, "ok"
 
 
 def _send_text(text: str) -> bool:
     token, chat_id = _telegram_credentials()
-    if not token or not chat_id:
-        logger.error("TELEGRAM SEND blocked: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing")
+    ok, reason = telegram_config_status()
+    if not ok:
+        logger.error("TELEGRAM CONFIG ERROR: %s", reason)
         return False
     try:
         response = requests.post(
@@ -45,7 +61,22 @@ def _send_text(text: str) -> bool:
             timeout=20,
         )
         if not response.ok:
-            logger.error("TELEGRAM sendMessage failed: HTTP %s %s", response.status_code, response.text[:500])
+            description = ""
+            try:
+                payload = response.json()
+                description = str(payload.get("description") or "")
+            except ValueError:
+                description = response.text[:300]
+            if response.status_code == 404:
+                logger.error("TELEGRAM AUTH ERROR: HTTP 404 Not Found. Bot token is invalid/revoked or incomplete. Token value is not logged.")
+            elif response.status_code == 400:
+                logger.error("TELEGRAM REQUEST ERROR: HTTP 400 %s (check TELEGRAM_CHAT_ID and message format)", description)
+            elif response.status_code == 401:
+                logger.error("TELEGRAM AUTH ERROR: HTTP 401 %s (bot token rejected)", description)
+            elif response.status_code == 403:
+                logger.error("TELEGRAM ACCESS ERROR: HTTP 403 %s (bot blocked/no access to target chat)", description)
+            else:
+                logger.error("TELEGRAM sendMessage failed: HTTP %s %s", response.status_code, description)
             return False
         logger.info("TELEGRAM text signal delivered")
         return True
@@ -56,7 +87,8 @@ def _send_text(text: str) -> bool:
 
 def _send_photo(card_bytes: bytes) -> bool:
     token, chat_id = _telegram_credentials()
-    if not token or not chat_id or not card_bytes:
+    ok, _ = telegram_config_status()
+    if not ok or not card_bytes:
         return False
     try:
         response = requests.post(
@@ -66,7 +98,7 @@ def _send_photo(card_bytes: bytes) -> bool:
             timeout=20,
         )
         if not response.ok:
-            logger.warning("Signal card upload failed: HTTP %s %s", response.status_code, response.text[:300])
+            logger.warning("Signal card upload failed: HTTP %s", response.status_code)
         return response.ok
     except requests.RequestException as exc:
         logger.warning("Signal card upload exception: %s", exc)
@@ -77,13 +109,9 @@ def telegram_send(text: str):
     global _CARD_CONTEXT
     context = _CARD_CONTEXT
     _CARD_CONTEXT = None
-
-    # IMPORTANT: deliver text first. Card rendering/upload is optional and must
-    # never prevent the actual betting signal from reaching Telegram.
     delivered = _send_text(text)
     if not delivered:
         return False
-
     if context:
         match, pressure, recs = context
         try:
