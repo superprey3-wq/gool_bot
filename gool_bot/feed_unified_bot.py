@@ -13,13 +13,13 @@ _SMART_BLOCK_TOKEN = "__SMART_LIVE_BET_BLOCK__"
 
 
 async def discover_live_matches():
-    """Keep tracked matches to FT, but never start monitoring a new match after 85'."""
+    """Keep tracked matches to FT, but never start monitoring a new match after 75'."""
     matches = await discover_all_live_matches()
     state = unified_bot._load_sent()
     result = []
     for match in matches:
         tracked = f"TRACK:{match.event_id}" in state
-        if match.minute <= 85 or tracked:
+        if match.minute <= 75 or tracked:
             result.append(match)
     return result
 
@@ -104,26 +104,22 @@ def _history_summary(match, ctx, analysis) -> str:
 
 def _model_pick(entries, match, pressure, ctx, analysis) -> str:
     prices = _median_over_prices(entries, "FULL_TIME")
+    goals = match.home_score + match.away_score
     if not prices:
+        # Model opinion exists even when a bookmaker price is temporarily unavailable.
+        p = unified_bot._live_over_probability(pressure.score, pressure.momentum, goals + 0.5, goals, "FULL_TIME", match.minute, None)
         return (
             "🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n"
-            "Не публикую ставку: подтверждённого LIVE-коэффициента на общий тотал сейчас нет."
+            f"Ещё 1 гол до конца матча — модель <b>{round(p * 100)}%</b>.\n"
+            "LIVE-коэффициент сейчас не получен, поэтому рыночного подтверждения нет."
         )
 
-    goals = match.home_score + match.away_score
     candidates = []
     for line, (odd, books) in prices.items():
         if line <= goals or odd < 1.10 or odd > 8.0:
             continue
-
-        live_p = unified_bot._live_over_probability(
-            pressure.score, pressure.momentum, line, goals, "FULL_TIME", match.minute, odd
-        )
+        live_p = unified_bot._live_over_probability(pressure.score, pressure.momentum, line, goals, "FULL_TIME", match.minute, odd)
         hist_rate = _weighted_history_rate(ctx, line)
-
-        # Historical form is context, not a license to override the clock. Its
-        # influence shrinks sharply late in the match, because at 85' the only
-        # thing that matters is whether enough goals can arrive in the remaining minutes.
         if hist_rate is not None:
             hist_weight = 0.04 if match.minute >= 80 else 0.08 if match.minute >= 70 else 0.15
             calibrated_p = live_p * (1.0 - hist_weight) + hist_rate * hist_weight
@@ -131,19 +127,18 @@ def _model_pick(entries, match, pressure, ctx, analysis) -> str:
             calibrated_p = live_p
         calibrated_p = max(0.01, min(0.94, calibrated_p))
         confidence = round(calibrated_p * 100)
-
         market_p = min(0.95, 1.0 / odd)
         edge = calibrated_p - market_p
         needed = unified_bot._goals_needed_for_over(line, goals)
-        # Prefer realistic lines with positive/near-neutral model edge. Requiring
-        # multiple late goals is naturally penalised by the Poisson probability.
         utility = confidence + edge * 80 - abs(odd - 1.90) * 3 - max(0, needed - 1) * 4
         candidates.append((utility, line, odd, books, confidence, hist_rate, edge, needed))
 
     if not candidates:
+        p = unified_bot._live_over_probability(pressure.score, pressure.momentum, goals + 0.5, goals, "FULL_TIME", match.minute, None)
         return (
             "🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n"
-            "Сейчас нет подходящего подтверждённого LIVE-тотала для входа."
+            f"Ещё 1 гол до конца матча — модель <b>{round(p * 100)}%</b>.\n"
+            "Доступные LIVE-линии сейчас не подходят для корректного входа."
         )
 
     candidates.sort(reverse=True)
