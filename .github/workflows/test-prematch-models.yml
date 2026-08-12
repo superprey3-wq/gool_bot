@@ -1,0 +1,48 @@
+name: Test prematch prediction models
+
+on:
+  push:
+    branches: ["test/prematch-prediction-models"]
+  workflow_dispatch:
+
+jobs:
+  reymes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone Reymes predictor
+        run: git clone --depth 1 https://github.com/Reymes/football-match-prediction.git /tmp/reymes
+      - name: Install
+        working-directory: /tmp/reymes
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Train bundle
+        working-directory: /tmp/reymes
+        run: python scripts/train.py --out artifacts
+      - name: Predict demo fixtures
+        working-directory: /tmp/reymes
+        run: python scripts/predict_upcoming.py --artifacts artifacts --json /tmp/reymes_preds.json
+      - name: Show predictions
+        run: cat /tmp/reymes_preds.json
+
+  prophitbet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone ProphitBet
+        run: git clone --depth 1 https://github.com/kochlisGit/ProphitBet-Soccer-Bets-Predictor.git /tmp/prophit
+      - name: Inspect project
+        working-directory: /tmp/prophit
+        run: |
+          echo '--- Python files ---'
+          find . -maxdepth 2 -type f -name '*.py' | head -80
+          echo '--- requirements ---'
+          cat requirements.txt || true
+      - name: Install requirements smoke test
+        working-directory: /tmp/prophit
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
