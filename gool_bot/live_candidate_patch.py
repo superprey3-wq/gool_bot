@@ -90,8 +90,12 @@ def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
     status="Перерыв" if m.is_halftime else f"{m.minute}'"
     grade=_signal_grade(master)
     if reason=="goal":
-        title="✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>\n🔄 Матч пересчитан"
-        action="✅ <b>ГОЛ ЗАФИКСИРОВАН</b>"
+        if m.minute>MAX_FOLLOWUP_MINUTE:
+            title="✅ <b>ГОЛ — СИГНАЛ СРАБОТАЛ!</b>"
+            action="🏁 <b>МАТЧ ЗАКРЫТ — ДАЛЬШЕ НЕ СЧИТАЮ</b>"
+        else:
+            title="✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>\n🔄 Матч пересчитан"
+            action="✅ <b>ГОЛ ЗАФИКСИРОВАН</b>"
     elif reason=="followup":title="🔄 <b>ОБНОВЛЕНИЕ ПО МАТЧУ</b>"
     elif m.is_halftime:title="🔵 <b>ПРОГНОЗ НА 2-Й ТАЙМ</b>"
     else:title="🔴 <b>LIVE-СИГНАЛ</b>"
@@ -142,7 +146,16 @@ async def scan_live_once_multi():
             reason="goal" if changed else "followup"
             if reason=="followup" and (not qualifies or grade=="SILENT" or route=="REJECT"):continue
             text=_format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market)
-            if _send(m,p,recs,text):unified_bot._record_live(m,p,s,recs,reason);tracked.update({"ts":now,"score":current,"minute":m.minute,"pressure":p.score,"candidate_score":master,"grade":grade,"route":route,"strategies":sc,"hazards":hz,"market":market,"halftime_sent":bool(tracked.get("halftime_sent")) or m.is_halftime});state[key]=tracked;sent+=1
+            if _send(m,p,recs,text):
+                unified_bot._record_live(m,p,s,recs,reason);sent+=1
+                if reason=="goal" and m.minute>MAX_FOLLOWUP_MINUTE:
+                    # Late goal settles the tracked signal. Removing TRACK means the
+                    # discovery layer drops this >75' match on the next scan, so no
+                    # more stats/odds/model work is done for it.
+                    state.pop(key,None)
+                    logger.info("LATE_GOAL_TRACK_CLOSED %d' %s — %s | %s",m.minute,m.home,m.away,current)
+                    continue
+                tracked.update({"ts":now,"score":current,"minute":m.minute,"pressure":p.score,"candidate_score":master,"grade":grade,"route":route,"strategies":sc,"hazards":hz,"market":market,"halftime_sent":bool(tracked.get("halftime_sent")) or m.is_halftime});state[key]=tracked
         else:
             tracked.update({"score":current,"minute":m.minute,"candidate_score":master,"grade":grade,"route":route,"strategies":sc,"hazards":hz,"market":market});state[key]=tracked
     unified_bot._save_sent(state);logger.info("Отправлено LIVE-сигналов/обновлений: %d; сопровождается матчей: %d",sent,sum(1 for k in state if k.startswith("TRACK:")));return sent
