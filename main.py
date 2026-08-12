@@ -37,10 +37,13 @@ async def run_live() -> None:
 
 
 async def main() -> None:
-    if not os.getenv("TELEGRAM_BOT_TOKEN") or not os.getenv("TELEGRAM_CHAT_ID"):
-        logger.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
+    tg_ok, tg_reason = visual_feed_unified_bot.telegram_config_status()
+    if tg_ok:
+        logger.info("Telegram configuration: OK")
+    else:
+        logger.error("Telegram configuration: INVALID — %s", tg_reason)
 
-    logger.info("GOOL BOT LIVE 24/7 started | every %ss | logic=MOMENTUM+DOMINATION+HISTORY", LIVE_INTERVAL_SECONDS)
+    logger.info("GOOL BOT LIVE 24/7 started | every %ss | logic=FULL_MULTI_STRATEGY+REAL_MARKET", LIVE_INTERVAL_SECONDS)
 
     while True:
         started = time.monotonic()
