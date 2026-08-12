@@ -1,0 +1,112 @@
+name: Sportsbook scraper LIVE isolated test
+
+on:
+  push:
+    branches:
+      - test/oddsharvester-live
+  workflow_dispatch:
+
+jobs:
+  live-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Clone sportsbook scraper
+        run: |
+          git clone --depth 1 https://github.com/declanwalpole/sportsbook-odds-scraper.git /tmp/sportsbook-odds-scraper
+          pip install -r /tmp/sportsbook-odds-scraper/requirements.txt
+
+      - name: Test real Bovada LIVE soccer feed and scraper
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json, sys, requests
+          from pathlib import Path
+
+          endpoint='https://www.bovada.lv/services/sports/event/v2/events/A/description/soccer?lang=en&liveOnly=true'
+          r=requests.get(endpoint,timeout=25,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'})
+          print('BOVADA LIVE HTTP',r.status_code,'bytes',len(r.content))
+          print('CONTENT-TYPE',r.headers.get('content-type'))
+          r.raise_for_status()
+          data=r.json()
+          Path('bovada_live_raw.json').write_text(json.dumps(data,ensure_ascii=False,indent=2))
+
+          events=[]
+          def walk(x):
+              if isinstance(x,dict):
+                  if isinstance(x.get('displayGroups'),list) and x.get('description'):
+                      events.append(x)
+                  for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                  for v in x: walk(v)
+          walk(data)
+          print('LIVE EVENTS FOUND',len(events))
+          for e in events[:10]:
+              print('EVENT',e.get('id'),e.get('description'),'link=',e.get('link'),'start=',e.get('startTime'))
+          if not events:
+              raise SystemExit('No live soccer events returned by Bovada')
+
+          sys.path.insert(0,'/tmp/sportsbook-odds-scraper')
+          from event_scraper import EventScraper
+
+          successes=[]
+          for e in events[:8]:
+              candidates=[]
+              for key in ('link','url','path'):
+                  v=e.get(key)
+                  if isinstance(v,str) and v:
+                      candidates.append(v)
+              desc=e.get('description')
+              eid=e.get('id')
+              # Also test Bovada's numeric event id through the repository's own URL parser/API builder.
+              if eid is not None:
+                  candidates.append(str(eid))
+              tried=[]
+              for c in candidates:
+                  if c.startswith('http'):
+                      url=c
+                  elif c.startswith('/sports/'):
+                      url='https://www.bovada.lv'+c
+                  elif c.startswith('sports/'):
+                      url='https://www.bovada.lv/'+c
+                  else:
+                      url='https://www.bovada.lv/sports/'+c.lstrip('/')
+                  if url in tried: continue
+                  tried.append(url)
+                  print('\nTRY',e.get('description'),url)
+                  try:
+                      s=EventScraper(); s.scrape(url)
+                      if s.odds_df is not None and len(s.odds_df):
+                          df=s.odds_df
+                          print('SUCCESS rows',len(df),'columns',list(df.columns))
+                          print(df.head(20).to_string(index=False))
+                          mask=df.astype(str).apply(lambda col: col.str.contains('total|over|under|half|goal',case=False,regex=True)).any(axis=1)
+                          totals=df[mask]
+                          print('TOTAL-LIKE ROWS',len(totals))
+                          print(totals.head(80).to_string(index=False))
+                          successes.append({'event':e.get('description'),'url':url,'rows':len(df),'total_rows':len(totals),'records':totals.head(100).to_dict('records')})
+                          break
+                      print('NO ODDS',getattr(s,'error_message',None))
+                  except Exception as ex:
+                      print('ERROR',type(ex).__name__,str(ex)[:500])
+              if successes: break
+          Path('sportsbook_live_result.json').write_text(json.dumps(successes,ensure_ascii=False,indent=2,default=str))
+          print('\nFINAL SUCCESSES',len(successes))
+          if not successes:
+              raise SystemExit('Repository did not return odds for tested live soccer events')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sportsbook-scraper-live-test
+          path: |
+            bovada_live_raw.json
+            sportsbook_live_result.json
+          if-no-files-found: ignore
