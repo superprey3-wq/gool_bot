@@ -1,4 +1,4 @@
-name: Test Ladbrokes LIVE coverage
+name: Test BetRivers Kambi LIVE coverage
 on:
   workflow_dispatch:
   push:
@@ -11,29 +11,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install requests playwright
-      - name: Compare Flashscore LIVE to Ladbrokes
+      - run: pip install requests playwright curl_cffi
+      - name: Compare Flashscore LIVE to BetRivers Kambi
         env:
           PYTHONPATH: gool_bot
         run: |
           python - <<'PY'
-          import asyncio,re,unicodedata,requests
+          import asyncio,re,unicodedata
           from difflib import SequenceMatcher
+          from curl_cffi import requests
           from feed_live_discovery import discover_live_matches
 
-          BASE='https://sportsapi.ladbrokes.com/restapi/offer/api'
-          H={'User-Agent':'Mozilla/5.0','Accept':'application/json'}
+          OP='rsiusnj'
+          LIST=f'https://eu-offering-api.kambicdn.com/offering/v2018/{OP}/listView/football/all/all/all/matches.json?lang=en_US&market=US'
+          EVENT=f'https://eu-offering-api.kambicdn.com/offering/v2018/{OP}/betoffer/event/{{}}.json?lang=en_US&market=US&includeParticipants=true'
 
-          def text(x):
-              if isinstance(x,str): return x
-              if isinstance(x,list):
-                  for y in x:
-                      if isinstance(y,dict) and y.get('text'): return str(y['text'])
-              if isinstance(x,dict): return str(x.get('text') or x.get('shortText') or '')
-              return ''
           def norm(s):
               s=unicodedata.normalize('NFKD',str(s or '')).encode('ascii','ignore').decode().lower()
-              s=re.sub(r'\b(fc|afc|cf|sc|fk|sv|ac|as|u19|u20|u21|u23|w|women|eng|ita|ger|den|hun)\b',' ',s)
+              s=re.sub(r'\b(fc|afc|cf|sc|fk|sv|ac|as|u19|u20|u21|u23|women|eng|ita|ger|den|hun)\b',' ',s)
               s=re.sub(r'[^a-z0-9]+',' ',s)
               return ' '.join(s.split())
           def sim(a,b):
@@ -42,67 +37,64 @@ jobs:
               if a==b:return 1
               if a in b or b in a:return .92
               return SequenceMatcher(None,a,b).ratio()
-          def participants(f):
-              ps=f.get('participants') or []
-              names=[]
-              for p in ps:
-                  n=text(p.get('name'))
-                  if n:names.append(n)
-              if len(names)>=2:return names[0],names[1]
-              n=text(f.get('name'))
-              for sep in (' - ',' v ',' vs ',' @ '):
-                  if sep in n:
-                      a,b=n.split(sep,1); return a,b
-              return n,''
-          def has_ou(f):
-              for m in f.get('markets') or []:
-                  mn=(text(m.get('name'))+' '+str(m.get('marketType',''))).lower()
-                  if any(k in mn for k in ('total','over/under','over under','goals')):
-                      opts=m.get('options') or []
-                      if opts:return True
-              return False
+          def is_live(ev):
+              st=str(ev.get('state','')).upper()
+              return st not in ('NOT_STARTED','ENDED','FINISHED','CANCELLED','')
+          def open_total_offers(data):
+              out=[]
+              for bo in data.get('betOffers') or []:
+                  bt=str((bo.get('betOfferType') or {}).get('name','')).lower()
+                  crit=str((bo.get('criterion') or {}).get('label','')).lower()
+                  if not any(k in bt+' '+crit for k in ('over/under','over_under','total goals','total')): continue
+                  overs=[]
+                  for o in bo.get('outcomes') or []:
+                      if o.get('status')!='OPEN': continue
+                      label=str(o.get('label','')).lower(); typ=str(o.get('type',''))
+                      if 'over' in label or typ=='OT_OVER':
+                          try: odd=float(o.get('odds'))/1000
+                          except: odd=None
+                          line=o.get('line'); line=float(line)/1000 if line is not None else None
+                          overs.append((line,odd,crit,bt))
+                  if overs: out.extend(overs)
+              return out
 
           flash=asyncio.run(discover_live_matches())
           print('FLASHSCORE_LIVE',len(flash))
-          for m in flash[:20]: print('FS',m.minute,m.home,'--',m.away,m.home_score,m.away_score)
+          r=requests.get(LIST,impersonate='chrome120',timeout=25)
+          print('KAMBI_STATUS',r.status_code,r.text[:200])
+          r.raise_for_status(); data=r.json()
+          wrappers=data.get('events') or []
+          events=[]
+          for w in wrappers:
+              ev=w.get('event') or w
+              if ev.get('homeName') and ev.get('awayName') and is_live(ev): events.append(ev)
+          print('KAMBI_LIVE',len(events),'ALL_WRAPPERS',len(wrappers))
+          for ev in events[:30]: print('KAMBI',ev.get('state'),ev.get('homeName'),'--',ev.get('awayName'),'id',ev.get('id'))
 
-          rs=requests.get(f'{BASE}/GB/sports?language=en',headers=H,timeout=25)
-          print('SPORTS_STATUS',rs.status_code,rs.text[:300])
-          rs.raise_for_status(); sj=rs.json(); sports=sj.get('items',sj if isinstance(sj,list) else [])
-          football=None
-          for s in sports:
-              nm=text(s.get('name'))
-              print('SPORT',s.get('id'),nm)
-              if nm.lower() in ('football','soccer'): football=s
-          if not football:
-              raise SystemExit('NO_FOOTBALL_SPORT')
-          sid=football.get('id')
-          rf=requests.get(f'{BASE}/{sid}/GB/fixtures',params={'isInPlay':'true','onlyMainMarkets':'false','language':'en'},headers=H,timeout=30)
-          print('FIX_STATUS',rf.status_code,rf.text[:300])
-          rf.raise_for_status(); fj=rf.json(); fixtures=fj.get('items',[])
-          print('LADBROKES_INPLAY',len(fixtures),'SPORT_ID',sid)
-          lad=[]
-          for f in fixtures:
-              a,b=participants(f); lad.append((a,b,f,has_ou(f)))
-          for a,b,f,ou in lad[:30]: print('LAD',a,'--',b,'OU',ou,'markets',len(f.get('markets') or []))
-
-          matched=[]; oumatched=[]; misses=[]
+          matched=[]; misses=[]
           for m in flash:
               best=None
-              for a,b,f,ou in lad:
-                  direct=(sim(m.home,a)+sim(m.away,b))/2
-                  rev=(sim(m.home,b)+sim(m.away,a))/2
-                  score=max(direct,rev)
-                  if best is None or score>best[0]: best=(score,a,b,ou)
-              if best and best[0]>=0.72:
-                  matched.append((m,best))
-                  if best[3]:oumatched.append((m,best))
+              for ev in events:
+                  a,b=ev.get('homeName',''),ev.get('awayName','')
+                  score=max((sim(m.home,a)+sim(m.away,b))/2,(sim(m.home,b)+sim(m.away,a))/2)
+                  if best is None or score>best[0]: best=(score,ev)
+              if best and best[0]>=0.72: matched.append((m,best))
               else: misses.append((m,best))
-          print('RESULT FS',len(flash),'LAD',len(lad),'MATCHED',len(matched),'WITH_OU',len(oumatched))
-          print('MATCH_COVERAGE',round(100*len(matched)/len(flash),1) if flash else 0)
-          print('OU_COVERAGE',round(100*len(oumatched)/len(flash),1) if flash else 0)
-          print('--- MATCHED SAMPLE ---')
-          for m,b in matched[:30]: print('MATCH',m.home,'--',m.away,'=>',b[1],'--',b[2],'score',round(b[0],2),'OU',b[3])
-          print('--- MISS SAMPLE ---')
-          for m,b in misses[:30]: print('MISS',m.home,'--',m.away,'best',None if not b else (b[1],b[2],round(b[0],2)))
+          print('MATCHED',len(matched),'OF',len(flash),'=',round(100*len(matched)/len(flash),1) if flash else 0,'%')
+
+          with_ou=[]
+          for m,(score,ev) in matched:
+              try:
+                  rr=requests.get(EVENT.format(ev.get('id')),impersonate='chrome120',timeout=15)
+                  offers=open_total_offers(rr.json()) if rr.status_code==200 else []
+              except Exception as e:
+                  print('EVENT_ERR',ev.get('id'),e); offers=[]
+              if offers: with_ou.append((m,score,ev,offers))
+              print('CHECK',m.home,'--',m.away,'=>',ev.get('homeName'),'--',ev.get('awayName'),'score',round(score,2),'OU',offers[:6])
+          print('WITH_OU',len(with_ou),'OF_FS',len(flash),'=',round(100*len(with_ou)/len(flash),1) if flash else 0,'%')
+          print('WITH_OU_OF_MATCHED',round(100*len(with_ou)/len(matched),1) if matched else 0,'%')
+          print('--- MISSES ---')
+          for m,b in misses[:40]:
+              ev=b[1] if b else None
+              print('MISS',m.home,'--',m.away,'best',None if not ev else (ev.get('homeName'),ev.get('awayName'),round(b[0],2)))
           PY
