@@ -27,6 +27,7 @@ logger = logging.getLogger("gool_live_24x7")
 
 import visual_feed_unified_bot  # noqa: E402
 import live_candidate_patch  # noqa: E402,F401 - installs multi-logic LIVE gate
+import period_market_patch  # noqa: E402,F401 - separates FT best bet from period goal price
 import prematch_standard_scanner  # noqa: E402
 from telegram_subscribers import get_subscribers, polling_loop  # noqa: E402
 
@@ -50,8 +51,6 @@ def _send_prematch_to_non_owner_subscribers(text: str) -> bool:
     return delivered > 0
 
 
-# The owner's PREMATCH delivery remains on GitHub Actions. This container runs
-# the same scanner only for additional subscribers, avoiding duplicate owner alerts.
 prematch_standard_scanner.base._telegram_send = _send_prematch_to_non_owner_subscribers
 
 
@@ -84,10 +83,7 @@ async def main() -> None:
     poller = asyncio.create_task(polling_loop(), name="telegram-command-poller")
     prematch = asyncio.create_task(prematch_loop(), name="prematch-subscriber-loop")
     logger.info("Telegram /start /stop /status polling enabled")
-    logger.info(
-        "GOOL BOT LIVE 24/7 started | every %ss | logic=FULL_MULTI_STRATEGY+REAL_MARKET",
-        LIVE_INTERVAL_SECONDS,
-    )
+    logger.info("GOOL BOT LIVE 24/7 started | every %ss | logic=FULL_MULTI_STRATEGY+REAL_MARKET", LIVE_INTERVAL_SECONDS)
 
     try:
         while True:
@@ -96,8 +92,7 @@ async def main() -> None:
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(2.0, LIVE_INTERVAL_SECONDS - elapsed))
     finally:
-        poller.cancel()
-        prematch.cancel()
+        poller.cancel(); prematch.cancel()
         await asyncio.gather(poller, prematch, return_exceptions=True)
 
 
