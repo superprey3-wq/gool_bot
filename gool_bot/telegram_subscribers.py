@@ -90,7 +90,7 @@ def _send_reply(chat_id: str | int, text: str) -> None:
     if not token:
         return
     try:
-        requests.post(
+        response = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={
                 "chat_id": str(chat_id),
@@ -100,6 +100,8 @@ def _send_reply(chat_id: str | int, text: str) -> None:
             },
             timeout=15,
         )
+        if not response.ok:
+            logger.warning("Telegram command reply failed: HTTP %s %s", response.status_code, response.text[:200])
     except requests.RequestException as exc:
         logger.warning("Telegram command reply failed: %s", exc)
 
@@ -141,13 +143,15 @@ def _handle_message(message: dict) -> None:
         text = "✅ Подписка активна." if active else "🔕 Подписка отключена. Отправь /start."
         _send_reply(chat_id, text)
     elif command == "/report":
+        _send_reply(chat_id, "📊 Собираю текущий отчёт…")
         try:
             from report_now import build_report_text
-            _send_reply(chat_id, build_report_text())
+            report = build_report_text()
+            _send_reply(chat_id, report)
             logger.info("Telegram report sent to: %s", chat_id)
         except Exception as exc:
             logger.exception("Telegram /report failed: %s", exc)
-            _send_reply(chat_id, "⚠️ Не удалось собрать отчёт прямо сейчас. Попробуй ещё раз через минуту.")
+            _send_reply(chat_id, "⚠️ Не удалось собрать отчёт прямо сейчас. Ошибка записана в лог.")
 
 
 def _poll_once(offset: int | None) -> int | None:
