@@ -1,7 +1,8 @@
-"""Full multi-strategy LIVE engine with real LSApp market confirmation/value edge."""
+"""Full multi-strategy LIVE engine with real market confirmation/value edge."""
 from __future__ import annotations
 import logging, math, time
 import unified_bot
+from bovada_live_odds import get_goal_total_odds
 from live_engine import StatsSnapshot, calculate_goal_pressure, fetch_stats, fetch_summary, get_previous_values, parse_goal_timeline, parse_stats, save_snapshot
 from match_history import analyse_history, fetch_match_history
 logger=logging.getLogger("live_candidate_patch"); _HISTORY_CACHE={}; _HISTORY_CACHE_SECONDS=900
@@ -68,11 +69,37 @@ def _chaos(m,goals,mom,d):
 def _side(s,i):return _clamp(_pair(s,"shots")[i]*3+_pair(s,"shots_on_target")[i]*8+_pair(s,"xg")[i]*20+_pair(s,"big_chances")[i]*12+_pair(s,"shots_inside_box")[i]*2+_pair(s,"touches_box")[i]*.8+_pair(s,"corners")[i]*3)
 def _hazards(m,master):
     rate=(2.7/90)*(.45+1.35*master/100); vals=[(1-math.exp(-rate*x))*100 for x in (5,10,15)]; remain=(47-m.minute) if m.minute<=45 else (94-m.minute);vals.append((1-math.exp(-rate*max(0,remain)))*100);return tuple(round(min(92,x),1) for x in vals)
+
+def _target_goal_markets(entries,m,p):
+    """Return only FT Over lines for +1 and +2 goals from the current score.
+
+    Bovada is preferred because its live feed was verified end-to-end. LSApp is a
+    fallback for the exact same target line, never for a different/nearby market.
+    """
+    goals=int(m.home_score)+int(m.away_score); targets=(goals+.5,goals+1.5)
+    ls_rows=[r for r in unified_bot._recommendations(entries,m,p) if r.get("scope")=="FULL_TIME" and float(r.get("line",-99)) in targets]
+    ls_by_line={float(r["line"]):dict(r,source="LSApp") for r in ls_rows}
+    try:bovada=get_goal_total_odds(m.home,m.away,m.home_score,m.away_score)
+    except Exception as e:logger.info("Bovada target markets failed %s: %s",m.event_id,e); bovada=[]
+    bov_by_line={float(r["line"]):r for r in bovada}
+    rows=[]
+    for step,line in enumerate(targets,1):
+        r=dict(bov_by_line.get(float(line)) or ls_by_line.get(float(line)) or {})
+        if not r:continue
+        r["goal_step"]=step; r["target_label"]="ещё 1 гол" if step==1 else "ещё 2 гола"
+        odd=float(r["odd"]); conf=unified_bot._model_confidence(p.score,p.momentum,float(line),goals,"FULL_TIME",m.minute,odd)
+        r["confidence"]=conf; r["value_edge"]=round(conf-(100/odd),1)
+        rows.append(r)
+    if rows:
+        best=max(rows,key=lambda r:(float(r.get("value_edge",-999)),int(r.get("confidence",0)),-int(r.get("goal_step",9))))
+        best["best_bet"]=True
+    return rows
+
 def _market(entries,m,p):
-    recs=unified_bot._recommendations(entries,m,p)
+    recs=_target_goal_markets(entries,m,p)
     if not recs:return recs,{"available":False}
-    rows=sorted(recs,key=lambda r:(-int(r.get("bookmakers",0)),abs(float(r.get("odd",9))-1.90))); r=rows[0]; odd=float(r["odd"]); raw=100/odd
-    return recs,{"available":True,"scope":r["scope"],"line":r["line"],"odd":odd,"bookmakers":r.get("bookmakers",0),"market_probability":round(raw,1)}
+    r=next((x for x in recs if x.get("best_bet")),recs[0]); odd=float(r["odd"]); raw=100/odd
+    return recs,{"available":True,"scope":"FULL_TIME","line":r["line"],"odd":odd,"bookmakers":r.get("bookmakers",1),"source":r.get("source",""),"goal_step":r.get("goal_step"),"market_probability":round(raw,1)}
 def _evaluate(m,s,p,goals,market):
     hist,_=_history(m);d=_dom(m,s);t=_threat(s);u=_under(m,s);f=_fast(m,s,d,hist);sec=_second(m,s,d,hist,u);ch=_chase(m,s);late=_late(m,d,p.momentum,ch,t,hist);chaos=_chaos(m,goals,p.momentum,d);home=_side(s,0);away=_side(s,1)
     sc={"MOMENTUM":p.score,"DOMINATION":d,"HISTORY":hist,"FAST_START":f,"SECOND_HALF":sec,"CHASE":ch,"LATE_GOAL":late,"POST_GOAL_CHAOS":chaos,"XG_UNDERPERFORMANCE":u,"THREAT":t,"HOME_PRESSURE":home,"AWAY_PRESSURE":away}
@@ -84,6 +111,17 @@ def _evaluate(m,s,p,goals,market):
     if edge is not None and edge<=-18 and len(strong)<2:qualifies=False
     if edge is not None and edge>=8 and len(corroborated)>=2:qualifies=True
     route="+".join(k for k,v in strong[:3]) if strong else ("MULTI_CONFIRM" if qualifies else "REJECT"); market.update({"model_period_probability":model_period,"edge_pp":edge,"market_value_score":market_score}); return qualifies,route,master,sc,hz,market
+
+def _price_lines(recs,m):
+    goals=int(m.home_score)+int(m.away_score); targets=(goals+.5,goals+1.5); by={float(r["line"]):r for r in recs if r.get("scope")=="FULL_TIME"}
+    lines=[]
+    for step,line in enumerate(targets,1):
+        r=by.get(float(line)); label="Ещё 1 гол" if step==1 else "Ещё 2 гола"
+        if r:
+            source=f" · {r.get('source')}" if r.get("source") else ""
+            lines.append(f"💰 {label}: <b>ТБ {line:g} — {float(r['odd']):.2f}</b>{source}")
+        else:lines.append(f"💰 {label}: <b>ТБ {line:g} — нет данных</b>")
+    return "\n".join(lines)
 
 def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
     def pair(k):a,b=s.get(k,(0,0)); return f"{a:g}–{b:g}"
@@ -108,8 +146,10 @@ def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
         if m.is_halftime and grade in ("ENTRY","STRONG"):
             action += "\n🔵 Приоритет: ещё 1 гол во 2-м тайме"
 
-    model_goal=max(1,min(92,round(hz[3]))); price=f"💰 ТБ {market['line']:g} — <b>{market['odd']:.2f}</b>" if market.get("available") else "💰 LIVE-кэф: <b>нет данных</b>"; stats=f"📊 xG {pair('xg')} | Удары {pair('shots')} | В створ {pair('shots_on_target')}"
-    return f"{title}\n\n⚽ <b>{m.home} — {m.away}</b>\n⏱ {status} | <b>{m.home_score}:{m.away_score}</b>\n\n{action}\n📈 Вероятность ещё гола: <b>{model_goal}%</b>\n{price}\n\n{stats}\n🧠 Рейтинг сигнала: <b>{master:.0f}/100</b>"
+    model_goal=max(1,min(92,round(hz[3]))); prices=_price_lines(recs,m); best=next((r for r in recs if r.get("best_bet")),None)
+    best_line=f"⭐ Лучшая ставка: <b>ТБ {float(best['line']):g} @ {float(best['odd']):.2f}</b>" if best else "⭐ Лучшая ставка: <b>нет точного LIVE-кэфа</b>"
+    stats=f"📊 xG {pair('xg')} | Удары {pair('shots')} | В створ {pair('shots_on_target')}"
+    return f"{title}\n\n⚽ <b>{m.home} — {m.away}</b>\n⏱ {status} | <b>{m.home_score}:{m.away_score}</b>\n\n{action}\n📈 Вероятность ещё гола: <b>{model_goal}%</b>\n{prices}\n{best_line}\n\n{stats}\n🧠 Рейтинг сигнала: <b>{master:.0f}/100</b>"
 def _send(m,p,recs,text):return unified_bot.telegram_send_signal(m,p,recs,text)
 
 async def scan_live_once_multi():
@@ -122,8 +162,6 @@ async def scan_live_once_multi():
         goals=parse_goal_timeline(fetch_summary(m.event_id));entries=unified_bot._fetch_event_odds(m.event_id);recs,market=_market(entries,m,p);qualifies,route,master,sc,hz,market=_evaluate(m,s,p,goals,market);grade=_signal_grade(master);ranked=sorted(sc.items(),key=lambda x:x[1],reverse=True);score_text=" ".join(f"{k}={v:.0f}" for k,v in ranked[:8]);logger.info("LIVE_EVAL %d' %s — %s %d:%d | stats=%s | %s | MASTER=%.0f GRADE=%s | %s %s",m.minute,m.home,m.away,m.home_score,m.away_score,status,score_text,master,grade,"✅" if qualifies else "❌",route)
         now=time.time();key=f"TRACK:{m.event_id}";tracked=state.get(key);current=f"{m.home_score}:{m.away_score}"
         if not tracked:
-            # Never notify below the observation tier. A strategy may technically
-            # qualify while the combined master score is still too weak.
             if not qualifies or grade=="SILENT":continue
             if not m.is_halftime and m.minute>MAX_NEW_SIGNAL_MINUTE:logger.info("LATE_ENTRY_BLOCKED %d' %s — %s",m.minute,m.home,m.away);continue
             text=_format_strategy_signal(m,p,s,recs,goals,"signal",route,master,hz,market)
@@ -137,10 +175,6 @@ async def scan_live_once_multi():
         jump=qualifies and grade!="SILENT" and master>=lastm+FOLLOWUP_SCORE_JUMP and cooldown_ok
         halftime_new=m.is_halftime and not bool(tracked.get("halftime_sent")) and grade!="SILENT"
         ordinary_update=(upgraded or jump or halftime_new) and cooldown_ok
-
-        # A real goal is useful even late: it closes/evaluates the previous signal.
-        # Ordinary reminders are forbidden after 80' and never repeat just because
-        # 12 minutes passed. They require a genuine grade upgrade or +12 score jump.
         should_send=changed or (m.minute<=MAX_FOLLOWUP_MINUTE and ordinary_update)
         if should_send:
             reason="goal" if changed else "followup"
@@ -149,9 +183,6 @@ async def scan_live_once_multi():
             if _send(m,p,recs,text):
                 unified_bot._record_live(m,p,s,recs,reason);sent+=1
                 if reason=="goal" and m.minute>MAX_FOLLOWUP_MINUTE:
-                    # Late goal settles the tracked signal. Removing TRACK means the
-                    # discovery layer drops this >75' match on the next scan, so no
-                    # more stats/odds/model work is done for it.
                     state.pop(key,None)
                     logger.info("LATE_GOAL_TRACK_CLOSED %d' %s — %s | %s",m.minute,m.home,m.away,current)
                     continue
