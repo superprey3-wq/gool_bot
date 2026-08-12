@@ -50,7 +50,6 @@ def _hazards(m,master):
     rate=(2.7/90)*(.45+1.35*master/100); vals=[(1-math.exp(-rate*x))*100 for x in (5,10,15)]; remain=(47-m.minute) if m.minute<=45 else (94-m.minute);vals.append((1-math.exp(-rate*max(0,remain)))*100);return tuple(round(min(92,x),1) for x in vals)
 
 def _market(entries,m,p):
-    """Use the same real LIVE LSApp prices as recommendations and derive a fair market baseline."""
     recs=unified_bot._recommendations(entries,m,p)
     if not recs:return recs,{"available":False}
     rows=sorted(recs,key=lambda r:(-int(r.get("bookmakers",0)),abs(float(r.get("odd",9))-1.90)))
@@ -74,27 +73,30 @@ def _evaluate(m,s,p,goals,market):
 
 def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
     def pair(k):
-        a,b=s.get(k,(0,0)); return f"{a:g} — {b:g}"
+        a,b=s.get(k,(0,0)); return f"{a:g}–{b:g}"
     status="Перерыв" if m.is_halftime else f"{m.minute}'"
-    if reason=="goal": title="⚽ <b>ГОЛ — МАТЧ ПЕРЕСЧИТАН</b>"
+    if reason=="goal": title="✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>\n🔄 Матч пересчитан"
     elif reason=="followup": title="🔄 <b>ОБНОВЛЕНИЕ ПО МАТЧУ</b>"
     elif m.is_halftime: title="🔵 <b>ПРОГНОЗ НА 2-Й ТАЙМ</b>"
-    else: title="🔴 <b>LIVE-СИГНАЛ НА ГОЛ</b>"
-    league=f"🏆 {m.league}\n" if m.league else "🏆 Турнир: данные уточняются\n"
-    goals_line=f"⚽ Голы: <b>{', '.join(goals)}</b>\n" if goals else "⚽ Голы: пока нет\n"
+    else: title="🔴 <b>LIVE-СИГНАЛ</b>"
     model_goal=max(1,min(92,round(hz[3])))
-    pick=f"🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n✅ Ещё <b>1 гол</b> до конца текущего периода\n📈 Оценка модели: <b>{model_goal}%</b>"
-    if market.get("available"):
-        pick+=f"\n💰 Рынок: ТБ {market['line']:g} @ <b>{market['odd']:.2f}</b> · implied {market['market_probability']:.1f}% · edge {market['edge_pp']:+.1f} п.п."
+    if m.is_halftime:
+        forecast="🔵 <b>ЖДУ ЕЩЁ 1 ГОЛ ВО 2-М ТАЙМЕ</b>"
     else:
-        pick+="\nℹ️ Подтверждённого LIVE-коэффициента сейчас нет — прогноз модели всё равно публикуется."
-    strategy=f"✅ Стратегии подтверждают вход: <b>{route}</b> · рейтинг <b>{master:.0f}/100</b>"
-    late=""
-    if m.minute>=70: late="\n⚠️ <b>Поздняя стадия:</b> первоначальные сигналы после 75' бот не открывает.\n"
-    bets=unified_bot._format_bets(recs) if recs else "Подтверждённых LIVE-котировок на тоталы сейчас нет."
-    horizon=f"• Гол: 5м {hz[0]:.0f}% · 10м {hz[1]:.0f}% · 15м {hz[2]:.0f}% · до конца периода {hz[3]:.0f}%"
-    odds_note="\n<i>Коэффициенты — текущие LIVE-котировки LSApp. Процент — оценка модели, а не гарантированная вероятность.</i>" if recs else "\n<i>Процент — оценка модели, а не гарантированная вероятность.</i>"
-    return f"{title}\n\n⚽ <b>{m.home} — {m.away}</b>\n{league}⏱ {status} | Счёт <b>{m.home_score}:{m.away_score}</b>\n{goals_line}{late}\n📊 <b>Статистика</b>\nxG: <b>{pair('xg')}</b>\nУдары: {pair('shots')}\nУдары в створ: {pair('shots_on_target')}\nБольшие моменты: {pair('big_chances')}\nУдары из штрафной: {pair('shots_inside_box')}\nКасания в штрафной: {pair('touches_box')}\nУгловые: {pair('corners')}\n\n⚡ Динамика: <b>{p.momentum:.0f}/100</b>\n🔥 Давление на гол: <b>{p.score:.0f}/100</b>\n{strategy}\n\n🎯 {pick}\n\n📉 <b>Рыночные варианты</b>\n{bets}\n\n{horizon}{odds_note}"
+        forecast="🔥 <b>ЖДУ ЕЩЁ 1 ГОЛ</b>"
+    if market.get("available"):
+        price=f"💰 ТБ {market['line']:g} — <b>{market['odd']:.2f}</b>"
+    else:
+        price="💰 LIVE-кэф: <b>нет данных</b>"
+    stats=f"📊 xG {pair('xg')} | Удары {pair('shots')} | В створ {pair('shots_on_target')}"
+    return (f"{title}\n\n"
+            f"⚽ <b>{m.home} — {m.away}</b>\n"
+            f"⏱ {status} | <b>{m.home_score}:{m.away_score}</b>\n\n"
+            f"{forecast}\n"
+            f"📈 Вероятность: <b>{model_goal}%</b>\n"
+            f"{price}\n\n"
+            f"{stats}\n"
+            f"🧠 Рейтинг сигнала: <b>{master:.0f}/100</b>")
 
 async def scan_live_once_multi():
     live=await unified_bot.discover_live_matches();logger.info("Найдено LIVE-матчей: %d | FULL STRATEGY + REAL MARKET PIPELINE",len(live));state=unified_bot._load_sent();sent=0;ids={m.event_id for m in live}
