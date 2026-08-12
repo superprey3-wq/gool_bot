@@ -24,9 +24,36 @@ def _today_rows():
     return rows
 
 
+def _live_signal_rows(rows):
+    """Only real signal cycles count in statistics.
+
+    followup = informational update of an existing signal and must not inflate the
+    number of bets/signals. A goal row is a fresh signal cycle only when the bot
+    continued tracking after that goal (<= 80').
+    """
+    result = []
+    for row in rows:
+        if row.get("kind") != "live":
+            continue
+        reason = str(row.get("reason") or "signal")
+        if reason == "followup":
+            continue
+        if reason == "goal":
+            try:
+                minute = int(row.get("minute") or 0)
+            except Exception:
+                minute = 0
+            # A late goal closes tracking; it is the success of the preceding
+            # signal, not a new entry after 80'.
+            if minute > 80:
+                continue
+        result.append(row)
+    return result
+
+
 def build_report_text() -> str:
     rows = _today_rows()
-    live_rows = [r for r in rows if r.get("kind") == "live"]
+    live_rows = _live_signal_rows(rows)
     pre_rows = [r for r in rows if r.get("kind") == "prematch"]
 
     live_ok = 0
@@ -79,19 +106,18 @@ def build_report_text() -> str:
             f"{row.get('scope')} {row.get('side')} {row.get('line')} → {fh}:{fa}"
         )
 
-    settled_live = live_ok
-    live_rate = round(live_ok / settled_live * 100) if settled_live else 0
     lines = [
-        f"📊 <b>GOOL BOT — ОТЧЁТ НА СЕЙЧАС</b>",
+        "📊 <b>GOOL BOT — ОТЧЁТ НА СЕЙЧАС</b>",
         f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}",
         "",
         "🔴 <b>LIVE</b>",
-        f"Всего сигналов: <b>{len(live_rows)}</b>",
-        f"✅ Уже сработали: <b>{live_ok}</b>",
-        f"⏳ Пока без гола/в игре: <b>{live_wait}</b>",
+        f"Реальных сигналов: <b>{len(live_rows)}</b>",
+        f"✅ Уже дали следующий гол: <b>{live_ok}</b>",
+        f"⏳ Ещё не закрыты: <b>{live_wait}</b>",
+        "ℹ️ Повторные обновления матча в число сигналов не входят.",
     ]
-    if live_ok:
-        lines.append(f"🎯 По уже сработавшим: <b>{live_rate}%</b>")
+    if live_rows:
+        lines.append(f"🎯 Текущая доля с голом: <b>{round(live_ok / len(live_rows) * 100)}%</b>")
     lines += [
         "",
         "🔥 <b>ПРЕМАТЧ</b>",
@@ -101,7 +127,7 @@ def build_report_text() -> str:
         f"⏳ Нет данных/возврат: <b>{pre_wait}</b>",
     ]
     if live_details:
-        lines += ["", "<b>Последние LIVE:</b>"] + live_details[-12:]
+        lines += ["", "<b>Последние LIVE-сигналы:</b>"] + live_details[-12:]
     if pre_details:
         lines += ["", "<b>Последние прематч:</b>"] + pre_details[-10:]
     if not rows:
