@@ -29,8 +29,6 @@ def _format_signal(match, pressure, stats, recs, goal_times, reason="signal"):
 def _telegram_credentials():
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     owner_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    # Optional split-token support for hosts where users prefer storing bot id
-    # and secret separately. We NEVER infer bot id from chat id.
     if token and ":" not in token:
         bot_id = os.getenv("TELEGRAM_BOT_ID", "").strip()
         if bot_id.isdigit():
@@ -134,6 +132,7 @@ def _send_photo(card_bytes: bytes) -> bool:
                 )
         except requests.RequestException as exc:
             logger.warning("Signal card upload to %s failed: %s", chat_id, exc)
+    logger.info("TELEGRAM photo delivered to %d/%d subscribers", delivered, len(recipients))
     return delivered > 0
 
 
@@ -162,8 +161,31 @@ def telegram_send(text: str):
     return True
 
 
+def telegram_send_signal(match, pressure, recs, text):
+    """Broadcast one LIVE card and its text to every active Telegram subscriber."""
+    photo_ok = False
+    try:
+        card = render_signal_card(match, pressure, recs)
+        photo_ok = _send_photo(card)
+    except Exception as exc:
+        logger.warning(
+            "Signal card rendering failed for %s: %s",
+            getattr(match, "event_id", ""),
+            exc,
+        )
+
+    text_ok = _send_text(text)
+    if text_ok and not photo_ok:
+        logger.warning(
+            "LIVE text delivered but photo failed for %s",
+            getattr(match, "event_id", ""),
+        )
+    return text_ok
+
+
 unified_bot._format_signal = _format_signal
 unified_bot.telegram_send = telegram_send
+unified_bot.telegram_send_signal = telegram_send_signal
 
 
 if __name__ == "__main__":
