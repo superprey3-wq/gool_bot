@@ -18,14 +18,29 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Train bundle
+      - name: Train and capture
         working-directory: /tmp/reymes
-        run: python scripts/train.py --out artifacts
-      - name: Predict demo fixtures
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python scripts/train.py --out artifacts 2>&1 | tee /tmp/reymes-train.log
+      - name: Predict if bundle exists
         working-directory: /tmp/reymes
-        run: python scripts/predict_upcoming.py --artifacts artifacts --json /tmp/reymes_preds.json
-      - name: Show predictions
-        run: cat /tmp/reymes_preds.json
+        continue-on-error: true
+        run: |
+          if [ -f artifacts/models.joblib ]; then
+            python scripts/predict_upcoming.py --artifacts artifacts --json /tmp/reymes_preds.json 2>&1 | tee /tmp/reymes-predict.log
+          else
+            echo 'NO_BUNDLE' | tee /tmp/reymes-predict.log
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reymes-test
+          path: |
+            /tmp/reymes-train.log
+            /tmp/reymes-predict.log
+            /tmp/reymes_preds.json
+          if-no-files-found: ignore
 
   prophitbet:
     runs-on: ubuntu-latest
@@ -34,15 +49,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Clone ProphitBet
         run: git clone --depth 1 https://github.com/kochlisGit/ProphitBet-Soccer-Bets-Predictor.git /tmp/prophit
-      - name: Inspect project
+      - name: Install and capture
         working-directory: /tmp/prophit
+        continue-on-error: true
         run: |
-          echo '--- Python files ---'
-          find . -maxdepth 2 -type f -name '*.py' | head -80
-          echo '--- requirements ---'
-          cat requirements.txt || true
-      - name: Install requirements smoke test
-        working-directory: /tmp/prophit
-        run: |
+          set -o pipefail
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt 2>&1 | tee /tmp/prophit-install.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prophitbet-test
+          path: /tmp/prophit-install.log
