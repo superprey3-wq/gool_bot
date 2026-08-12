@@ -1,0 +1,27 @@
+name: Test math forecast
+on:
+  workflow_dispatch:
+  push:
+    branches: ["test/prematch-prediction-models"]
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Arsenal Como math forecast
+        env:
+          PYTHONPATH: gool_bot
+        run: |
+          python - <<'PY'
+          from match_history import fetch_match_history
+          from math_forecast import forecast_from_history
+          ctx=fetch_match_history('pCmS9Hj5','Arsenal (Eng)','Como (Ita)',limit=8)
+          print('HOME_ROWS',[(r.home,r.away,r.home_goals,r.away_goals) for r in ctx.home_recent])
+          print('AWAY_ROWS',[(r.home,r.away,r.home_goals,r.away_goals) for r in ctx.away_recent])
+          print('H2H_ROWS',[(r.home,r.away,r.home_goals,r.away_goals) for r in ctx.h2h])
+          print('FORECAST',forecast_from_history(ctx.home_recent,ctx.away_recent,home_elo=1725,away_elo=1600))
+          PY
