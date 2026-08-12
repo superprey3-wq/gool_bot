@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("gool_live_24x7")
 
 import visual_feed_unified_bot  # noqa: E402
+import live_candidate_patch  # noqa: E402,F401 - installs multi-logic LIVE gate
 
 
 async def run_live() -> None:
@@ -39,7 +40,7 @@ async def main() -> None:
     if not os.getenv("TELEGRAM_BOT_TOKEN") or not os.getenv("TELEGRAM_CHAT_ID"):
         logger.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
 
-    logger.info("GOOL BOT LIVE 24/7 started | every %ss", LIVE_INTERVAL_SECONDS)
+    logger.info("GOOL BOT LIVE 24/7 started | every %ss | logic=MOMENTUM+DOMINATION+HISTORY", LIVE_INTERVAL_SECONDS)
 
     while True:
         started = time.monotonic()
