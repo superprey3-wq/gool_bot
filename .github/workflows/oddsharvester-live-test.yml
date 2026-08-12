@@ -9,7 +9,7 @@ on:
 jobs:
   live-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -22,44 +22,61 @@ jobs:
           python -m pip install --upgrade pip
           pip install oddsharvester
           python -m playwright install --with-deps chromium
-          oddsharvester --help
 
       - name: Discover real LIVE football matches
-        continue-on-error: true
         run: |
           oddsharvester live -s football --links-only -f json -o live_links.json --headless
           echo '=== LIVE LINKS ==='
-          test -f live_links.json && cat live_links.json || true
+          cat live_links.json
 
-      - name: Scrape LIVE football Over Under markets
+      - name: Select one real LIVE match
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          p=pathlib.Path('live_links.json')
+          data=json.loads(p.read_text())
+          rows=data if isinstance(data,list) else data.get('data',[]) if isinstance(data,dict) else []
+          if not rows:
+              print('NO_LIVE_MATCHES')
+              pathlib.Path('selected_match.txt').write_text('NO_LIVE_MATCHES')
+              raise SystemExit(0)
+          row=rows[0]
+          url=row.get('match_url') or row.get('url') or ''
+          pathlib.Path('selected_match.txt').write_text(json.dumps(row,ensure_ascii=False,indent=2))
+          print('SELECTED',json.dumps(row,ensure_ascii=False))
+          if url:
+              with open(os.environ['GITHUB_ENV'],'a') as f:
+                  f.write(f'MATCH_URL={url}\n')
+          PY
+
+      - name: Scrape selected LIVE match Over Under markets
+        if: env.MATCH_URL != ''
         continue-on-error: true
         run: |
-          oddsharvester live -s football -m over_under -f json -o live_odds.json --headless --concurrency 2 --request-delay 2
+          echo "Scraping $MATCH_URL"
+          oddsharvester live -s football --match-link "$MATCH_URL" -m over_under -f json -o live_odds.json --headless --concurrency 1 --request-delay 1
           echo '=== LIVE ODDS OUTPUT ==='
           test -f live_odds.json && cat live_odds.json || true
 
       - name: Summarize captured totals
+        if: always()
         run: |
           python - <<'PY'
           import json, pathlib
-          for name in ('live_links.json','live_odds.json'):
-              p=pathlib.Path(name)
-              print(f'\n--- {name} ---')
-              if not p.exists():
-                  print('NO FILE')
-                  continue
-              try:
-                  data=json.loads(p.read_text())
-              except Exception as e:
-                  print('PARSE ERROR',e)
-                  print(p.read_text()[:4000])
-                  continue
-              rows=data if isinstance(data,list) else data.get('data',[]) if isinstance(data,dict) else []
-              print('ROWS',len(rows))
-              for r in rows[:10]:
-                  if not isinstance(r,dict):
-                      print(r); continue
-                  print({k:r.get(k) for k in ('home_team','away_team','live_period','live_score_raw','match_url','market','bookmaker','odds') if k in r})
+          print('\n=== SELECTED MATCH ===')
+          p=pathlib.Path('selected_match.txt')
+          print(p.read_text() if p.exists() else 'NO SELECTED MATCH FILE')
+          print('\n=== LIVE TOTALS ===')
+          p=pathlib.Path('live_odds.json')
+          if not p.exists():
+              print('NO LIVE ODDS FILE')
+              raise SystemExit(0)
+          data=json.loads(p.read_text())
+          rows=data if isinstance(data,list) else data.get('data',[]) if isinstance(data,dict) else []
+          print('ROWS',len(rows))
+          for r in rows:
+              if isinstance(r,dict):
+                  print(json.dumps(r,ensure_ascii=False))
           PY
 
       - uses: actions/upload-artifact@v4
@@ -68,5 +85,6 @@ jobs:
           name: oddsharvester-live-test
           path: |
             live_links.json
+            selected_match.txt
             live_odds.json
           if-no-files-found: ignore
