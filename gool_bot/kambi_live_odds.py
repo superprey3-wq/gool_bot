@@ -1,0 +1,147 @@
+"""Kambi/BetRivers LIVE football totals fallback.
+
+Discovers Kambi football events automatically, fuzzy-matches Flashscore team
+names, then fetches the event bet-offer payload and returns active goal totals.
+"""
+from __future__ import annotations
+
+import logging
+import re
+import time
+import unicodedata
+from difflib import SequenceMatcher
+from typing import Any
+
+from curl_cffi import requests
+
+logger = logging.getLogger("kambi_live_odds")
+OPERATOR = "rsiusnj"
+LIST_URL = (
+    "https://eu-offering-api.kambicdn.com/offering/v2018/"
+    f"{OPERATOR}/listView/football/all/all/all/matches.json?lang=en_US&market=US"
+)
+EVENT_URL = (
+    "https://eu-offering-api.kambicdn.com/offering/v2018/"
+    f"{OPERATOR}/betoffer/event/{{event_id}}.json?lang=en_US&market=US&includeParticipants=true"
+)
+_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
+_CACHE_SECONDS = 20
+
+
+def _norm(value: str) -> str:
+    s = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"\b(fc|afc|cf|sc|fk|sv|ac|as|eng|ita|ger|den|hun|esp|gre)\b", " ", s)
+    s = re.sub(r"\b(women|woman|w)\b", " women ", s)
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return " ".join(s.split())
+
+
+def _sim(a: str, b: str) -> float:
+    a, b = _norm(a), _norm(b)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if a in b or b in a:
+        return 0.92
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _is_live(event: dict[str, Any]) -> bool:
+    state = str(event.get("state") or "").upper()
+    return state not in {"", "NOT_STARTED", "ENDED", "FINISHED", "CANCELLED"}
+
+
+def _live_events() -> list[dict[str, Any]]:
+    global _CACHE
+    now = time.time()
+    if now - _CACHE[0] < _CACHE_SECONDS and _CACHE[1]:
+        return _CACHE[1]
+    try:
+        r = requests.get(LIST_URL, impersonate="chrome120", timeout=15)
+        r.raise_for_status()
+        wrappers = r.json().get("events") or []
+    except Exception as exc:
+        logger.info("KAMBI_LIST_FAILED: %s", exc)
+        return _CACHE[1] if _CACHE[1] else []
+    events: list[dict[str, Any]] = []
+    for wrapper in wrappers:
+        event = wrapper.get("event") or wrapper
+        if event.get("homeName") and event.get("awayName") and _is_live(event):
+            events.append(event)
+    _CACHE = (now, events)
+    return events
+
+
+def _find_event(home: str, away: str) -> dict[str, Any] | None:
+    best: tuple[float, dict[str, Any]] | None = None
+    for event in _live_events():
+        h, a = str(event.get("homeName") or ""), str(event.get("awayName") or "")
+        direct = (_sim(home, h) + _sim(away, a)) / 2
+        reverse = (_sim(home, a) + _sim(away, h)) / 2
+        score = max(direct, reverse)
+        if best is None or score > best[0]:
+            best = (score, event)
+    if best and best[0] >= 0.72:
+        return best[1]
+    return None
+
+
+def _scope_from_offer(criterion: str, type_name: str) -> str:
+    text = f"{criterion} {type_name}".lower()
+    if "1st half" in text or "first half" in text or "1h" in text:
+        return "FIRST_HALF"
+    if "2nd half" in text or "second half" in text or "2h" in text:
+        return "SECOND_HALF"
+    return "FULL_TIME"
+
+
+def get_live_goal_totals(home: str, away: str) -> list[dict[str, Any]]:
+    event = _find_event(home, away)
+    if not event:
+        return []
+    event_id = event.get("id")
+    try:
+        r = requests.get(EVENT_URL.format(event_id=event_id), impersonate="chrome120", timeout=15)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:
+        logger.info("KAMBI_EVENT_FAILED %s %s — %s: %s", home, away, event_id, exc)
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for offer in data.get("betOffers") or []:
+        type_name = str((offer.get("betOfferType") or {}).get("name") or "")
+        criterion = str((offer.get("criterion") or {}).get("label") or "")
+        key = f"{type_name} {criterion}".lower()
+        if not any(x in key for x in ("over/under", "over_under", "total goals", "asian total")):
+            continue
+        # Exclude team totals/corners/cards/shots. We only want match goal totals.
+        if any(x in key for x in ("corners", "cards", "shots", " by ")):
+            continue
+        scope = _scope_from_offer(criterion, type_name)
+        for outcome in offer.get("outcomes") or []:
+            if outcome.get("status") != "OPEN":
+                continue
+            label = str(outcome.get("label") or "").lower()
+            otype = str(outcome.get("type") or "")
+            if "over" not in label and otype != "OT_OVER":
+                continue
+            try:
+                odd = float(outcome.get("odds")) / 1000.0
+                line_raw = outcome.get("line")
+                line = float(line_raw) / 1000.0 if line_raw is not None else None
+            except (TypeError, ValueError):
+                continue
+            if line is None or odd <= 1.0:
+                continue
+            rows.append({
+                "scope": scope,
+                "line": line,
+                "odd": odd,
+                "source": "Kambi/BetRivers",
+                "bookmakers": 1,
+                "event_id": str(event_id),
+            })
+    logger.info("KAMBI_MATCHED %s — %s -> %s rows=%d", home, away, event_id, len(rows))
+    return rows
