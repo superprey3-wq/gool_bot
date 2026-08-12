@@ -1,4 +1,4 @@
-name: GOOL BOT Unified Scanner
+name: GOOL BOT PREMATCH Scanner
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  scanner:
+  prematch:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -23,16 +23,14 @@ jobs:
           cache: "pip"
           cache-dependency-path: gool_bot/requirements.txt
 
-      - name: Restore bot state
+      - name: Restore PREMATCH state
         uses: actions/cache@v4
         with:
           path: |
-            gool_bot/live_state.json
-            gool_bot/live_sent.json
             gool_bot/signal_journal.json
-          key: live-state-${{ github.run_id }}
+          key: prematch-state-${{ github.run_id }}
           restore-keys: |
-            live-state-
+            prematch-state-
 
       - name: Install dependencies
         working-directory: gool_bot
@@ -42,7 +40,6 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Run PREMATCH scanner
-        continue-on-error: true
         working-directory: gool_bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -54,12 +51,3 @@ jobs:
           MIN_MEDIAN_DROP: "8.0"
           MAX_SIGNALS_PER_MATCH: "4"
         run: python prematch_standard_scanner.py
-
-      - name: Run LIVE scanner
-        working-directory: gool_bot
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LIVE_SIGNAL_THRESHOLD: "75"
-          LIVE_COOLDOWN_MINUTES: "12"
-        run: python visual_feed_unified_bot.py
