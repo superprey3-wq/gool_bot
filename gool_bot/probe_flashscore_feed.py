@@ -51,3 +51,4 @@ if __name__=='__main__':
  asyncio.run(main())
  print('\n=== FOTMOB + SOFASCORE COVERAGE ===')
  runpy.run_path('../tests/source_coverage_probe.py',run_name='__main__')
+# rerun after EasySoccerData dependency fix
