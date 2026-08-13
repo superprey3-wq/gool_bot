@@ -15,10 +15,10 @@ from live_engine import fetch_summary
 
 logger = logging.getLogger("score_sync_patch")
 _orig_discover = unified_bot.discover_live_matches
+_orig_send_signal = unified_bot.telegram_send_signal
 
 
 def _summary_state(body: str) -> tuple[tuple[int, int] | None, int | None]:
-    """Return cumulative score and latest minute from a real score-changing event."""
     if not body:
         return None, None
 
@@ -36,7 +36,6 @@ def _summary_state(body: str) -> tuple[tuple[int, int] | None, int | None]:
         new_home = int(hm.group(1)) if hm else home
         new_away = int(am.group(1)) if am else away
         seen_score = True
-
         score_changed = new_home > prev_home or new_away > prev_away
         home = max(home, new_home)
         away = max(away, new_away)
@@ -44,9 +43,7 @@ def _summary_state(body: str) -> tuple[tuple[int, int] | None, int | None]:
         if score_changed:
             mm = re.search(r"(?:IB|IBX)(?:÷|¬)(\d{1,3})(?:\+(\d{1,2}))?", chunk)
             if mm:
-                base = int(mm.group(1))
-                added = int(mm.group(2) or 0)
-                minute = base + added
+                minute = int(mm.group(1)) + int(mm.group(2) or 0)
                 last_goal_minute = minute if last_goal_minute is None else max(last_goal_minute, minute)
 
     return ((home, away) if seen_score else None), last_goal_minute
@@ -69,44 +66,21 @@ async def _discover_synced():
             sh, sa = score
             old_total = int(match.home_score) + int(match.away_score)
             new_total = sh + sa
-
-            # Move score only forward. Never let an older/incomplete summary
-            # overwrite a newer live-card score.
             if new_total > old_total:
                 old = f"{match.home_score}:{match.away_score}"
                 match.home_score, match.away_score = sh, sa
                 match.summary_goal_ahead = True
-                logger.warning(
-                    "STALE_SCORE_FIXED %s %s — %s | %s -> %d:%d | last_goal=%s",
-                    match.event_id, match.home, match.away, old, sh, sa,
-                    last_goal_minute if last_goal_minute is not None else "?",
-                )
+                logger.warning("STALE_SCORE_FIXED %s %s — %s | %s -> %d:%d | last_goal=%s", match.event_id, match.home, match.away, old, sh, sa, last_goal_minute if last_goal_minute is not None else "?")
 
-        # A clock can never be behind a goal already confirmed by the event
-        # summary. This also protects against the live list lagging one refresh.
         if last_goal_minute is not None and int(match.minute) < last_goal_minute:
             old_minute = int(match.minute)
             match.minute = last_goal_minute
-            logger.warning(
-                "STALE_MINUTE_FIXED %s %s — %s | %d' -> %d' due to confirmed goal",
-                match.event_id, match.home, match.away, old_minute, match.minute,
-            )
+            logger.warning("STALE_MINUTE_FIXED %s %s — %s | %d' -> %d' due to confirmed goal", match.event_id, match.home, match.away, old_minute, match.minute)
 
-        # Critical: the list row can remain 'HT/Break' while df_sui already has
-        # a second-half event (e.g. goal at 52'). In that case the halftime flag
-        # must be cleared or Telegram will print 'Перерыв' for a live 2H match.
-        if bool(getattr(match, "is_halftime", False)) and (
-            int(match.minute) > 45 or (last_goal_minute is not None and last_goal_minute > 45)
-        ):
+        if bool(getattr(match, "is_halftime", False)) and (int(match.minute) > 45 or (last_goal_minute is not None and last_goal_minute > 45)):
             match.is_halftime = False
-            logger.warning(
-                "STALE_HALFTIME_FIXED %s %s — %s | live minute=%d last_goal=%s",
-                match.event_id, match.home, match.away, int(match.minute),
-                last_goal_minute if last_goal_minute is not None else "?",
-            )
+            logger.warning("STALE_HALFTIME_FIXED %s %s — %s | live minute=%d last_goal=%s", match.event_id, match.home, match.away, int(match.minute), last_goal_minute if last_goal_minute is not None else "?")
 
-        # Expose one simple diagnostic to the decision layer. A brand-new signal
-        # must not be opened on top of a goal that Flashscore has just registered.
         if last_goal_minute is None:
             match.minutes_since_confirmed_goal = None
             match.recent_confirmed_goal = False
@@ -118,4 +92,14 @@ async def _discover_synced():
     return matches
 
 
+def _send_synced(match, pressure, recs, text):
+    recent = bool(getattr(match, "recent_confirmed_goal", False))
+    goal_success = "СИГНАЛ ЗАШЁЛ" in str(text) or "ГОЛ — СИГНАЛ СРАБОТАЛ" in str(text) or "ГОЛ ЗАФИКСИРОВАН" in str(text)
+    if recent and not goal_success:
+        logger.warning("RECENT_GOAL_SIGNAL_BLOCKED %s %s — %s | minute=%s last_goal=%s since=%s", getattr(match, "event_id", "?"), getattr(match, "home", "?"), getattr(match, "away", "?"), getattr(match, "minute", "?"), getattr(match, "summary_last_goal_minute", "?"), getattr(match, "minutes_since_confirmed_goal", "?"))
+        return False
+    return _orig_send_signal(match, pressure, recs, text)
+
+
 unified_bot.discover_live_matches = _discover_synced
+unified_bot.telegram_send_signal = _send_synced
