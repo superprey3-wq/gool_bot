@@ -86,11 +86,15 @@ def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
         if m.minute>lc.MAX_FOLLOWUP_MINUTE:
             title="✅ <b>ГОЛ — СИГНАЛ СРАБОТАЛ!</b>"; action="🏁 <b>МАТЧ ЗАКРЫТ — ДАЛЬШЕ НЕ СЧИТАЮ</b>"
         else:
-            title="✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>\n🔄 Матч и LIVE-линии пересчитаны"; action="✅ <b>ГОЛ ЗАФИКСИРОВАН</b>"
+            title="✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>\n🔄 Матч и LIVE-линии пересчитаны"
+            action="✅ <b>ГОЛ ЗАФИКСИРОВАН</b>\n👀 <b>Новый вход пока не даю — оцениваю игру заново после гола</b>"
+    elif reason=="reentry":
+        title="♻️ <b>НОВЫЙ ВХОД ПОСЛЕ ГОЛА</b>"
+        action="🔥 <b>НОВАЯ СТАТИСТИКА ПОСЛЕ ГОЛА ПОДТВЕРЖДАЕТ ЕЩЁ ОДИН ВХОД</b>"
     elif reason=="followup":title="🔄 <b>ОБНОВЛЕНИЕ ПО МАТЧУ</b>"
     elif m.is_halftime:title="🔵 <b>ПРОГНОЗ НА 2-Й ТАЙМ</b>"
     else:title="🔴 <b>LIVE-СИГНАЛ</b>"
-    if reason!="goal":
+    if reason not in {"goal","reentry"}:
         if grade=="STRONG":action="🔥 <b>МОЖНО ЗАХОДИТЬ — СИЛЬНЫЙ СИГНАЛ</b>"
         elif grade=="ENTRY":action="🟡 <b>МОЖНО РАССМАТРИВАТЬ ВХОД</b>"
         elif grade=="OBSERVE":action="👀 <b>НАБЛЮДАЮ МАТЧ — ПОКА БЕЗ ВХОДА</b>"
@@ -107,7 +111,8 @@ def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
         best_line=(f"⭐ Лучшая ставка на остаток матча: <b>ТБ {float(best['line']):g} @ {float(best['odd']):.2f}</b>"
                    if best else "⭐ Лучшая ставка на остаток матча: <b>сейчас нет подходящего LIVE-кэфа</b>")
     stats=f"📊 xG {pair('xg')} | Удары {pair('shots')} | В створ {pair('shots_on_target')}"
-    return f"{title}\n\n⚽ <b>{m.home} — {m.away}</b>\n⏱ {status} | <b>{m.home_score}:{m.away_score}</b>\n\n{action}\n📈 Вероятность ещё гола: <b>{model_goal}%</b>\n{prices}\n{best_line}\n\n{stats}\n🧠 Рейтинг сигнала: <b>{master:.0f}/100</b>"
+    window=f"🧩 Отрезок: <b>{lc._window_label(m.minute)} мин</b>"
+    return f"{title}\n\n⚽ <b>{m.home} — {m.away}</b>\n⏱ {status} | <b>{m.home_score}:{m.away_score}</b>\n{window}\n\n{action}\n📈 Вероятность ещё гола: <b>{model_goal}%</b>\n{prices}\n{best_line}\n\n{stats}\n🧠 Рейтинг сигнала: <b>{master:.0f}/100</b>"
 
 lc._market=_market
 lc._format_strategy_signal=_format_strategy_signal
