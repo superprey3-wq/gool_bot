@@ -1,4 +1,4 @@
-name: Test BetRivers Kambi LIVE coverage
+name: Test SStats LIVE coverage
 on:
   workflow_dispatch:
   push:
@@ -11,90 +11,84 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install requests playwright curl_cffi
-      - name: Compare Flashscore LIVE to BetRivers Kambi
+      - run: |
+          pip install requests playwright
+          playwright install --with-deps chromium
+      - name: Compare Flashscore LIVE to SStats/PARI
         env:
           PYTHONPATH: gool_bot
+          SSTATS_API_KEY: ${{ secrets.SSTATS_API_KEY }}
         run: |
           python - <<'PY'
-          import asyncio,re,unicodedata
-          from difflib import SequenceMatcher
-          from curl_cffi import requests
+          import asyncio,json,os,re,requests
           from feed_live_discovery import discover_live_matches
-
-          OP='rsiusnj'
-          LIST=f'https://eu-offering-api.kambicdn.com/offering/v2018/{OP}/listView/football/all/all/all/matches.json?lang=en_US&market=US'
-          EVENT=f'https://eu-offering-api.kambicdn.com/offering/v2018/{OP}/betoffer/event/{{}}.json?lang=en_US&market=US&includeParticipants=true'
-
-          def norm(s):
-              s=unicodedata.normalize('NFKD',str(s or '')).encode('ascii','ignore').decode().lower()
-              s=re.sub(r'\b(fc|afc|cf|sc|fk|sv|ac|as|u19|u20|u21|u23|women|eng|ita|ger|den|hun)\b',' ',s)
-              s=re.sub(r'[^a-z0-9]+',' ',s)
-              return ' '.join(s.split())
-          def sim(a,b):
-              a,b=norm(a),norm(b)
-              if not a or not b:return 0
-              if a==b:return 1
-              if a in b or b in a:return .92
-              return SequenceMatcher(None,a,b).ratio()
-          def is_live(ev):
-              st=str(ev.get('state','')).upper()
-              return st not in ('NOT_STARTED','ENDED','FINISHED','CANCELLED','')
-          def open_total_offers(data):
-              out=[]
-              for bo in data.get('betOffers') or []:
-                  bt=str((bo.get('betOfferType') or {}).get('name','')).lower()
-                  crit=str((bo.get('criterion') or {}).get('label','')).lower()
-                  if not any(k in bt+' '+crit for k in ('over/under','over_under','total goals','total')): continue
-                  overs=[]
-                  for o in bo.get('outcomes') or []:
-                      if o.get('status')!='OPEN': continue
-                      label=str(o.get('label','')).lower(); typ=str(o.get('type',''))
-                      if 'over' in label or typ=='OT_OVER':
-                          try: odd=float(o.get('odds'))/1000
-                          except: odd=None
-                          line=o.get('line'); line=float(line)/1000 if line is not None else None
-                          overs.append((line,odd,crit,bt))
-                  if overs: out.extend(overs)
-              return out
-
+          key=os.getenv('SSTATS_API_KEY','').strip()
+          print('SECRET_PRESENT',bool(key),'LEN',len(key))
+          headers={'Accept':'application/json','Authorization':f'ApiKey {key}','User-Agent':'GOOL-BOT-SStats-Probe/1.0'}
           flash=asyncio.run(discover_live_matches())
-          print('FLASHSCORE_LIVE',len(flash))
-          r=requests.get(LIST,impersonate='chrome120',timeout=25)
-          print('KAMBI_STATUS',r.status_code,r.text[:200])
-          r.raise_for_status(); data=r.json()
-          wrappers=data.get('events') or []
-          events=[]
-          for w in wrappers:
-              ev=w.get('event') or w
-              if ev.get('homeName') and ev.get('awayName') and is_live(ev): events.append(ev)
-          print('KAMBI_LIVE',len(events),'ALL_WRAPPERS',len(wrappers))
-          for ev in events[:30]: print('KAMBI',ev.get('state'),ev.get('homeName'),'--',ev.get('awayName'),'id',ev.get('id'))
-
-          matched=[]; misses=[]
-          for m in flash:
-              best=None
-              for ev in events:
-                  a,b=ev.get('homeName',''),ev.get('awayName','')
-                  score=max((sim(m.home,a)+sim(m.away,b))/2,(sim(m.home,b)+sim(m.away,a))/2)
-                  if best is None or score>best[0]: best=(score,ev)
-              if best and best[0]>=0.72: matched.append((m,best))
-              else: misses.append((m,best))
-          print('MATCHED',len(matched),'OF',len(flash),'=',round(100*len(matched)/len(flash),1) if flash else 0,'%')
-
-          with_ou=[]
-          for m,(score,ev) in matched:
+          print('FLASH_LIVE',len(flash))
+          for m in flash[:40]: print('FS',m.event_id,m.minute,m.home,'--',m.away,f'{m.home_score}:{m.away_score}')
+          def get(path,params=None):
               try:
-                  rr=requests.get(EVENT.format(ev.get('id')),impersonate='chrome120',timeout=15)
-                  offers=open_total_offers(rr.json()) if rr.status_code==200 else []
+                  r=requests.get('https://api.sstats.net'+path,headers=headers,params=params,timeout=25)
+                  print('HTTP',r.status_code,r.url,'BYTES',len(r.content))
+                  try:return r,r.json()
+                  except:return r,None
               except Exception as e:
-                  print('EVENT_ERR',ev.get('id'),e); offers=[]
-              if offers: with_ou.append((m,score,ev,offers))
-              print('CHECK',m.home,'--',m.away,'=>',ev.get('homeName'),'--',ev.get('awayName'),'score',round(score,2),'OU',offers[:6])
-          print('WITH_OU',len(with_ou),'OF_FS',len(flash),'=',round(100*len(with_ou)/len(flash),1) if flash else 0,'%')
-          print('WITH_OU_OF_MATCHED',round(100*len(with_ou)/len(matched),1) if matched else 0,'%')
-          print('--- MISSES ---')
-          for m,b in misses[:40]:
-              ev=b[1] if b else None
-              print('MISS',m.home,'--',m.away,'best',None if not ev else (ev.get('homeName'),ev.get('awayName'),round(b[0],2)))
+                  print('ERR',path,repr(e)); return None,None
+          def arr(x):
+              if isinstance(x,list): return x
+              if isinstance(x,dict):
+                  for k in ('items','data','results','games','matches','events'):
+                      v=x.get(k)
+                      if isinstance(v,list): return v
+                      if isinstance(v,dict):
+                          for q in ('items','results','games','matches','events'):
+                              if isinstance(v.get(q),list): return v[q]
+              return []
+          candidates=[('/pari/matches',{'live':'true','includeOdds':'true'}),('/Pari/matches',{'live':'true','includeOdds':'true'}),('/Odds/live-markets',None),('/odds/live-markets',None)]
+          pari=[]
+          for p,q in candidates:
+              r,d=get(p,q)
+              its=arr(d)
+              print('PROBE',p,'STATUS',None if r is None else r.status_code,'ITEMS',len(its))
+              if d is not None: print('PREVIEW',json.dumps(d,ensure_ascii=False)[:2000])
+              if 'pari' in p.lower() and len(its)>len(pari): pari=its
+          print('PARI_ITEMS',len(pari))
+          def val(d,*ks):
+              for k in ks:
+                  if isinstance(d,dict) and d.get(k) is not None:return d.get(k)
+          def nm(v):
+              if isinstance(v,dict):return str(v.get('name') or v.get('title') or v.get('shortName') or '')
+              return str(v or '')
+          def norm(s):return ' '.join(re.sub(r'[^a-z0-9]+',' ',str(s).lower()).split())
+          def teams(d):return nm(val(d,'home','homeTeam','team1','host')),nm(val(d,'away','awayTeam','team2','guest'))
+          matched=[]
+          for m in flash:
+              hit=None; why=''
+              for d in pari:
+                  fid=str(val(d,'flashId','FlashId','flashID','flashscoreId','flashScoreId') or '')
+                  if fid==m.event_id: hit=d; why='FlashId'; break
+              if hit is None:
+                  mh,ma=norm(m.home),norm(m.away)
+                  for d in pari:
+                      h,a=teams(d); nh,na=norm(h),norm(a)
+                      if mh and ma and nh and na and (mh in nh or nh in mh) and (ma in na or na in ma): hit=d; why='names'; break
+              if hit is not None:
+                  gid=val(hit,'id','gameId','eventId','matchId')
+                  matched.append((m,gid,hit,why)); print('MATCH',why,m.event_id,m.home,'--',m.away,'ID',gid)
+          print('MATCHED',len(matched),'OF',len(flash),'PCT',round(100*len(matched)/len(flash),1) if flash else 0)
+          ou=0
+          for m,gid,d,why in matched[:30]:
+              if gid is None: continue
+              found=False
+              for p in (f'/Odds/live/{gid}',f'/odds/live/{gid}',f'/pari/match/{gid}',f'/Pari/match/{gid}'):
+                  r,x=get(p)
+                  if r is None or r.status_code!=200 or x is None: continue
+                  txt=json.dumps(x,ensure_ascii=False)
+                  has=bool(re.search(r'over|under|total|тотал',txt,re.I))
+                  print('ODDS',m.event_id,p,'OU',has,'PREVIEW',txt[:1800])
+                  if has: found=True; break
+              if found: ou+=1
+          print('LIVE_OU',ou,'OF_MATCHED',len(matched),'OF_FLASH',len(flash))
           PY
