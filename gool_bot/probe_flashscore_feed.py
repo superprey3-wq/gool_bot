@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,json,requests,re
+import asyncio,json,requests,re,runpy
 from playwright.async_api import async_playwright
 from live_engine import _feed
 URL='https://www.flashscore.com/football/'
@@ -29,11 +29,9 @@ async def main():
   print('\nMATCH',eid,txt)
   hh=_feed(f'df_hh_1_{eid}')
   print('H2H_BYTES',len(hh))
-  if hh:
-   print('H2H_RAW',hh[:12000])
+  if hh:print('H2H_RAW',hh[:12000])
   menu=get({'_hash':'lobtm','eventId':eid,'projectId':'2','geoIpCode':'US','geoIpSubdivisionCode':'USAZ'})
-  obj=(menu.get('data') or {}).get('getLiveOddsBettingTypeMenu') or {}
-  settings=obj.get('settings') or {}; book_names={}
+  obj=(menu.get('data') or {}).get('getLiveOddsBettingTypeMenu') or {}; settings=obj.get('settings') or {}; book_names={}
   for pb in settings.get('bookmakers') or []:
    bm=pb.get('bookmaker') or {}; book_names[bm.get('id')]=bm.get('name')
   items=[x for x in (obj.get('items') or []) if x.get('isActive') and x.get('bettingType')=='OVER_UNDER' and 'LIVE' in (x.get('types') or [])]
@@ -45,8 +43,11 @@ async def main():
     p={'_hash':'ole2','eventId':eid,'bookmakerId':bid,'betType':'OVER_UNDER','betScope':item.get('bettingScope')}
     d=get(p); live=(d.get('data') or {}).get('findLiveOddsForBookmaker')
     print('BOOK',bid,book_names.get(bid),'SCOPE',item.get('bettingScope'),'LIVE',json.dumps(live,ensure_ascii=False)[:5000])
-    if live:
-     found=True; break
+    if live:found=True; break
    if found:break
-  if hh: break
-if __name__=='__main__':asyncio.run(main())
+  if hh:break
+
+if __name__=='__main__':
+ asyncio.run(main())
+ print('\n=== FOTMOB + SOFASCORE COVERAGE ===')
+ runpy.run_path('../tests/source_coverage_probe.py',run_name='__main__')
