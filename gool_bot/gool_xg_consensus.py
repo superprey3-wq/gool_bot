@@ -1,17 +1,14 @@
-"""GOOL XG Consensus Layer.
+"""GOOL XG secondary analysis layer.
 
-SStats-inspired, but built only from data already available to GOOL BOT.
-Core sources are dynamic: a missing source never rejects a match and is never
-replaced with zero.
-
-Core consensus sources:
+Built only from data that GOOL BOT already receives reliably enough to use:
 - StrengthXG: recent-history Elo/Poisson forecast from market_math_patch;
-- MarketXG: remaining-goal expectation inferred from the current LIVE total price;
+- MarketXG: remaining-goal expectation inferred from current LIVE total price;
 - CalcXG: GOOL's own shot-quality proxy from shots/SOT/big chances/box activity.
 
-Observed RealXG from Flashscore is diagnostic-only because coverage is too low to
-make it a required or weighted source. If available, it is displayed/logged but it
-does not affect the consensus or the production decision.
+Missing sources never become zero and never reject a match. One available source is
+information-only. Two or three sources may slightly adjust MASTER, but this layer
+can never create ENTRY/STRONG on its own. A rejected setup may only be exposed as
+OBSERVE when the existing GOOL engine is already close and the secondary models agree.
 """
 from __future__ import annotations
 
@@ -103,11 +100,6 @@ def _market_xg(market: dict) -> float | None:
     return round(max(0.02, min(3.50, lam)), 3)
 
 
-def _real_xg(stats: dict, match) -> float | None:
-    """Observed provider xG. Diagnostic only; never weighted into consensus."""
-    return _pace_remaining(_total(stats, "xg"), match, 0.82)
-
-
 def _calculated_xg_total(stats: dict) -> float:
     shots = _total(stats, "shots")
     sot = _total(stats, "shots_on_target")
@@ -145,12 +137,11 @@ def _consensus(match, stats: dict, market: dict) -> dict:
         "strength": _strength_xg(match),
         "market": _market_xg(market),
         "calc": _calculated_xg(stats, match),
-        "real": _real_xg(stats, match),
     }
-    core = {k: components[k] for k in CORE_WEIGHTS if components.get(k) is not None}
+    available = {k: v for k, v in components.items() if v is not None}
     missing = [k for k in CORE_WEIGHTS if components.get(k) is None]
 
-    if not core:
+    if not available:
         result = {
             "components": components,
             "sources": 0,
@@ -162,17 +153,14 @@ def _consensus(match, stats: dict, market: dict) -> dict:
             "reliability": "NONE",
         }
     else:
-        denom = sum(CORE_WEIGHTS[k] for k in core) or 1.0
-        lam = sum(float(v) * CORE_WEIGHTS[k] for k, v in core.items()) / denom
-        agree = _agreement([float(v) for v in core.values()])
+        denom = sum(CORE_WEIGHTS[k] for k in available) or 1.0
+        lam = sum(float(v) * CORE_WEIGHTS[k] for k, v in available.items()) / denom
+        agree = _agreement([float(v) for v in available.values()])
         goal_p = (1.0 - math.exp(-max(0.0, lam))) * 100.0
-
-        sources = len(core)
-        source_factor = {1: 0.72, 2: 0.90, 3: 1.00}.get(sources, 1.00)
+        sources = len(available)
+        source_factor = {1: 0.72, 2: 0.90, 3: 1.00}.get(sources, 1.0)
         agreement_factor = 0.92 + 0.08 * (agree / 100.0 if sources >= 2 else 0.0)
         score = max(0.0, min(100.0, goal_p * source_factor * agreement_factor))
-        reliability = "FULL" if sources == 3 else "PARTIAL" if sources == 2 else "INFO_ONLY"
-
         result = {
             "components": components,
             "sources": sources,
@@ -181,7 +169,7 @@ def _consensus(match, stats: dict, market: dict) -> dict:
             "goal_probability": round(goal_p, 1),
             "agreement": agree,
             "score": round(score, 1),
-            "reliability": reliability,
+            "reliability": "FULL" if sources == 3 else "PARTIAL" if sources == 2 else "INFO_ONLY",
         }
 
     _CACHE[str(getattr(match, "event_id", ""))] = (time.time(), result)
@@ -189,7 +177,6 @@ def _consensus(match, stats: dict, market: dict) -> dict:
 
 
 def _bonus(model: dict, minute: int) -> float:
-    """Only 2+ real core sources may influence MASTER; one source is info-only."""
     if minute < MIN_MINUTE_FOR_INFLUENCE:
         return 0.0
     score = float(model.get("score", 0) or 0)
@@ -215,11 +202,7 @@ def _evaluate(match, stats, pressure, goals, market):
     bonus = _bonus(model, minute)
     master = max(0.0, min(100.0, master + bonus))
 
-    # Missing sources never reject a match. Experimental rescue remains very
-    # conservative and can only expose a rejected match as OBSERVE.
     if not qualifies:
-        has_market = model["components"].get("market") is not None
-        has_calc = model["components"].get("calc") is not None
         observe_rescue = (
             minute >= MIN_MINUTE_FOR_INFLUENCE
             and minute <= lc.MAX_NEW_SIGNAL_MINUTE
@@ -227,7 +210,6 @@ def _evaluate(match, stats, pressure, goals, market):
             and int(model.get("sources", 0) or 0) >= 2
             and float(model.get("score", 0) or 0) >= 64
             and float(model.get("agreement", 0) or 0) >= 60
-            and (has_market or has_calc)
         )
         if observe_rescue:
             qualifies = True
@@ -236,10 +218,10 @@ def _evaluate(match, stats, pressure, goals, market):
 
     c = model.get("components") or {}
     logger.info(
-        "GOOL_XG %d' %s — %s | strength=%s market=%s calc=%s real(diag)=%s | lambda=%.2f pGoal=%.0f%% agree=%.0f%% sources=%d reliability=%s missing=%s score=%.0f bonus=%+.0f | %s",
+        "GOOL_XG %d' %s — %s | strength=%s market=%s calc=%s | lambda=%.2f pGoal=%.0f%% agree=%.0f%% sources=%d reliability=%s missing=%s score=%.0f bonus=%+.0f | %s",
         minute,
         getattr(match, "home", ""), getattr(match, "away", ""),
-        c.get("strength"), c.get("market"), c.get("calc"), c.get("real"),
+        c.get("strength"), c.get("market"), c.get("calc"),
         float(model.get("lambda", 0) or 0), float(model.get("goal_probability", 0) or 0),
         float(model.get("agreement", 0) or 0), int(model.get("sources", 0) or 0),
         model.get("reliability", "NONE"), ",".join(model.get("missing") or []) or "none",
@@ -264,7 +246,6 @@ def _format_strategy_signal(match, pressure, stats, recs, goals, reason, route, 
     text = _orig_format(match, pressure, stats, recs, goals, reason, route, master, hazards, market)
     model = _cached(match) or _consensus(match, stats, market)
     c = model.get("components") or {}
-
     pieces = []
     if c.get("strength") is not None:
         pieces.append(f"Strength {_fmt(c.get('strength'))}")
@@ -272,8 +253,6 @@ def _format_strategy_signal(match, pressure, stats, recs, goals, reason, route, 
         pieces.append(f"Market {_fmt(c.get('market'))}")
     if c.get("calc") is not None:
         pieces.append(f"Calc {_fmt(c.get('calc'))}")
-    if c.get("real") is not None:
-        pieces.append(f"RealXG {_fmt(c.get('real'))}*")
 
     line1 = "🎯 GOOL XG: " + (" · ".join(pieces) if pieces else "нет доступных источников")
     line2 = (
@@ -281,8 +260,6 @@ def _format_strategy_signal(match, pressure, stats, recs, goals, reason, route, 
         f"ещё гол <b>{float(model.get('goal_probability', 0)):.0f}%</b> · "
         f"источников {int(model.get('sources', 0))}/3 · {model.get('reliability', 'NONE')}"
     )
-    if c.get("real") is not None:
-        line2 += " · *RealXG справочно"
 
     marker = "\n🧠 Рейтинг сигнала:"
     block = f"\n{line1}\n{line2}"
