@@ -133,4 +133,4 @@ def get_previous_values(event_id,current_minute,lookback_minutes=8):
     if not candidates:return None
     return {k:tuple(v) for k,v in candidates[-1].get("values",{}).items()}
 
-# Diagnostic trigger: 2026-08-11 fresh coverage check.
+# Diagnostic trigger: 2026-08-13 source coverage rerun with lxml.
