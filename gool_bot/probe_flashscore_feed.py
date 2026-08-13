@@ -1,7 +1,10 @@
 from __future__ import annotations
-import asyncio,json,requests,re
+import asyncio,json,requests,re,os
 from playwright.async_api import async_playwright
 from live_engine import _feed
+if os.getenv('GITHUB_ACTIONS') == 'true':
+ import gool_xg_consensus
+ print('XG_LAYER_IMPORT_OK')
 URL='https://www.flashscore.com/football/'
 UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'
 H={'User-Agent':UA,'Accept':'application/json, text/plain, */*','Referer':'https://www.flashscore.com/'}
