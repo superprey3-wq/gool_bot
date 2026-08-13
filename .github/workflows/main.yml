@@ -1,44 +1,11 @@
-name: GOOL BOT PREMATCH Scanner
+name: GOOL BOT PREMATCH Scanner (disabled)
 
 on:
-  push:
-    branches: [main]
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
-  prematch:
+  disabled:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-          cache-dependency-path: gool_bot/requirements.txt
-
-      - name: Install dependencies
-        working-directory: gool_bot
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
-
-      - name: Run PREMATCH scanner
-        working-directory: gool_bot
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MIN_MINUTES_TO_KICKOFF: "2"
-          MAX_MINUTES_TO_KICKOFF: "15"
-          MIN_BOOKMAKERS: "2"
-          MIN_CONSENSUS: "0.60"
-          MIN_MEDIAN_DROP: "5.0"
-          MAX_SIGNALS_PER_MATCH: "4"
-        run: python prematch_standard_scanner.py
+      - name: Disabled
+        run: echo "GitHub Actions scheduler is disabled; bot runs on external hosting."
