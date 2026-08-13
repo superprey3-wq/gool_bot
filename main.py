@@ -34,6 +34,7 @@ import period_market_patch  # noqa: E402,F401 - FT best bet + first-half price s
 import phase_market_patch  # noqa: E402,F401 - 1H +1/+2 goals, then remainder-of-match markets
 import score_sync_patch  # noqa: E402,F401 - reconcile stale list score with event summary
 import market_math_patch  # noqa: E402,F401 - Kambi fallback + conservative Elo/Poisson context
+import gool_xg_shadow  # noqa: E402,F401 - diagnostics only; never changes production decisions
 import prematch_standard_scanner  # noqa: E402
 from telegram_subscribers import get_subscribers, polling_loop  # noqa: E402
 
