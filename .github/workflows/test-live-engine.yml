@@ -3,16 +3,13 @@ name: Test Live Goal Engine
 on:
   push:
     paths:
-      - "gool_bot/live_engine.py"
-      - "gool_bot/unified_bot.py"
-      - "gool_bot/probe_flashscore_feed.py"
       - ".github/workflows/test-live-engine.yml"
   workflow_dispatch:
 
 jobs:
   test-live:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,22 +22,65 @@ jobs:
         run: |
           pip install -r requirements.txt
           playwright install --with-deps chromium
-      - name: Probe feed and locale coverage
-        working-directory: gool_bot
-        run: python probe_flashscore_feed.py 2>&1 | tee feed_probe.log
-      - name: Run one live scan
+      - name: Strict GOOL XG live audit
         working-directory: gool_bot
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LIVE_SIGNAL_THRESHOLD: "101"
-        run: python -c "import asyncio; from unified_bot import scan_live_once; asyncio.run(scan_live_once())" 2>&1 | tee live_scan.log
-      - name: Upload LIVE diagnostic
+          TELEGRAM_BOT_TOKEN: ""
+          TELEGRAM_CHAT_ID: ""
+        run: |
+          python - <<'PY' 2>&1 | tee xg_audit.log
+          import asyncio, logging
+          from collections import Counter
+          from feed_live_discovery import discover_live_matches
+          from live_engine import calculate_goal_pressure, fetch_stats, parse_stats
+          from prematch_scanner import _fetch_event_odds
+          import market_math_patch as mm
+          import gool_xg_consensus as gx
+
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+          log=logging.getLogger('xg_strict_test')
+
+          def fmt(v): return '-' if v is None else f'{float(v):.3f}'
+
+          async def main():
+              matches=await discover_live_matches()
+              log.info('XG_TEST_START live=%d', len(matches))
+              cov=Counter(); ok=0; examined=0
+              for m in matches[:30]:
+                  examined+=1
+                  body=fetch_stats(m.event_id)
+                  if not body:
+                      cov['stats_missing']+=1
+                      log.info("XG_TEST_SKIP %d' %s — %s | no_stats_body",m.minute,m.home,m.away)
+                      continue
+                  stats=parse_stats(body)
+                  if not stats:
+                      cov['stats_missing']+=1
+                      log.info("XG_TEST_SKIP %d' %s — %s | no_parsed_stats",m.minute,m.home,m.away)
+                      continue
+                  p=calculate_goal_pressure(m,stats,None)
+                  entries=_fetch_event_odds(m.event_id)
+                  try: _,market=mm._market(entries,m,p)
+                  except Exception as e:
+                      log.info('XG_TEST_MARKET_ERROR %s | %s',m.event_id,e); market={'available':False}
+                  c={'strength':gx._strength_xg(m),'market':gx._market_xg(market),'real':gx._real_xg(stats,m),'calc':gx._calculated_xg(stats,m)}
+                  for k,v in c.items():
+                      if v is not None: cov[k]+=1
+                  missing=[k for k,v in c.items() if v is None]
+                  if missing:
+                      log.info("XG_TEST_SKIP %d' %s — %s | %d:%d | strength=%s market=%s real=%s calc=%s | missing=%s",m.minute,m.home,m.away,m.home_score,m.away_score,fmt(c['strength']),fmt(c['market']),fmt(c['real']),fmt(c['calc']),','.join(missing))
+                      continue
+                  ok+=1
+                  model=gx._consensus(m,stats,market)
+                  log.info("XG_TEST_OK %d' %s — %s | %d:%d | strength=%s market=%s real=%s calc=%s | lambda=%.3f goal=%.1f%% agree=%.1f%% score=%.1f",m.minute,m.home,m.away,m.home_score,m.away_score,fmt(c['strength']),fmt(c['market']),fmt(c['real']),fmt(c['calc']),model['lambda'],model['goal_probability'],model['agreement'],model['score'])
+              d=max(1,examined)
+              log.info('XG_TEST_SUMMARY examined=%d strict_ok=%d strict=%.1f%% strength=%d(%.1f%%) market=%d(%.1f%%) real=%d(%.1f%%) calc=%d(%.1f%%) stats_missing=%d',examined,ok,100*ok/d,cov['strength'],100*cov['strength']/d,cov['market'],100*cov['market']/d,cov['real'],100*cov['real']/d,cov['calc'],100*cov['calc']/d,cov['stats_missing'])
+          asyncio.run(main())
+          PY
+      - name: Upload XG audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: live-coverage-log
-          path: |
-            gool_bot/live_scan.log
-            gool_bot/feed_probe.log
+          name: xg-audit-log
+          path: gool_bot/xg_audit.log
           retention-days: 1
