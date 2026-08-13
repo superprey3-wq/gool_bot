@@ -20,67 +20,36 @@ jobs:
         run: |
           python - <<'PY'
           import asyncio,json,os,re,requests
-          from datetime import datetime,timezone
           from playwright.async_api import async_playwright
-
           key=os.getenv('SSTATS_API_KEY','').strip()
-          print('SECRET_PRESENT',bool(key),'LEN',len(key))
           headers={'Accept':'application/json','Authorization':f'ApiKey {key}','User-Agent':'GOOL-BOT-SStats-Model-Probe/1.0'}
           UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'
-
           async def get_scheduled():
               out=[]
               async with async_playwright() as p:
                   b=await p.chromium.launch(headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
                   c=await b.new_context(user_agent=UA,locale='en-GB',timezone_id='Europe/Moscow',viewport={'width':1440,'height':1200})
                   page=await c.new_page(); await page.goto('https://www.flashscore.com/football/',wait_until='domcontentloaded',timeout=35000); await page.wait_for_timeout(5000)
-                  for _ in range(12):
-                      await page.evaluate('window.scrollTo(0, document.body.scrollHeight)'); await page.wait_for_timeout(350)
+                  for _ in range(12): await page.evaluate('window.scrollTo(0, document.body.scrollHeight)'); await page.wait_for_timeout(350)
                   rows=page.locator("div[id*='g_1_']")
                   for i in range(await rows.count()):
                       row=rows.nth(i); rid=await row.get_attribute('id') or ''; eid=rid.split('g_1_',1)[-1].split('_',1)[0]
                       if len(eid)!=8 or not eid.isalnum(): continue
                       lines=[x.strip() for x in (await row.inner_text()).splitlines() if x.strip()]
-                      if len(lines)<5: continue
-                      if not re.fullmatch(r'\d{1,2}:\d{2}',lines[0]): continue
+                      if len(lines)<5 or not re.fullmatch(r'\d{1,2}:\d{2}',lines[0]): continue
                       out.append({'flash_id':eid,'time':lines[0],'home':lines[1],'away':lines[2]})
                   await b.close()
               return out
-
-          def post_query(fid):
-              body={'Condition':f"FlashId = '{fid}'",'Fields':['Id','FlashId','Date','LeagueName','HomeTeamName','AwayTeamName','Status','GlickoRatingHome','GlickoRatingAway','GlickoWinProbHome','GlickoWinProbAway','GlickoXgHome','GlickoXgAway','OddsXgHome','OddsXgAway','ExpectedGoalsHome','ExpectedGoalsAway','CalculatedXgHome','CalculatedXgAway'],'Limit':3,'Format':'json','Timezone':3}
-              r=requests.post('https://api.sstats.net/Games/query',headers=headers,json=body,timeout=25)
-              print('QUERY_HTTP',fid,r.status_code,'BYTES',len(r.content))
-              if r.status_code!=200:
-                  print('QUERY_ERR',r.text[:500]); return []
-              try:d=r.json()
-              except Exception:return []
-              if isinstance(d,list):return d
-              if isinstance(d,dict):
-                  for k in ('data','items','rows','result','results'):
-                      v=d.get(k)
-                      if isinstance(v,list):return v
-                      if isinstance(v,dict):
-                          for q in ('items','rows','results'):
-                              if isinstance(v.get(q),list):return v[q]
-              return []
-
-          matches=asyncio.run(get_scheduled())
-          print('FLASH_SCHEDULED',len(matches))
-          # nearest scheduled rows shown first by Flashscore; cap to avoid rate noise
-          matches=matches[:25]
-          found=full=partial=0
-          for m in matches:
-              rows=post_query(m['flash_id'])
-              if not rows:
-                  print('MODEL_NONE',json.dumps(m,ensure_ascii=False)); continue
-              found+=1; r=rows[0]
-              def pair(a,b): return [r.get(a),r.get(b)]
-              groups={'GlickoXg':pair('GlickoXgHome','GlickoXgAway'),'OddsXg':pair('OddsXgHome','OddsXgAway'),'ExpectedGoals':pair('ExpectedGoalsHome','ExpectedGoalsAway'),'CalculatedXg':pair('CalculatedXgHome','CalculatedXgAway')}
-              complete=sum(1 for a,b in groups.values() if a not in (None,'') and b not in (None,''))
-              status='FULL' if complete==4 else 'PARTIAL'
-              if status=='FULL': full+=1
-              else: partial+=1
-              print('MODEL',json.dumps({**m,'sstats_id':r.get('Id'),'status':status,**groups,'GlickoRating':pair('GlickoRatingHome','GlickoRatingAway'),'GlickoWinProb':pair('GlickoWinProbHome','GlickoWinProbAway')},ensure_ascii=False))
-          print('SUMMARY',json.dumps({'flash_scheduled_tested':len(matches),'sstats_found':found,'full':full,'partial':partial,'none':len(matches)-found},ensure_ascii=False))
+          def req(method,path,**kw):
+              r=requests.request(method,'https://api.sstats.net'+path,headers=headers,timeout=25,**kw)
+              print('HTTP',method,path,r.status_code,'BYTES',len(r.content)); return r
+          ms=asyncio.run(get_scheduled())[:12]
+          print('FLASH_TEST',len(ms))
+          for m in ms:
+              print('\nFLASH',json.dumps(m,ensure_ascii=False))
+              r=req('GET','/Ls/GameInfo',params={'id':m['flash_id']})
+              print('LS_INFO',r.text[:1800])
+              body={'Condition':f"FlashId = '{m['flash_id']}'",'Fields':['Id','FlashId','Date','LeagueName','HomeTeamName','AwayTeamName','Status','GlickoXgHome','GlickoXgAway','OddsXgHome','OddsXgAway','ExpectedGoalsHome','ExpectedGoalsAway','CalculatedXgHome','CalculatedXgAway'],'Limit':3,'Format':'json','Timezone':3}
+              q=req('POST','/Games/query',json=body)
+              print('QUERY_BODY',q.text[:1000])
           PY
