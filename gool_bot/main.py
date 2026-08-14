@@ -30,6 +30,7 @@ import live_candidate_patch  # noqa: E402,F401 - installs multi-logic LIVE gate
 import period_market_patch  # noqa: E402,F401 - separates FT best bet from period goal price
 import phase_market_patch  # noqa: E402,F401 - 1H +1/+2 goals, then remainder-of-match markets
 import gool_xg_consensus  # noqa: E402,F401 - secondary confirmation only
+import telegram_signal_filter_patch  # noqa: E402,F401 - Telegram: only actionable entry + hit
 import prematch_standard_scanner  # noqa: E402
 from telegram_subscribers import get_subscribers, polling_loop  # noqa: E402
 
