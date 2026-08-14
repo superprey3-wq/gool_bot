@@ -1,4 +1,4 @@
-"""Build an on-demand snapshot of today's GOOL BOT signal journal."""
+"""Build on-demand snapshots of today's GOOL BOT signal journal."""
 from __future__ import annotations
 import asyncio,time
 from datetime import datetime
@@ -20,18 +20,35 @@ def _live_signal_rows(rows):
     return [r for r in rows if r.get("kind")=="live" and str(r.get("reason") or "signal") in {"signal","reentry"}]
 
 def _current_live_ids():
-    """Return current Flashscore LIVE IDs, or None only when feed lookup itself failed."""
     try:matches=asyncio.run(discover_live_matches())
     except Exception:return None
     return {str(m.event_id) for m in matches}
 
 def _fallback_plausibly_running(row)->bool:
-    """Used only when Flashscore LIVE discovery itself failed during /report."""
-    try:
-        minute=max(0,int(row.get("minute") or 0));created=float(row.get("created_ts") or 0)
+    try:minute=max(0,int(row.get("minute") or 0));created=float(row.get("created_ts") or 0)
     except Exception:return True
     if created<=0:return True
     return (time.time()-created)<max(12,100-minute)*60
+
+def build_live_signals_text()->str:
+    """Compact list for the Telegram 'В игре' button: only entries whose match is LIVE now."""
+    rows=_live_signal_rows(_today_rows());live_ids=_current_live_ids()
+    if live_ids is None:return "⚠️ Не удалось получить LIVE-список Flashscore. Попробуй ещё раз через минуту."
+    active=[r for r in rows if str(r.get("event_id","")) in live_ids]
+    # One row per match: show the newest still-relevant entry, not historical duplicates.
+    latest={}
+    for r in active:
+        eid=str(r.get("event_id",""));old=latest.get(eid)
+        if old is None or int(r.get("created_ts",0) or 0)>int(old.get("created_ts",0) or 0):latest[eid]=r
+    active=sorted(latest.values(),key=lambda r:int(r.get("created_ts",0) or 0),reverse=True)
+    if not active:return "🟢 <b>В ИГРЕ</b>\n\nСейчас активных матчей с сигналом нет."
+    lines=[f"🟢 <b>В ИГРЕ — {len(active)}</b>","<i>Только матчи, по которым был вход и которые прямо сейчас LIVE.</i>",""]
+    for r in active[:20]:
+        try:when=datetime.fromtimestamp(int(r.get("created_ts",0)),MOSCOW).strftime("%H:%M")
+        except Exception:when="—"
+        lines.append(f"🔥 <b>{r.get('home')} — {r.get('away')}</b>\n↳ вход {r.get('minute')}' · {r.get('score_at_signal')} · {when}")
+    if len(active)>20:lines.append(f"\n…и ещё {len(active)-20}")
+    return "\n".join(lines)
 
 def build_report_text()->str:
     rows=_today_rows();live_rows=_live_signal_rows(rows);pre_rows=[r for r in rows if r.get("kind")=="prematch"];current_live_ids=_current_live_ids();summary_cache={}
@@ -47,31 +64,17 @@ def build_report_text()->str:
         event_id=str(row.get("event_id", ""));body=get_summary(event_id)
         try:sh,sa=map(int,str(row.get("score_at_signal","0:0")).split(":"))
         except Exception:sh=sa=0
-        is_live=(current_live_ids is not None and event_id in current_live_ids)
-        feed_unknown=(current_live_ids is None)
-        if not body:
-            # Without a summary we cannot know the final score. If Flashscore still
-            # says LIVE it is pending; if the LIVE feed failed, use time fallback.
-            live_wait+=1;mark="⏳";fh,fa=sh,sa
+        is_live=(current_live_ids is not None and event_id in current_live_ids);feed_unknown=(current_live_ids is None)
+        if not body:live_wait+=1;mark="⏳";fh,fa=sh,sa
         else:
             try:fh,fa,_,_=_score_from_summary(body)
-            except Exception:
-                live_wait+=1;mark="⏳";fh,fa=sh,sa
+            except Exception:live_wait+=1;mark="⏳";fh,fa=sh,sa
             else:
-                # Regressive score is impossible (e.g. signal 1:0, summary 0:0), so
-                # never turn bad source data into a false loss.
-                if (fh+fa)<(sh+sa):
-                    live_wait+=1;mark="⏳"
-                elif (fh+fa)>(sh+sa):
-                    live_ok+=1;mark="✅"
-                elif is_live:
-                    live_wait+=1;mark="⏳"
-                elif feed_unknown and _fallback_plausibly_running(row):
-                    live_wait+=1;mark="⏳"
-                else:
-                    # Flashscore LIVE loaded successfully and this event is no
-                    # longer live. No goal after the entry means a settled loss.
-                    live_bad+=1;mark="❌"
+                if (fh+fa)<(sh+sa):live_wait+=1;mark="⏳"
+                elif (fh+fa)>(sh+sa):live_ok+=1;mark="✅"
+                elif is_live:live_wait+=1;mark="⏳"
+                elif feed_unknown and _fallback_plausibly_running(row):live_wait+=1;mark="⏳"
+                else:live_bad+=1;mark="❌"
         reason=str(row.get("reason") or "signal");label="ПОВТОРНЫЙ ВХОД" if reason=="reentry" else "ВХОД"
         live_details.append(f"{mark} {label} · {row.get('home')} — {row.get('away')} | {row.get('minute')}' {row.get('score_at_signal')} → {fh}:{fa}")
     pre_ok=pre_bad=pre_wait=0;pre_details=[]
