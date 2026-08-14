@@ -7,6 +7,7 @@ on:
       - hockey-prototype
     paths:
       - "gool_bot/hockey_probe.py"
+      - "gool_bot/hockey_market_probe.py"
       - ".github/workflows/hockey-probe.yml"
 
 jobs:
@@ -29,10 +30,17 @@ jobs:
         run: |
           set -o pipefail
           python hockey_probe.py 2>&1 | tee hockey_probe.log
+      - name: Run hockey market probe
+        working-directory: gool_bot
+        run: |
+          set -o pipefail
+          python hockey_market_probe.py 2>&1 | tee hockey_market_probe.log
       - name: Upload hockey diagnostic
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hockey-probe-log
-          path: gool_bot/hockey_probe.log
+          path: |
+            gool_bot/hockey_probe.log
+            gool_bot/hockey_market_probe.log
           retention-days: 2
