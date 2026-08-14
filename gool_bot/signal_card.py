@@ -7,18 +7,28 @@ import requests
 from PIL import Image,ImageDraw,ImageFont
 from live_engine import _feed
 logger=logging.getLogger("signal_card")
-W=1080;BG=(10,15,24);PANEL=(22,29,42);TEXT=(246,248,252);MUTED=(153,165,184);GOLD=(255,187,56);GREEN=(65,205,132);LINE=(49,61,80)
+
+W=1080
+BG=(7,12,20); PANEL=(15,24,38); PANEL2=(20,30,46); TEXT=(246,248,252); MUTED=(154,168,190)
+GOLD=(255,181,45); GREEN=(87,210,119); BLUE=(52,159,255); LINE=(45,62,86)
+
 def _font(size:int,bold:bool=False):
-    paths=["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf","/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"]
+    paths=[
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    ]
     for path in paths:
         try:return ImageFont.truetype(path,size)
         except OSError:pass
     return ImageFont.load_default()
+
 def _fields(record):
     out={}
     for token in record.split("¬"):
-        if "÷" in token:k,v=token.split("÷",1);out.setdefault(k,v)
+        if "÷" in token:
+            k,v=token.split("÷",1);out.setdefault(k,v)
     return out
+
 def _logo_names(event_id):
     body=_feed("f_1_0_0_en_1");needle=f"AA÷{event_id}¬"
     if not body or needle not in body:return "",""
@@ -26,6 +36,7 @@ def _logo_names(event_id):
         if needle in chunk:
             f=_fields(chunk);return f.get("OA",""),f.get("OB","")
     return "",""
+
 def _download_logo(filename,size=120):
     if not filename:return None
     try:
@@ -34,28 +45,40 @@ def _download_logo(filename,size=120):
             im=Image.open(BytesIO(r.content)).convert("RGBA");im.thumbnail((size,size),Image.Resampling.LANCZOS);return im
     except Exception:pass
     return None
+
 def _initials(name):
     w=re.findall(r"[A-Za-zА-Яа-я0-9]+",name);return "".join(x[0] for x in w[:2]).upper() if w else "?"
+
 def _badge(img,draw,x,y,logo,name):
-    r=64;draw.ellipse((x-r,y-r,x+r,y+r),fill=(31,40,56),outline=LINE,width=3)
+    r=68
+    draw.ellipse((x-r-5,y-r-5,x+r+5,y+r+5),fill=(9,21,35),outline=(30,98,166),width=3)
+    draw.ellipse((x-r,y-r,x+r,y+r),fill=(28,40,58),outline=LINE,width=2)
     if logo:img.alpha_composite(logo,(x-logo.width//2,y-logo.height//2))
     else:
-        t=_initials(name);f=_font(36,True);b=draw.textbbox((0,0),t,font=f);draw.text((x-(b[2]-b[0])/2,y-(b[3]-b[1])/2-3),t,font=f,fill=TEXT)
+        t=_initials(name);f=_font(34,True);b=draw.textbbox((0,0),t,font=f);draw.text((x-(b[2]-b[0])/2,y-(b[3]-b[1])/2-3),t,font=f,fill=TEXT)
+
 def _fit(draw,text,width,start=38,bold=True):
     for s in range(start,19,-2):
         f=_font(s,bold)
         if draw.textbbox((0,0),text,font=f)[2]<=width:return f
     return _font(20,bold)
+
 def _center(draw,text,y,font,fill):
     b=draw.textbbox((0,0),text,font=font);draw.text(((W-(b[2]-b[0]))/2,y),text,font=font,fill=fill)
+
 def _best(recs):
-    recs=recs or [];return next((r for r in recs if r.get("best_bet")),None) or next((r for r in recs if r.get("full_match_best")),None) or next((r for r in recs if r.get("scope")=="FULL_TIME" and r.get("goal_step")==1),None)
+    recs=recs or []
+    return next((r for r in recs if r.get("best_bet")),None) or next((r for r in recs if r.get("full_match_best")),None) or next((r for r in recs if r.get("scope")=="FULL_TIME" and r.get("goal_step")==1),None)
+
 def _pair(stats,key):
     try:a,b=stats.get(key,(0,0));return float(a or 0),float(b or 0)
     except Exception:return 0.0,0.0
+
 def _reason(match,pressure,recs,probabilities):
-    stats=getattr(pressure,"stats",None) or getattr(pressure,"raw_stats",None) or {};minute=int(getattr(match,"minute",0) or 0);goals=int(getattr(match,"home_score",0) or 0)+int(getattr(match,"away_score",0) or 0)
-    shots=sum(_pair(stats,"shots"));sot=sum(_pair(stats,"shots_on_target"));xg=sum(_pair(stats,"xg"));p1=int((probabilities or {}).get("one_goal",0) or 0);p2=int((probabilities or {}).get("two_goals",0) or 0);reasons=[]
+    stats=getattr(pressure,"stats",None) or getattr(pressure,"raw_stats",None) or {}
+    minute=int(getattr(match,"minute",0) or 0);goals=int(getattr(match,"home_score",0) or 0)+int(getattr(match,"away_score",0) or 0)
+    shots=sum(_pair(stats,"shots"));sot=sum(_pair(stats,"shots_on_target"));xg=sum(_pair(stats,"xg"))
+    p1=int((probabilities or {}).get("one_goal",0) or 0);p2=int((probabilities or {}).get("two_goals",0) or 0);reasons=[]
     if minute<=25 and goals>=2:reasons.append("Матч начался результативно: команды быстро обменялись голами.")
     elif goals>=3:reasons.append("Матч уже результативный, а модель всё ещё ждёт продолжения.")
     if sot>=6 or shots>=18:reasons.append("Темп высокий: команды регулярно доводят атаки до ударов.")
@@ -65,43 +88,73 @@ def _reason(match,pressure,recs,probabilities):
     if _best(recs) and len(reasons)<2:reasons.append("LIVE-рынок подтверждает продолжение результативности.")
     if not reasons:reasons.append("Сигнал подтверждён LIVE-моделью, историей команд и рынком.")
     return " ".join(reasons[:2])
-def _draw_match(img,draw,match,accent,base_y=300):
+
+def _draw_header(draw,accent,win):
+    draw.rounded_rectangle((24,20,W-24,105),24,fill=PANEL,outline=LINE,width=2)
+    draw.text((54,43),"GOOL AI",font=_font(32,True),fill=TEXT)
+    tag="SIGNAL WON" if win else "LIVE SIGNAL";tf=_font(26,True);tb=draw.textbbox((0,0),tag,font=tf)
+    draw.rounded_rectangle((W-250,37,W-48,89),18,fill=(31,43,60),outline=accent,width=2)
+    draw.text((W-149-(tb[2]-tb[0])/2,49),tag,font=tf,fill=accent)
+
+def _draw_match(img,draw,match,accent):
     hn,an=_logo_names(getattr(match,"event_id",""));hl=_download_logo(hn);al=_download_logo(an)
-    _badge(img,draw,175,base_y,hl,match.home);_badge(img,draw,W-175,base_y,al,match.away)
-    _center(draw,f"{match.home_score} : {match.away_score}",base_y-52,_font(76,True),TEXT)
-    minute="ПЕРЕРЫВ" if getattr(match,"is_halftime",False) else f"{match.minute}'";_center(draw,minute,base_y+54,_font(30,True),accent)
-    hf=_fit(draw,match.home,360);af=_fit(draw,match.away,360);hb=draw.textbbox((0,0),match.home,font=hf);ab=draw.textbbox((0,0),match.away,font=af)
-    draw.text((175-(hb[2]-hb[0])/2,base_y+100),match.home,font=hf,fill=TEXT);draw.text((W-175-(ab[2]-ab[0])/2,base_y+100),match.away,font=af,fill=TEXT)
-    league=getattr(match,"league","") or "LIVE FOOTBALL";lf=_fit(draw,league,850,25,False);_center(draw,league,base_y+155,lf,MUTED)
-def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind:str="entry",master:float|None=None,probabilities:dict|None=None)->bytes:
-    win=kind=="goal";accent=GREEN if win else GOLD;H=700 if win else 1080
-    img=Image.new("RGBA",(W,H),BG+(255,));draw=ImageDraw.Draw(img)
-    draw.rounded_rectangle((38,28,W-38,112),24,fill=PANEL,outline=LINE,width=2);draw.text((70,50),"GOOL AI",font=_font(32,True),fill=TEXT)
-    tag="SIGNAL WON" if win else "LIVE SIGNAL";tf=_font(26,True);tb=draw.textbbox((0,0),tag,font=tf);draw.text((W-70-(tb[2]-tb[0]),53),tag,font=tf,fill=accent)
-    _center(draw,"ЗАХОД!" if win else "МОЖНО ЗАХОДИТЬ",142,_font(52,True),accent)
-    _draw_match(img,draw,match,accent,base_y=315)
-    if win:
-        draw.rounded_rectangle((120,520,960,610),26,fill=PANEL,outline=LINE,width=2)
-        _center(draw,"✅ ЗАХОД!",542,_font(40,True),GREEN)
-        footer=652
+    _badge(img,draw,190,320,hl,match.home);_badge(img,draw,W-190,320,al,match.away)
+    draw.rounded_rectangle((390,235,690,405),30,fill=(10,20,32),outline=LINE,width=2)
+    _center(draw,"LIVE",247,_font(24,True),GREEN)
+    _center(draw,f"{match.home_score} : {match.away_score}",286,_font(74,True),TEXT)
+    minute="ПЕРЕРЫВ" if getattr(match,"is_halftime",False) else f"{match.minute}'";_center(draw,minute,363,_font(28,True),accent)
+    hf=_fit(draw,match.home,330,36);af=_fit(draw,match.away,330,36)
+    hb=draw.textbbox((0,0),match.home,font=hf);ab=draw.textbbox((0,0),match.away,font=af)
+    draw.text((190-(hb[2]-hb[0])/2,420),match.home,font=hf,fill=TEXT)
+    draw.text((W-190-(ab[2]-ab[0])/2,420),match.away,font=af,fill=TEXT)
+    league=getattr(match,"league","") or "LIVE FOOTBALL";lf=_fit(draw,league,850,24,False);_center(draw,league,474,lf,MUTED)
+
+def _draw_stat_card(draw,probs):
+    draw.rounded_rectangle((55,735,1025,885),28,fill=PANEL,outline=LINE,width=2)
+    rows=[]
+    if probs.get("first_half_goal") is not None:rows.append(("ГОЛ ДО ПЕРЕРЫВА",int(probs["first_half_goal"])))
+    rows.append(("ЕЩЁ 1 ГОЛ ДО КОНЦА",int(probs.get("one_goal",0))))
+    rows.append(("ЕЩЁ 2 ГОЛА ДО КОНЦА",int(probs.get("two_goals",0))))
+    if len(rows)==2:
+        xs=[300,780]
     else:
-        probs=probabilities or {};p=int(round(float(master if master is not None else getattr(pressure,"score",0) or 0)))
-        draw.rounded_rectangle((50,520,1030,815),28,fill=PANEL,outline=LINE,width=2)
-        draw.text((82,550),"РЕЙТИНГ",font=_font(22,True),fill=MUTED);draw.text((82,584),f"{p}/100",font=_font(50,True),fill=accent)
-        best=_best(recs);draw.text((570,550),"LIVE РЫНОК",font=_font(22,True),fill=MUTED)
+        xs=[195,540,885]
+    for i,(label,val) in enumerate(rows):
+        x=xs[i]
+        if i:draw.line((x-155,760,x-155,860),fill=LINE,width=2)
+        lf=_fit(draw,label,270,20,True);b=draw.textbbox((0,0),label,font=lf);draw.text((x-(b[2]-b[0])/2,770),label,font=lf,fill=MUTED)
+        vf=_font(38,True);vb=draw.textbbox((0,0),f"{val}%",font=vf);draw.text((x-(vb[2]-vb[0])/2,815),f"{val}%",font=vf,fill=GREEN)
+
+def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind:str="entry",master:float|None=None,probabilities:dict|None=None)->bytes:
+    win=kind=="goal";accent=GREEN if win else GOLD;H=760 if win else 1120
+    img=Image.new("RGBA",(W,H),BG+(255,));draw=ImageDraw.Draw(img)
+    _draw_header(draw,accent,win)
+    _center(draw,"ЗАХОД!" if win else "МОЖНО ЗАХОДИТЬ",132,_font(52,True),accent)
+    _draw_match(img,draw,match,accent)
+    if win:
+        draw.rounded_rectangle((100,545,980,660),28,fill=PANEL2,outline=GREEN,width=2)
+        _center(draw,"ЗАХОД!",574,_font(44,True),GREEN)
+        _center(draw,"Счёт обновлён — сигнал отработал",626,_font(23,False),MUTED)
+        footer=708
+    else:
+        probs=probabilities or {};p=int(round(float(master if master is not None else getattr(pressure,"score",0) or 0)));best=_best(recs)
+        draw.rounded_rectangle((55,535,1025,705),28,fill=PANEL2,outline=LINE,width=2)
+        draw.line((540,558,540,682),fill=LINE,width=2)
+        draw.text((105,565),"РЕЙТИНГ GOOL AI",font=_font(22,True),fill=MUTED)
+        draw.text((105,605),f"{p}/100",font=_font(48,True),fill=GOLD)
+        grade="СИЛЬНЫЙ СИГНАЛ" if p>=80 else "ХОРОШИЙ СИГНАЛ" if p>=70 else "РАБОЧИЙ СИГНАЛ"
+        draw.text((105,660),grade,font=_font(20,True),fill=GREEN)
+        draw.text((650,565),"LIVE РЫНОК",font=_font(22,True),fill=MUTED)
         if best:
-            draw.text((570,586),f"ТБ {float(best['line']):g}  •  {float(best['odd']):.2f}",font=_font(40,True),fill=TEXT);draw.text((570,642),str(best.get("source") or "LIVE"),font=_font(22,True),fill=GREEN)
-        else:draw.text((570,596),"КЭФ НЕ НАЙДЕН",font=_font(28,True),fill=MUTED)
-        draw.line((82,690,998,690),fill=LINE,width=2);rows=[]
-        if probs.get("first_half_goal") is not None:rows.append(("ГОЛ ДО ПЕРЕРЫВА",int(probs["first_half_goal"])))
-        rows.append(("ЕЩЁ 1 ГОЛ ДО КОНЦА МАТЧА",int(probs.get("one_goal",0))));rows.append(("ЕЩЁ 2 ГОЛА ДО КОНЦА МАТЧА",int(probs.get("two_goals",0))))
-        y=718
-        for label,val in rows:
-            draw.text((82,y),label,font=_font(22,True),fill=MUTED);vf=_font(32,True);vb=draw.textbbox((0,0),f"{val}%",font=vf);draw.text((998-(vb[2]-vb[0]),y-4),f"{val}%",font=vf,fill=GREEN);y+=46
-        draw.rounded_rectangle((50,840,1030,1005),26,fill=PANEL,outline=LINE,width=2)
-        draw.text((82,866),"🧠 ПОЧЕМУ МОЖНО ЗАХОДИТЬ",font=_font(22,True),fill=GOLD)
-        reason=_reason(match,pressure,recs,probs);lines=textwrap.wrap(reason,width=76)[:3];yy=910
-        for line in lines:draw.text((82,yy),line,font=_font(23,False),fill=TEXT);yy+=34
-        footer=1032
+            draw.text((650,606),f"ТБ {float(best['line']):g}  •  {float(best['odd']):.2f}",font=_font(40,True),fill=TEXT)
+            draw.text((650,660),str(best.get("source") or "LIVE"),font=_font(22,True),fill=GREEN)
+        else:
+            draw.text((650,620),"КЭФ НЕ НАЙДЕН",font=_font(28,True),fill=MUTED)
+        _draw_stat_card(draw,probs)
+        draw.rounded_rectangle((55,910,1025,1035),28,fill=PANEL,outline=LINE,width=2)
+        draw.text((95,938),"ПОЧЕМУ МОЖНО ЗАХОДИТЬ",font=_font(23,True),fill=GOLD)
+        reason=_reason(match,pressure,recs,probs);lines=textwrap.wrap(reason,width=78)[:2];yy=978
+        for line in lines:draw.text((95,yy),line,font=_font(22,False),fill=TEXT);yy+=32
+        footer=1070
     _center(draw,"GOOL AI  •  LIVE FOOTBALL ANALYTICS",footer,_font(21,True),MUTED)
     out=BytesIO();img.convert("RGB").save(out,"PNG",optimize=True);return out.getvalue()
