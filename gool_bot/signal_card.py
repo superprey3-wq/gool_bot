@@ -89,18 +89,17 @@ def _draw_stat_card(draw,probs):
         if i:draw.line((x-155,760,x-155,860),fill=LINE,width=2)
         lf=_fit(draw,label,270,20,True);b=draw.textbbox((0,0),label,font=lf);draw.text((x-(b[2]-b[0])/2,770),label,font=lf,fill=MUTED);vf=_font(38,True);vb=draw.textbbox((0,0),f"{val}%",font=vf);draw.text((x-(vb[2]-vb[0])/2,815),f"{val}%",font=vf,fill=GREEN)
 def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind:str="entry",master:float|None=None,probabilities:dict|None=None)->bytes:
-    win=kind=="goal";accent=GREEN if win else GOLD;H=790 if win else 1120;img=Image.new("RGBA",(W,H),BG+(255,));draw=ImageDraw.Draw(img);_draw_header(draw,accent,win);_center(draw,"ЗАХОД!" if win else "МОЖНО ЗАХОДИТЬ",132,_font(52,True),accent);_draw_match(img,draw,match,accent,win)
+    win=kind=="goal";accent=GREEN if win else GOLD;H=790 if win else 1180;img=Image.new("RGBA",(W,H),BG+(255,));draw=ImageDraw.Draw(img);_draw_header(draw,accent,win);_center(draw,"ЗАХОД!" if win else "МОЖНО ЗАХОДИТЬ",132,_font(52,True),accent);_draw_match(img,draw,match,accent,win)
     if win:
-        # Result card intentionally contains no old rating, market or probabilities: the entry is closed.
-        draw.rounded_rectangle((70,540,1010,690),30,fill=(9,24,25),outline=GREEN,width=3)
-        draw.ellipse((105,575,195,665),fill=(11,35,31),outline=GREEN,width=3);_center_tick_x=150
-        draw.line((_center_tick_x-20,620,_center_tick_x-4,638),fill=GREEN,width=8);draw.line((_center_tick_x-4,638,_center_tick_x+25,602),fill=GREEN,width=8)
-        draw.text((235,570),"✓ ГОЛ ПОДТВЕРЖДЁН",font=_font(37,True),fill=GREEN);draw.line((235,620,925,620),fill=(36,91,66),width=2);draw.text((235,642),"Сигнал успешно отработал",font=_font(25,False),fill=TEXT);footer=735
+        draw.rounded_rectangle((70,540,1010,690),30,fill=(9,24,25),outline=GREEN,width=3);draw.ellipse((105,575,195,665),fill=(11,35,31),outline=GREEN,width=3);cx=150;draw.line((cx-20,620,cx-4,638),fill=GREEN,width=8);draw.line((cx-4,638,cx+25,602),fill=GREEN,width=8);draw.text((235,570),"✓ ГОЛ ПОДТВЕРЖДЁН",font=_font(37,True),fill=GREEN);draw.line((235,620,925,620),fill=(36,91,66),width=2);draw.text((235,642),"Сигнал успешно отработал",font=_font(25,False),fill=TEXT);footer=735
     else:
         probs=probabilities or {};p=int(round(float(master if master is not None else getattr(pressure,"score",0) or 0)));best=_best(recs);draw.rounded_rectangle((55,535,1025,705),28,fill=PANEL2,outline=LINE,width=2);draw.line((540,558,540,682),fill=LINE,width=2);draw.text((105,565),"РЕЙТИНГ GOOL AI",font=_font(22,True),fill=MUTED);draw.text((105,605),f"{p}/100",font=_font(48,True),fill=GOLD);grade="СИЛЬНЫЙ СИГНАЛ" if p>=80 else "ХОРОШИЙ СИГНАЛ" if p>=70 else "РАБОЧИЙ СИГНАЛ";draw.text((105,660),grade,font=_font(20,True),fill=GREEN);draw.text((650,565),"LIVE РЫНОК",font=_font(22,True),fill=MUTED)
         if best:draw.text((650,606),f"ТБ {float(best['line']):g}  •  {float(best['odd']):.2f}",font=_font(40,True),fill=TEXT);draw.text((650,660),str(best.get("source") or "LIVE"),font=_font(22,True),fill=GREEN)
         else:draw.text((650,620),"КЭФ НЕ НАЙДЕН",font=_font(28,True),fill=MUTED)
-        _draw_stat_card(draw,probs);draw.rounded_rectangle((55,910,1025,1035),28,fill=PANEL,outline=LINE,width=2);draw.text((95,938),"ПОЧЕМУ МОЖНО ЗАХОДИТЬ",font=_font(23,True),fill=GOLD);reason=_reason(match,pressure,recs,probs);lines=textwrap.wrap(reason,width=78)[:2];yy=978
-        for line in lines:draw.text((95,yy),line,font=_font(22,False),fill=TEXT);yy+=32
-        footer=1070
+        _draw_stat_card(draw,probs)
+        # Give the explanation real vertical space and wrap by rendered width, not a single long line.
+        draw.rounded_rectangle((55,910,1025,1090),28,fill=PANEL,outline=LINE,width=2);draw.text((95,936),"ПОЧЕМУ МОЖНО ЗАХОДИТЬ",font=_font(23,True),fill=GOLD)
+        reason=_reason(match,pressure,recs,probs);lines=textwrap.wrap(reason,width=58)[:3];yy=980
+        for line in lines:draw.text((95,yy),line,font=_font(22,False),fill=TEXT);yy+=34
+        footer=1135
     _center(draw,"GOOL AI  •  LIVE FOOTBALL ANALYTICS",footer,_font(21,True),MUTED);out=BytesIO();img.convert("RGB").save(out,"PNG",optimize=True);return out.getvalue()
