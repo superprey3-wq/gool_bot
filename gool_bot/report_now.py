@@ -4,9 +4,11 @@ import asyncio,time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from live_engine import discover_live_matches, fetch_summary
-from daily_report import _score_from_summary, _market_goals, _settle_total
+from daily_report import _score_from_summary
 from signal_journal import all_signals
 MOSCOW=ZoneInfo("Europe/Moscow")
+HT_ENGINE="first_half"
+RISK_ENGINE="second_half"
 
 def _today_rows():
     today=datetime.now(MOSCOW).date().isoformat();rows=[]
@@ -17,7 +19,10 @@ def _today_rows():
     return rows
 
 def _live_signal_rows(rows):
-    return [r for r in rows if r.get("kind")=="live" and str(r.get("reason") or "signal") in {"signal","reentry"}]
+    return [r for r in rows if r.get("kind")=="live" and str(r.get("reason") or "signal") in {"signal","reentry"} and str(r.get("engine") or "core") not in {HT_ENGINE,RISK_ENGINE}]
+
+def _engine_rows(rows,engine):
+    return [r for r in rows if r.get("kind")=="live" and str(r.get("engine") or "")==engine]
 
 def _is_pending_entry(row):
     return str(row.get("result") or "pending").strip().lower() in {"","pending","wait","waiting"}
@@ -34,7 +39,6 @@ def _fallback_plausibly_running(row)->bool:
     return (time.time()-created)<max(12,100-minute)*60
 
 def build_live_signals_text()->str:
-    """Only unresolved GOOL entries whose matches are still LIVE right now."""
     rows=[r for r in _live_signal_rows(_today_rows()) if _is_pending_entry(r)];live_ids=_current_live_ids()
     if live_ids is None:return "⚠️ Не удалось получить LIVE-список Flashscore. Попробуй ещё раз через минуту."
     active=[r for r in rows if str(r.get("event_id","")) in live_ids]
@@ -52,8 +56,28 @@ def build_live_signals_text()->str:
     if len(active)>20:lines.append(f"\n…и ещё {len(active)-20}")
     return "\n".join(lines)
 
+def _engine_section(title,rows):
+    wins=sum(str(r.get("result") or "").strip().lower() in {"+","win","won"} for r in rows)
+    losses=sum(str(r.get("result") or "").strip().lower() in {"-","loss","lost"} for r in rows)
+    pending=len(rows)-wins-losses;settled=wins+losses;rate=round(wins/settled*100) if settled else 0
+    odds=[]
+    for r in rows:
+        try:
+            o=float(r.get("odd") or 0)
+            if o>1:odds.append(o)
+        except Exception:pass
+    lines=["",title,f"Сигналов: <b>{len(rows)}</b>",f"✅ Зашло: <b>{wins}</b>",f"❌ Не зашло: <b>{losses}</b>",f"⏳ В игре: <b>{pending}</b>"]
+    if settled:lines.append(f"🎯 Проходимость: <b>{rate}%</b>")
+    if odds:lines.append(f"💰 Средний LIVE-кэф: <b>{sum(odds)/len(odds):.2f}</b>")
+    if rows:
+        lines.append("<b>Последние сигналы:</b>")
+        for r in rows[-6:]:
+            rv=str(r.get("result") or "pending").lower();mark="✅" if rv in {"+","win","won"} else "❌" if rv in {"-","loss","lost"} else "⏳"
+            lines.append(f"{mark} {r.get('home')} — {r.get('away')} | {r.get('minute')}' {r.get('score_at_signal')}")
+    return "\n".join(lines)
+
 def build_report_text()->str:
-    rows=_today_rows();live_rows=_live_signal_rows(rows);pre_rows=[r for r in rows if r.get("kind")=="prematch"];current_live_ids=_current_live_ids();summary_cache={}
+    rows=_today_rows();live_rows=_live_signal_rows(rows);ht_rows=_engine_rows(rows,HT_ENGINE);risk_rows=_engine_rows(rows,RISK_ENGINE);current_live_ids=_current_live_ids();summary_cache={}
     def get_summary(event_id):
         event_id=str(event_id or "")
         if not event_id:return None
@@ -79,22 +103,12 @@ def build_report_text()->str:
                 else:live_bad+=1;mark="❌"
         reason=str(row.get("reason") or "signal");label="ПОВТОРНЫЙ ВХОД" if reason=="reentry" else "ВХОД"
         live_details.append(f"{mark} {label} · {row.get('home')} — {row.get('away')} | {row.get('minute')}' {row.get('score_at_signal')} → {fh}:{fa}")
-    pre_ok=pre_bad=pre_wait=0;pre_details=[]
-    for row in pre_rows:
-        body=get_summary(str(row.get("event_id","")))
-        if not body:pre_wait+=1;continue
-        try:fh,fa,hh,ha=_score_from_summary(body);goals=_market_goals(str(row.get("scope","Матч")),fh,fa,hh,ha);res=_settle_total(str(row.get("side","ТБ")),float(row.get("line",0)),goals)
-        except Exception:pre_wait+=1;continue
-        if res in {"+","+½"}:pre_ok+=1;mark="✅"
-        elif res in {"-","-½"}:pre_bad+=1;mark="❌"
-        else:pre_wait+=1;mark="⏳"
-        pre_details.append(f"{mark} {row.get('home')} — {row.get('away')} | {row.get('scope')} {row.get('side')} {row.get('line')} → {fh}:{fa}")
     settled=live_ok+live_bad;live_rate=round(live_ok/settled*100) if settled else 0
     initial=sum(1 for r in live_rows if str(r.get("reason") or "signal")=="signal");reentries=sum(1 for r in live_rows if str(r.get("reason") or "signal")=="reentry")
-    lines=["📊 <b>GOOL BOT — ОТЧЁТ НА СЕЙЧАС</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🔴 <b>LIVE</b>",f"Реальных входов: <b>{len(live_rows)}</b>",f"↳ Первичных: <b>{initial}</b> · повторных после гола: <b>{reentries}</b>",f"✅ Зашло: <b>{live_ok}</b>",f"❌ Не зашло: <b>{live_bad}</b>",f"⏳ Реально ещё в LIVE: <b>{live_wait}</b>","ℹ️ Статус LIVE берётся напрямую из Flashscore; гол-подтверждения и служебные обновления сигналами не считаются."]
+    lines=["📊 <b>GOOL BOT — ОТЧЁТ НА СЕЙЧАС</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🟡 <b>ГЛАВНЫЕ СИГНАЛЫ · GOOL CORE</b>",f"Реальных входов: <b>{len(live_rows)}</b>",f"↳ Первичных: <b>{initial}</b> · повторных после гола: <b>{reentries}</b>",f"✅ Зашло: <b>{live_ok}</b>",f"❌ Не зашло: <b>{live_bad}</b>",f"⏳ В игре: <b>{live_wait}</b>"]
     if settled:lines.append(f"🎯 Проходимость завершённых входов: <b>{live_rate}%</b>")
-    lines += ["","🔥 <b>ПРЕМАТЧ</b>",f"Всего сигналов: <b>{len(pre_rows)}</b>",f"✅ Сейчас проходят: <b>{pre_ok}</b>",f"❌ Сейчас не проходят: <b>{pre_bad}</b>",f"⏳ Нет данных/возврат: <b>{pre_wait}</b>"]
-    if live_details:lines += ["","<b>Последние LIVE-входы:</b>"]+live_details[-12:]
-    if pre_details:lines += ["","<b>Последние прематч:</b>"]+pre_details[-10:]
+    if live_details:lines += ["<b>Последние CORE-входы:</b>"]+live_details[-10:]
+    lines.append(_engine_section("🔵 <b>ПЕРВЫЙ ТАЙМ · HT HUNTER</b>",ht_rows))
+    lines.append(_engine_section("🔴 <b>ВТОРОЙ ТАЙМ · LATE RISK</b>",risk_rows))
     if not rows:lines += ["","Сегодня в журнале пока нет сигналов."]
     return "\n".join(lines)
