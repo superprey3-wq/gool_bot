@@ -32,13 +32,25 @@ def subscribe(chat_id):
     s=_read_saved();before=len(s);s.add(chat_id);_write_saved(s);return len(s)!=before
 def unsubscribe(chat_id):
     chat_id=str(chat_id).strip();s=_read_saved();existed=chat_id in s;s.discard(chat_id);_write_saved(s);return existed
-def _send_reply(chat_id,text):
+
+def _main_keyboard():
+    return {"keyboard":[[{"text":"🟢 В игре"},{"text":"📊 Отчёт"}],[{"text":"🧠 Анализ"}]],"resize_keyboard":True,"is_persistent":True}
+
+def _send_reply(chat_id,text,keyboard=True):
     token=_token()
     if not token:return
+    payload={"chat_id":str(chat_id),"text":text,"parse_mode":"HTML","disable_web_page_preview":True}
+    if keyboard:payload["reply_markup"]=_main_keyboard()
     try:
-        r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage",json={"chat_id":str(chat_id),"text":text,"parse_mode":"HTML","disable_web_page_preview":True},timeout=15)
+        r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage",json=payload,timeout=15)
         if not r.ok:logger.warning("Telegram command reply failed: HTTP %s %s",r.status_code,r.text[:200])
     except requests.RequestException as exc:logger.warning("Telegram command reply failed: %s",exc)
+def _send_live(chat_id):
+    _send_reply(chat_id,"🔎 Проверяю активные сигналы…")
+    try:
+        from report_now import build_live_signals_text
+        _send_reply(chat_id,build_live_signals_text());logger.info("Telegram in-game list sent to: %s",chat_id)
+    except Exception as exc:logger.exception("Telegram in-game failed: %s",exc);_send_reply(chat_id,"⚠️ Не удалось получить активные сигналы прямо сейчас.")
 def _handle_message(message:dict):
     chat=message.get("chat") or {};chat_id=chat.get("id")
     if chat_id is None:return
@@ -46,19 +58,20 @@ def _handle_message(message:dict):
     if "@" in command:command=command.split("@",1)[0]
     if command=="/start":
         subscribe(chat_id);name=str((message.get("from") or {}).get("first_name") or "").strip();greeting=f", {name}" if name else ""
-        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nТеперь сюда будут приходить LIVE-сигналы бота.\nЧтобы отключить рассылку: /stop\nПроверить подписку: /status\nТекущий итог: /report\nАнализ качества сигналов: /analysis")
+        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> мгновенно показывает матчи с активными входами.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
         logger.info("Telegram subscriber activated: %s",chat_id)
     elif command=="/stop":
         if str(chat_id)==_owner_chat_id():_send_reply(chat_id,"👑 Основной чат владельца всегда остаётся активным.");return
         unsubscribe(chat_id);_send_reply(chat_id,"🔕 Рассылка GOOL AI отключена. Вернуть её можно командой /start.");logger.info("Telegram subscriber deactivated: %s",chat_id)
     elif command=="/status":_send_reply(chat_id,"✅ Подписка активна." if str(chat_id) in set(get_subscribers()) else "🔕 Подписка отключена. Отправь /start.")
-    elif command=="/report":
+    elif command=="/live" or text.casefold() in {"🟢 в игре","в игре"}:_send_live(chat_id)
+    elif command=="/report" or text.casefold()=="📊 отчёт":
         _send_reply(chat_id,"📊 Собираю текущий отчёт…")
         try:
             from report_now import build_report_text
             _send_reply(chat_id,build_report_text());logger.info("Telegram report sent to: %s",chat_id)
         except Exception as exc:logger.exception("Telegram /report failed: %s",exc);_send_reply(chat_id,"⚠️ Не удалось собрать отчёт прямо сейчас. Ошибка записана в лог.")
-    elif command=="/analysis":
+    elif command=="/analysis" or text.casefold()=="🧠 анализ":
         _send_reply(chat_id,"🧠 Анализирую сегодняшние закрытые входы…")
         try:
             from signal_analysis import build_analysis_text
