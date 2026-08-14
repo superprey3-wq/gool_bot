@@ -13,6 +13,9 @@ jobs:
   hockey-probe:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,10 +23,12 @@ jobs:
           python-version: "3.12"
       - name: Install probe dependencies
         working-directory: gool_bot
-        run: pip install requests curl_cffi
+        run: pip install requests
       - name: Run hockey discovery probe
         working-directory: gool_bot
-        run: python hockey_probe.py 2>&1 | tee hockey_probe.log
+        run: |
+          set -o pipefail
+          python hockey_probe.py 2>&1 | tee hockey_probe.log
       - name: Upload hockey diagnostic
         if: always()
         uses: actions/upload-artifact@v4
