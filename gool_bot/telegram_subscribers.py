@@ -52,9 +52,10 @@ def _send_reply(chat_id,text,keyboard=True):
     return _post_message(chat_id,text)
 
 def _active_signal_rows(live_ids):
-    from report_now import _today_rows,_live_signal_rows
+    from report_now import _today_rows,_live_signal_rows,_is_pending_entry
     latest={}
     for r in _live_signal_rows(_today_rows()):
+        if not _is_pending_entry(r):continue
         eid=str(r.get("event_id","") or "")
         if not eid or eid not in live_ids:continue
         if eid not in latest or int(r.get("created_ts",0) or 0)>int(latest[eid].get("created_ts",0) or 0):latest[eid]=r
@@ -69,27 +70,25 @@ def _active_signal_buttons(rows):
         buttons.append([{"text":label,"callback_data":f"show:{r.get('event_id')}"}])
     return {"inline_keyboard":buttons}
 def _live_text(rows):
-    if not rows:return "🟢 <b>В ИГРЕ</b>\n\nСейчас активных матчей с сигналом нет."
+    if not rows:return "🟢 <b>В ИГРЕ</b>\n\nСейчас незакрытых LIVE-сигналов нет."
     from datetime import datetime
     from report_now import MOSCOW
-    lines=[f"🟢 <b>В ИГРЕ — {len(rows)}</b>","<i>Только матчи, по которым был вход и которые прямо сейчас LIVE.</i>",""]
+    lines=[f"🟢 <b>В ИГРЕ — {len(rows)}</b>","<i>Только наши сигналы, где матч ещё идёт и гол после входа ещё не подтверждён.</i>",""]
     for r in rows[:20]:
         try:when=datetime.fromtimestamp(int(r.get("created_ts",0)),MOSCOW).strftime("%H:%M")
         except Exception:when="—"
-        lines.append(f"🔥 <b>{r.get('home')} — {r.get('away')}</b>\n↳ вход {r.get('minute')}' · {r.get('score_at_signal')} · {when}")
+        lines.append(f"⏳ <b>{r.get('home')} — {r.get('away')}</b>\n↳ вход {r.get('minute')}' · {r.get('score_at_signal')} · {when}")
     if len(rows)>20:lines.append(f"\n…и ещё {len(rows)-20}")
     return "\n".join(lines)
 def _send_live(chat_id):
     try:
-        # One Flashscore request per click. Previously this path requested the LIVE feed twice
-        # (once for text and once for buttons), which caused avoidable failures/rate limiting.
         from report_now import _current_live_ids
         live_ids=_current_live_ids()
         if live_ids is None:
             _post_message(chat_id,"⚠️ Flashscore временно не ответил. Нажми «🟢 В игре» ещё раз чуть позже.")
             return
         rows=_active_signal_rows(live_ids)
-        _post_message(chat_id,_live_text(rows),_active_signal_buttons(rows));logger.info("Telegram in-game list sent to: %s",chat_id)
+        _post_message(chat_id,_live_text(rows),_active_signal_buttons(rows));logger.info("Telegram unresolved in-game list sent to: %s",chat_id)
     except Exception as exc:logger.exception("Telegram in-game failed: %s",exc);_post_message(chat_id,"⚠️ Не удалось получить активные сигналы прямо сейчас.")
 def _send_report(chat_id):
     _send_reply(chat_id,"📊 Собираю текущий отчёт…")
@@ -104,7 +103,7 @@ def _handle_message(message:dict):
     if "@" in command:command=command.split("@",1)[0]
     if command in {"/start","/menu"}:
         subscribe(chat_id);name=str((message.get("from") or {}).get("first_name") or "").strip();greeting=f", {name}" if name else ""
-        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> показывает только активные входы и служит быстрым навигатором по их карточкам.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
+        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> показывает только незакрытые входы: матч ещё идёт, а гол после сигнала ещё не подтверждён.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
         logger.info("Telegram subscriber activated/menu opened: %s",chat_id)
     elif command=="/stop":
         if str(chat_id)==_owner_chat_id():_send_reply(chat_id,"👑 Основной чат владельца всегда остаётся активным.");return
