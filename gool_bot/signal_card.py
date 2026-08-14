@@ -7,7 +7,7 @@ import requests
 from PIL import Image,ImageDraw,ImageFont
 from live_engine import _feed
 logger=logging.getLogger("signal_card")
-W,H=1080,1080; BG=(10,15,24); PANEL=(22,29,42); TEXT=(246,248,252); MUTED=(153,165,184); GOLD=(255,187,56); GREEN=(65,205,132); RED=(240,82,82); LINE=(49,61,80)
+W,H=1080,1080; BG=(10,15,24); PANEL=(22,29,42); TEXT=(246,248,252); MUTED=(153,165,184); GOLD=(255,187,56); GREEN=(65,205,132); LINE=(49,61,80)
 
 def _font(size:int,bold:bool=False):
     paths=["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf","/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"]
@@ -62,40 +62,43 @@ def _best(recs):
     recs=recs or []
     return next((r for r in recs if r.get("best_bet")),None) or next((r for r in recs if r.get("full_match_best")),None) or next((r for r in recs if r.get("scope")=="FULL_TIME" and r.get("goal_step")==1),None)
 
-def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind:str="entry",master:float|None=None,xg:dict|None=None)->bytes:
-    win=kind=="goal";accent=GREEN if win else GOLD
-    img=Image.new("RGBA",(W,H),BG+(255,));draw=ImageDraw.Draw(img)
-    # header
-    draw.rounded_rectangle((38,34,W-38,128),28,fill=PANEL,outline=LINE,width=2)
-    draw.text((72,60),"GOOL AI",font=_font(34,True),fill=TEXT)
-    tag="SIGNAL WON" if win else "LIVE SIGNAL"
-    tb=draw.textbbox((0,0),tag,font=_font(28,True));draw.text((W-72-(tb[2]-tb[0]),64),tag,font=_font(28,True),fill=accent)
-    title="СИГНАЛ ЗАШЁЛ — ГОЛ!" if win else "МОЖНО ЗАХОДИТЬ"
-    _center(draw,title,165,_font(48,True),accent)
-    # match block
+def _draw_match(img,draw,match,accent):
     hn,an=_logo_names(getattr(match,"event_id",""));hl=_download_logo(hn);al=_download_logo(an)
     _badge(img,draw,190,335,hl,match.home);_badge(img,draw,W-190,335,al,match.away)
-    score=f"{match.home_score} : {match.away_score}";_center(draw,score,278,_font(82,True),TEXT)
+    _center(draw,f"{match.home_score} : {match.away_score}",278,_font(82,True),TEXT)
     minute="ПЕРЕРЫВ" if getattr(match,"is_halftime",False) else f"{match.minute}'";_center(draw,minute,380,_font(30,True),accent)
     hf=_fit(draw,match.home,350);af=_fit(draw,match.away,350);hb=draw.textbbox((0,0),match.home,font=hf);ab=draw.textbbox((0,0),match.away,font=af)
     draw.text((190-(hb[2]-hb[0])/2,430),match.home,font=hf,fill=TEXT);draw.text((W-190-(ab[2]-ab[0])/2,430),match.away,font=af,fill=TEXT)
     league=getattr(match,"league","") or "LIVE FOOTBALL";lf=_fit(draw,league,850,25,False);_center(draw,league,490,lf,MUTED)
-    # metrics
-    draw.rounded_rectangle((50,550,1030,875),30,fill=PANEL,outline=LINE,width=2)
-    p=int(round(float(master if master is not None else getattr(pressure,"score",0) or 0)))
-    draw.text((85,585),"РЕЙТИНГ СИГНАЛА",font=_font(23,True),fill=MUTED);draw.text((85,622),f"{p}/100",font=_font(58,True),fill=accent)
-    draw.rounded_rectangle((85,700,465,718),9,fill=LINE);draw.rounded_rectangle((85,700,85+int(380*max(0,min(100,p))/100),718),9,fill=accent)
-    best=_best(recs)
-    draw.text((570,585),"LIVE РЫНОК",font=_font(23,True),fill=MUTED)
-    if best:
-        draw.text((570,627),f"ТБ {float(best['line']):g}  •  {float(best['odd']):.2f}",font=_font(43,True),fill=TEXT)
-        src=str(best.get("source") or "LIVE");draw.text((570,690),src,font=_font(24,True),fill=GREEN)
-    else:draw.text((570,637),"КЭФ НЕ НАЙДЕН",font=_font(32,True),fill=MUTED)
-    if xg and not win:
-        lam=float(xg.get("lambda",0) or 0);gp=float(xg.get("goal_probability",0) or 0);sources=int(xg.get("sources",0) or 0)
-        draw.line((85,758,995,758),fill=LINE,width=2);draw.text((85,790),"GOOL XG CONSENSUS",font=_font(22,True),fill=MUTED)
-        draw.text((85,825),f"{gp:.0f}%",font=_font(38,True),fill=GREEN);draw.text((220,832),f"ещё гол  •  λ {lam:.2f}  •  {sources}/3 источника",font=_font(25,True),fill=TEXT)
-    elif win:
-        draw.line((85,758,995,758),fill=LINE,width=2);_center(draw,"✅ ПРОГНОЗ ПОДТВЕРЖДЁН",805,_font(34,True),GREEN)
-    _center(draw,"GOOL AI  •  LIVE FOOTBALL ANALYTICS",940,_font(24,True),MUTED)
+
+def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind:str="entry",master:float|None=None,probabilities:dict|None=None)->bytes:
+    win=kind=="goal";accent=GREEN if win else GOLD
+    img=Image.new("RGBA",(W,H),BG+(255,));draw=ImageDraw.Draw(img)
+    draw.rounded_rectangle((38,34,W-38,128),28,fill=PANEL,outline=LINE,width=2)
+    draw.text((72,60),"GOOL AI",font=_font(34,True),fill=TEXT)
+    tag="SIGNAL WON" if win else "LIVE SIGNAL";tb=draw.textbbox((0,0),tag,font=_font(28,True));draw.text((W-72-(tb[2]-tb[0]),64),tag,font=_font(28,True),fill=accent)
+    _center(draw,"СИГНАЛ ЗАШЁЛ — ГОЛ!" if win else "МОЖНО ЗАХОДИТЬ",165,_font(48,True),accent)
+    _draw_match(img,draw,match,accent)
+    if win:
+        draw.rounded_rectangle((95,585,985,830),34,fill=PANEL,outline=LINE,width=2)
+        _center(draw,"✅ ПРОГНОЗ УСПЕШНО ОТРАБОТАЛ",645,_font(38,True),GREEN)
+        _center(draw,"Новый анализ матча продолжается внутри GOOL AI",720,_font(25,False),MUTED)
+    else:
+        probs=probabilities or {};p=int(round(float(master if master is not None else getattr(pressure,"score",0) or 0)))
+        draw.rounded_rectangle((50,550,1030,910),30,fill=PANEL,outline=LINE,width=2)
+        draw.text((82,582),"РЕЙТИНГ",font=_font(21,True),fill=MUTED);draw.text((82,615),f"{p}/100",font=_font(48,True),fill=accent)
+        best=_best(recs);draw.text((570,582),"LIVE РЫНОК",font=_font(21,True),fill=MUTED)
+        if best:
+            draw.text((570,620),f"ТБ {float(best['line']):g}  •  {float(best['odd']):.2f}",font=_font(39,True),fill=TEXT)
+            draw.text((570,675),str(best.get("source") or "LIVE"),font=_font(22,True),fill=GREEN)
+        else:draw.text((570,630),"КЭФ НЕ НАЙДЕН",font=_font(29,True),fill=MUTED)
+        draw.line((82,735,998,735),fill=LINE,width=2)
+        rows=[]
+        if probs.get("first_half_goal") is not None:rows.append(("ГОЛ ДО ПЕРЕРЫВА",int(probs["first_half_goal"])))
+        rows.append(("ЕЩЁ 1 ГОЛ ДО КОНЦА МАТЧА",int(probs.get("one_goal",0))))
+        rows.append(("ЕЩЁ 2 ГОЛА ДО КОНЦА МАТЧА",int(probs.get("two_goals",0))))
+        y=770
+        for label,val in rows:
+            draw.text((82,y),label,font=_font(22,True),fill=MUTED);vb=draw.textbbox((0,0),f"{val}%",font=_font(32,True));draw.text((998-(vb[2]-vb[0]),y-5),f"{val}%",font=_font(32,True),fill=GREEN);y+=52
+    _center(draw,"GOOL AI  •  LIVE FOOTBALL ANALYTICS",960,_font(24,True),MUTED)
     out=BytesIO();img.convert("RGB").save(out,"PNG",optimize=True);return out.getvalue()
