@@ -1,0 +1,33 @@
+name: Hockey Flashscore Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hockey-prototype
+    paths:
+      - "gool_bot/hockey_probe.py"
+      - ".github/workflows/hockey-probe.yml"
+
+jobs:
+  hockey-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install probe dependencies
+        working-directory: gool_bot
+        run: pip install requests curl_cffi
+      - name: Run hockey discovery probe
+        working-directory: gool_bot
+        run: python hockey_probe.py 2>&1 | tee hockey_probe.log
+      - name: Upload hockey diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hockey-probe-log
+          path: gool_bot/hockey_probe.log
+          retention-days: 2
