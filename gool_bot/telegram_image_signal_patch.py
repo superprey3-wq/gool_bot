@@ -1,11 +1,11 @@
 """Send actionable GOOL LIVE events as compact infographic PNG cards to all subscribers.
 
-The analytical engine remains unchanged. User-facing probabilities are derived from
-one display model so Telegram never shows conflicting percentages. The established
-GOOL master remains primary; XG consensus is only a secondary calibration input.
+Goal wins are deliberately debounced: Flashscore can briefly publish a goal that is
+later cancelled by VAR/offside. A tracked signal is marked WON only when the score
+increase is still present on the next LIVE scan. Score rollbacks are never goals.
 """
 from __future__ import annotations
-import logging,math,re,requests
+import logging,math,re,requests,time
 import live_candidate_patch as lc
 import unified_bot
 import gool_xg_consensus as gx
@@ -13,6 +13,42 @@ from signal_card import render_signal_card
 from telegram_subscribers import get_subscribers
 logger=logging.getLogger("telegram_image_signal_patch")
 _orig_send=lc._send
+_GOAL_CANDIDATES={}
+GOAL_CONFIRM_MIN_SECONDS=35
+
+def _score_tuple(value):
+    try:
+        a,b=str(value).split(":",1);return int(a),int(b)
+    except Exception:return 0,0
+
+def _tracked_score(match):
+    try:
+        state=unified_bot._load_sent();row=state.get(f"TRACK:{match.event_id}") or {};return _score_tuple(row.get("score",f"{match.home_score}:{match.away_score}"))
+    except Exception:return int(getattr(match,"home_score",0) or 0),int(getattr(match,"away_score",0) or 0)
+
+def _goal_confirmed(match):
+    """Require a genuine upward score change to survive two scans before WIN."""
+    event_id=str(getattr(match,"event_id","") or "")
+    current=(int(getattr(match,"home_score",0) or 0),int(getattr(match,"away_score",0) or 0))
+    previous=_tracked_score(match)
+    current_total=sum(current);previous_total=sum(previous)
+    # Score corrections/VAR rollback are never treated as a new goal.
+    if current_total<=previous_total:
+        if event_id in _GOAL_CANDIDATES:
+            logger.info("GOAL_CANDIDATE_CANCELLED %s tracked=%s current=%s",event_id,previous,current)
+            _GOAL_CANDIDATES.pop(event_id,None)
+        return False
+    now=time.time();candidate=_GOAL_CANDIDATES.get(event_id)
+    signature=(previous,current)
+    if not candidate or candidate.get("signature")!=signature:
+        _GOAL_CANDIDATES[event_id]={"signature":signature,"ts":now}
+        logger.info("GOAL_CANDIDATE %s %s -> %s; waiting next scan",event_id,previous,current)
+        return False
+    if now-float(candidate.get("ts",now))<GOAL_CONFIRM_MIN_SECONDS:
+        return False
+    _GOAL_CANDIDATES.pop(event_id,None)
+    logger.info("GOAL_CONFIRMED %s %s -> %s",event_id,previous,current)
+    return True
 
 def _display_probabilities(match,master,xg):
     minute=int(getattr(match,"minute",0) or 0)
@@ -46,34 +82,30 @@ def _send_text_to_chat(token,chat_id,text):
     except requests.RequestException:return False
 
 def _send_photo_all(match,pressure,recs,kind,master=None):
-    token=unified_bot.BOT_TOKEN
-    recipients=get_subscribers()
+    token=unified_bot.BOT_TOKEN;recipients=get_subscribers()
     if not token or not recipients:return False
-    xg=gx._cached(match) if kind=="entry" else None
-    probs=_display_probabilities(match,master,xg) if kind=="entry" else None
+    xg=gx._cached(match) if kind=="entry" else None;probs=_display_probabilities(match,master,xg) if kind=="entry" else None
     try:png=render_signal_card(match,pressure,recs,kind=kind,master=master,probabilities=probs)
-    except Exception as exc:
-        logger.warning("GOOL image render failed: %s",exc);png=None
-    caption="🔥 GOOL AI • МОЖНО ЗАХОДИТЬ" if kind=="entry" else "✅ GOOL AI • СИГНАЛ ЗАШЁЛ"
-    fallback=_compact_fallback(match,recs,kind,master,xg)
-    delivered=0
+    except Exception as exc:logger.warning("GOOL image render failed: %s",exc);png=None
+    caption="🔥 GOOL AI • МОЖНО ЗАХОДИТЬ" if kind=="entry" else "✅ GOOL AI • СИГНАЛ ЗАШЁЛ";fallback=_compact_fallback(match,recs,kind,master,xg);delivered=0
     for chat_id in recipients:
         photo_ok=False
         if png:
             try:
-                r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",data={"chat_id":str(chat_id),"caption":caption},files={"photo":("gool-signal.png",png,"image/png")},timeout=25)
-                photo_ok=r.ok
+                r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",data={"chat_id":str(chat_id),"caption":caption},files={"photo":("gool-signal.png",png,"image/png")},timeout=25);photo_ok=r.ok
                 if not r.ok:logger.warning("GOOL image upload failed HTTP %s for %s: %s",r.status_code,chat_id,r.text[:160])
             except requests.RequestException as exc:logger.warning("GOOL image upload failed for %s: %s",chat_id,exc)
         if photo_ok:delivered+=1
         elif _send_text_to_chat(token,chat_id,fallback):delivered+=1
-    logger.info("TELEGRAM_SIGNAL_DELIVERED %s %d/%d",kind,delivered,len(recipients))
-    return delivered>0
+    logger.info("TELEGRAM_SIGNAL_DELIVERED %s %d/%d",kind,delivered,len(recipients));return delivered>0
 
 def _send(m,p,recs,text):
     if not text:return False
     kind="goal" if "СИГНАЛ ЗАШЁЛ" in text else "entry" if "МОЖНО ЗАХОДИТЬ" in text else None
     if not kind:return _orig_send(m,p,recs,text)
+    # Never announce a transient/cancelled goal. Returning False intentionally keeps
+    # the original TRACK alive, so the next scan compares against the pre-goal score.
+    if kind=="goal" and not _goal_confirmed(m):return False
     master=None;mm=re.search(r"Рейтинг сигнала:\s*<b>([0-9.]+)/100",text)
     if mm:
         try:master=float(mm.group(1))
