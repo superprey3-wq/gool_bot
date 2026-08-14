@@ -22,6 +22,8 @@ _GOAL_LOCK=threading.Lock()
 GOAL_CONFIRM_MIN_SECONDS=40
 GOAL_CONFIRM_RETRIES=3
 GOAL_CONFIRM_RETRY_SECONDS=20
+ENTRY_REFRESH_RETRIES=2
+ENTRY_REFRESH_RETRY_SECONDS=2
 
 def _score_tuple(value):
     try:a,b=str(value).split(":",1);return int(a),int(b)
@@ -103,16 +105,22 @@ def _fresh_live_match(event_id):
     return box.get("match")
 
 def _sync_entry_match(match):
-    """Use score and minute from one newest LIVE snapshot before the entry card is rendered."""
+    """Require a new LIVE snapshot before an entry card can be sent."""
     event_id=str(getattr(match,"event_id","") or "")
-    fresh=_fresh_live_match(event_id) if event_id else None
+    if not event_id:return None
+    fresh=None
+    for attempt in range(ENTRY_REFRESH_RETRIES):
+        fresh=_fresh_live_match(event_id)
+        if fresh is not None:break
+        if attempt+1<ENTRY_REFRESH_RETRIES:time.sleep(ENTRY_REFRESH_RETRY_SECONDS)
     if fresh is None:
-        logger.warning("ENTRY_CARD_SYNC_FALLBACK %s minute=%s score=%s:%s",event_id,getattr(match,"minute",None),getattr(match,"home_score",None),getattr(match,"away_score",None));return match
+        logger.warning("ENTRY_CARD_SKIPPED_NO_FRESH_LIVE %s old_minute=%s old_score=%s:%s",event_id,getattr(match,"minute",None),getattr(match,"home_score",None),getattr(match,"away_score",None))
+        return None
     synced=copy.copy(match)
-    synced.minute=int(getattr(fresh,"minute",getattr(match,"minute",0)) or 0)
-    synced.home_score=int(getattr(fresh,"home_score",getattr(match,"home_score",0)) or 0)
-    synced.away_score=int(getattr(fresh,"away_score",getattr(match,"away_score",0)) or 0)
-    synced.is_halftime=bool(getattr(fresh,"is_halftime",getattr(match,"is_halftime",False)))
+    synced.minute=int(getattr(fresh,"minute",0) or 0)
+    synced.home_score=int(getattr(fresh,"home_score",0) or 0)
+    synced.away_score=int(getattr(fresh,"away_score",0) or 0)
+    synced.is_halftime=bool(getattr(fresh,"is_halftime",False))
     logger.info("ENTRY_CARD_SYNCED %s score=%d:%d minute=%d",event_id,synced.home_score,synced.away_score,synced.minute)
     return synced
 
@@ -172,9 +180,11 @@ def _send(m,p,recs,text):
     if master is None:master=float(getattr(p,"score",0) or 0)
     if kind=="goal":
         _schedule_goal_confirmation(m,p,recs,master);return False
-    # ENTRY: refresh score+minute immediately before rendering, so the yellow card cannot
-    # be one scan behind Flashscore. Analysis/selection itself is unchanged.
+    # ENTRY: never render from the analysis snapshot. Require a fresh event_id match first.
     synced=_sync_entry_match(m)
+    if synced is None:
+        logger.warning("ENTRY_SIGNAL_DEFERRED %s — %s: no fresh LIVE snapshot",getattr(m,"home",""),getattr(m,"away",""))
+        return False
     if _send_photo_all(synced,p,recs,"entry",master):logger.info("TELEGRAM_IMAGE_SENT entry %d' %s — %s",int(getattr(synced,"minute",0) or 0),getattr(synced,"home",""),getattr(synced,"away",""));return True
     return False
 
