@@ -9,6 +9,7 @@ from signal_journal import add_signal,all_signals,update_signal
 from telegram_subscribers import get_subscribers
 from multi_engine import HT_HUNTER,LATE_RISK,delta,ht_hunter,late_risk,snapshot
 from multi_engine_card import render_engine_card
+from robust_goal_cooldown_patch import active as persistent_goal_cooldown
 logger=logging.getLogger("multi_engine_runtime")
 STATE_FILE=Path("multi_engine_state.json")
 GOAL_CONFIRM_SECONDS=35
@@ -88,7 +89,9 @@ def scan_engines(live):
         s["snaps"]=[x for x in snaps if minute-int(x.get("minute",minute))<=20][-24:];old=[x for x in s["snaps"] if int(x.get("minute",0))<=minute-10]
         s["ts"]=now
         if not old:continue
-        d=delta(stats,old[-1].get("stats"));goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals);prev=get_previous_values(m.event_id,minute,8);pressure=calculate_goal_pressure(m,stats,prev);engines=[]
+        d=delta(stats,old[-1].get("stats"));goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
+        if persistent_goal_cooldown(m.event_id,minute):last=minute
+        prev=get_previous_values(m.event_id,minute,8);pressure=calculate_goal_pressure(m,stats,prev);engines=[]
         if 35<=minute<=45:engines.append((HT_HUNTER,ht_hunter(minute,d,last)))
         if 80<=minute<=90:engines.append((LATE_RISK,late_risk(minute,d,last)))
         for engine,dec in engines:
