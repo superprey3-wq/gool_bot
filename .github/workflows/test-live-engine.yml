@@ -3,9 +3,7 @@ name: Test Live Goal Engine
 on:
   push:
     paths:
-      - "gool_bot/live_engine.py"
-      - "gool_bot/unified_bot.py"
-      - "gool_bot/probe_flashscore_feed.py"
+      - "gool_bot/**"
       - ".github/workflows/test-live-engine.yml"
   workflow_dispatch:
 
@@ -25,6 +23,12 @@ jobs:
         run: |
           pip install -r requirements.txt
           playwright install --with-deps chromium
+      - name: Compile all bot modules
+        working-directory: gool_bot
+        run: python -m compileall -q .
+      - name: Import multi-engine stack
+        working-directory: gool_bot
+        run: python -c "import multi_engine, multi_engine_card, multi_engine_runtime, core_warmup_patch, multi_engine_report_patch; print('MULTI_ENGINE_IMPORT_OK')"
       - name: Probe feed and locale coverage
         working-directory: gool_bot
         run: python probe_flashscore_feed.py 2>&1 | tee feed_probe.log
