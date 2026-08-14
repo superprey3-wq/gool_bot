@@ -22,14 +22,13 @@ import signal_journal_runtime_patch
 import goal_reset_patch
 import live_status_heartbeat
 import multi_engine_runtime
+import multi_engine_report_patch
 from telegram_subscribers import polling_loop
 import production_logging
 
 async def run_live():
     try:
         await visual_feed_unified_bot.unified_bot.scan_live_once()
-        # HT HUNTER and LATE RISK are independent one-shot engines. They use the
-        # same fresh LIVE feed but their own trend windows, journal and cards.
         live=await visual_feed_unified_bot.unified_bot.discover_live_matches()
         await asyncio.to_thread(multi_engine_runtime.scan_engines,live)
     except Exception:logger.exception("LIVE scan failed; runner will continue")
