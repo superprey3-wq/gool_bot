@@ -1,4 +1,9 @@
-"""Distinct Telegram cards for GOOL HT HUNTER and LATE RISK."""
+"""Distinct Telegram result-card identities for GOOL CORE, HT HUNTER and LATE RISK.
+Visual contract selected for the bot:
+CORE = gold + cool orange cat; HT = electric blue + shocked cat;
+LATE RISK = red + angry/screaming cat.  The mascot is drawn at runtime so every
+subscriber receives the same generated card without depending on a local asset.
+"""
 from __future__ import annotations
 from io import BytesIO
 from PIL import Image,ImageDraw,ImageFont
@@ -7,7 +12,7 @@ from live_engine import _feed
 
 W,H=1080,1120
 BG=(5,9,16);PANEL=(11,18,30);TEXT=(246,248,252);MUTED=(160,173,195);GREEN=(83,220,124)
-BLUE=(42,158,255);RED=(255,61,67)
+GOLD=(246,181,48);BLUE=(42,158,255);RED=(255,61,67)
 
 def _font(size,bold=False):
     for p in (("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf")):
@@ -15,7 +20,7 @@ def _font(size,bold=False):
         except OSError:pass
     return ImageFont.load_default()
 def _center(d,t,y,f,c):
-    b=d.textbbox((0,0),t,font=f);d.text(((W-b[2]+b[0])/2,y),t,font=f,fill=c)
+    b=d.textbbox((0,0),t,font=f);d.text(((W-(b[2]-b[0]))/2,y),t,font=f,fill=c)
 def _fields(record):
     out={}
     for token in record.split("¬"):
@@ -53,28 +58,38 @@ def _glow_box(d,box,accent,r=24):
     x1,y1,x2,y2=box
     for e,a in ((9,.20),(5,.35),(2,.60)):d.rounded_rectangle((x1-e,y1-e,x2+e,y2+e),r+e,outline=tuple(int(c*a) for c in accent),width=2)
     d.rounded_rectangle(box,r,fill=PANEL,outline=accent,width=2)
-def _pair(stats,key):
-    try:a,b=stats.get(key,(0,0));return float(a or 0)+float(b or 0)
-    except Exception:return 0.0
-def render_engine_card(match,engine,score,delta,odd=None,result=None):
-    is_ht=engine=="first_half";accent=BLUE if is_ht else RED;title="GOOL HT HUNTER" if is_ht else "GOOL LATE RISK";subtitle="ГОЛ ДО ПЕРЕРЫВА" if is_ht else "ПОЗДНИЙ ГОЛ";img=Image.new("RGBA",(W,H),BG+(255,));d=ImageDraw.Draw(img)
-    # outer neon frame
+def _cat(d,kind,accent):
+    """Compact meme-cat mascot: sunglasses / shocked / angry."""
+    x,y=150,160
+    fur=(224,150,70) if kind=="core" else ((205,210,216) if kind=="ht" else (215,205,190))
+    # ears + head
+    d.polygon([(75,105),(100,25),(145,100)],fill=fur,outline=accent);d.polygon([(155,100),(205,25),(225,110)],fill=fur,outline=accent)
+    d.ellipse((70,75,230,235),fill=fur,outline=accent,width=4)
+    if kind=="core":
+        d.rounded_rectangle((83,112,145,145),10,fill=(5,5,5),outline=accent,width=2);d.rounded_rectangle((155,112,217,145),10,fill=(5,5,5),outline=accent,width=2);d.line((145,125,155,125),fill=accent,width=4)
+        d.ellipse((135,150,165,176),fill=(80,45,30));d.pieslice((125,168,175,225),0,180,fill=(20,10,10));d.text((54,242),"GOOOL!",font=_font(31,True),fill=accent)
+    elif kind=="ht":
+        d.ellipse((92,105,135,160),fill=(255,255,255),outline=accent,width=3);d.ellipse((165,105,208,160),fill=(255,255,255),outline=accent,width=3);d.ellipse((108,123,125,148),fill=(5,5,5));d.ellipse((181,123,198,148),fill=(5,5,5));d.ellipse((128,165,174,222),fill=(25,10,15),outline=accent,width=3);d.text((52,242),"GOOOL?!",font=_font(29,True),fill=accent)
+    else:
+        d.line((91,112,135,128),fill=(30,20,20),width=7);d.line((166,128,210,112),fill=(30,20,20),width=7);d.ellipse((100,128,130,158),fill=(255,255,255));d.ellipse((174,128,204,158),fill=(255,255,255));d.ellipse((135,166,171,225),fill=(35,5,8),outline=accent,width=3);d.text((45,242),"GOOOOL!!",font=_font(28,True),fill=accent)
+
+def render_engine_card(match,engine,score=0,delta=None,odd=None,result=None):
+    delta=delta or {};kind="core" if engine in {"core","main","primary"} else "ht" if engine in {"first_half","ht_hunter","ht"} else "risk"
+    accent=GOLD if kind=="core" else BLUE if kind=="ht" else RED
+    title="GOOL CORE" if kind=="core" else "GOOL HT HUNTER" if kind=="ht" else "GOOL LATE RISK"
+    subtitle="ГЛАВНЫЙ СИГНАЛ" if kind=="core" else "ГОЛ ДО ПЕРЕРЫВА" if kind=="ht" else "ПОЗДНИЙ ГОЛ"
+    img=Image.new("RGBA",(W,H),BG+(255,));d=ImageDraw.Draw(img)
     for e,a in ((16,.16),(10,.28),(5,.48)):d.rounded_rectangle((25-e,20-e,W-25+e,H-25+e),34+e,outline=tuple(int(c*a) for c in accent),width=3)
     d.rounded_rectangle((25,20,W-25,H-25),34,outline=accent,width=3)
-    d.text((70,60),"⏱" if is_ht else "⚠",font=_font(50,True),fill=accent);d.text((145,58),title,font=_font(47,True),fill=accent);d.text((148,112),subtitle,font=_font(25,True),fill=TEXT)
-    status="SIGNAL WON" if result=="win" else "SIGNAL LOST" if result=="loss" else "FIRST HALF SIGNAL" if is_ht else "SECOND HALF RISK";sf=_font(22,True);sb=d.textbbox((0,0),status,font=sf);d.rounded_rectangle((W-310,75,W-65,124),15,fill=(17,25,39),outline=GREEN if result=="win" else accent,width=2);d.text((W-187-(sb[2]-sb[0])/2,87),status,font=sf,fill=GREEN if result=="win" else accent)
-    hn,an=_logos(getattr(match,"event_id",""));_badge(img,d,175,305,_download(hn),match.home,accent);_badge(img,d,W-175,305,_download(an),match.away,accent)
-    _glow_box(d,(380,220,700,390),accent,28);_center(d,f"{match.home_score} : {match.away_score}",258,_font(67,True),TEXT);_center(d,f"{match.minute}'",333,_font(30,True),accent)
-    hf=_fit(d,match.home,320);af=_fit(d,match.away,320);hb=d.textbbox((0,0),match.home,font=hf);ab=d.textbbox((0,0),match.away,font=af);d.text((175-(hb[2]-hb[0])/2,405),match.home,font=hf,fill=TEXT);d.text((W-175-(ab[2]-ab[0])/2,405),match.away,font=af,fill=TEXT);_center(d,getattr(match,"league","") or "LIVE FOOTBALL",458,_font(21),MUTED)
-    headline="✅ ЗАШЁЛ!" if result=="win" else "❌ НЕ ЗАШЁЛ" if result=="loss" else "🔥 СИГНАЛ НА ГОЛ";_center(d,headline,510,_font(43,True),GREEN if result=="win" else accent)
-    _glow_box(d,(65,575,420,750),accent);d.text((100,605),"HT SCORE" if is_ht else "RISK SCORE",font=_font(23,True),fill=MUTED);d.text((100,645),f"{int(round(score))}/100",font=_font(54,True),fill=accent);d.text((100,708),"ОДНОРАЗОВЫЙ СИГНАЛ",font=_font(17,True),fill=TEXT)
-    _glow_box(d,(450,575,1015,750),accent);d.text((485,605),"ДИНАМИКА ПОСЛЕДНИХ 10 МИНУТ",font=_font(21,True),fill=TEXT)
-    vals=[("xG",float(delta.get("xg",0))),("УДАРЫ",float(delta.get("shots",0))),("В СТВОР",float(delta.get("shots_on_target",0))),("BIG CHANCES",float(delta.get("big_chances",0)))]
-    x=485
-    for label,val in vals:
-        d.text((x,652),label,font=_font(16,True),fill=MUTED);txt=f"+{val:.2f}" if label=="xG" else f"+{int(val)}";d.text((x,686),txt,font=_font(30,True),fill=GREEN);x+=132
-    _glow_box(d,(65,785,1015,970),accent);d.text((100,815),"ПОЧЕМУ СИГНАЛ",font=_font(23,True),fill=accent)
-    pressure="РЕЗКО РАСТЁТ" if score>=85 else "РАСТЁТ";d.text((100,858),f"⚡ Давление: {pressure}",font=_font(25,True),fill=TEXT);d.text((100,900),f"🎯 Касания в штрафной +{int(float(delta.get('touches_box',0)))}  •  Угловые +{int(float(delta.get('corners',0)))}",font=_font(22),fill=TEXT)
-    if odd and float(odd)>1:d.text((700,858),f"КЭФ НА ГОЛ  {float(odd):.2f}",font=_font(28,True),fill=accent)
-    _center(d,"ОДИН СИГНАЛ  →  ОДИН РЕЗУЛЬТАТ",1015,_font(23,True),accent);_center(d,"GOOL AI  •  MULTI-ENGINE LIVE ANALYTICS",1060,_font(18,True),MUTED)
+    _cat(d,kind,accent);d.text((300,60),title,font=_font(47,True),fill=accent);d.text((303,112),subtitle,font=_font(25,True),fill=TEXT)
+    status="SIGNAL WON" if result=="win" else "SIGNAL LOST" if result=="loss" else "LIVE SIGNAL";sf=_font(22,True);sb=d.textbbox((0,0),status,font=sf);d.rounded_rectangle((W-310,75,W-65,124),15,fill=(17,25,39),outline=accent,width=2);d.text((W-187-(sb[2]-sb[0])/2,87),status,font=sf,fill=accent)
+    hn,an=_logos(getattr(match,"event_id",""));_badge(img,d,175,390,_download(hn),match.home,accent);_badge(img,d,W-175,390,_download(an),match.away,accent)
+    _glow_box(d,(380,305,700,475),accent,28);_center(d,f"{match.home_score} : {match.away_score}",343,_font(67,True),TEXT);_center(d,f"{match.minute}'",418,_font(30,True),accent)
+    hf=_fit(d,match.home,320);af=_fit(d,match.away,320);hb=d.textbbox((0,0),match.home,font=hf);ab=d.textbbox((0,0),match.away,font=af);d.text((175-(hb[2]-hb[0])/2,490),match.home,font=hf,fill=TEXT);d.text((W-175-(ab[2]-ab[0])/2,490),match.away,font=af,fill=TEXT);_center(d,getattr(match,"league","") or "LIVE FOOTBALL",545,_font(21),MUTED)
+    headline="ЗАХОД!" if result=="win" else "НЕ ЗАШЁЛ" if result=="loss" else "СИГНАЛ НА ГОЛ";_center(d,headline,595,_font(48,True),accent)
+    _glow_box(d,(80,670,1000,875),accent);d.text((130,705),"✓ ГОЛ ПОДТВЕРЖДЁН" if result=="win" else "СИГНАЛ АКТИВЕН" if not result else "СИГНАЛ ЗАКРЫТ",font=_font(34,True),fill=accent);d.line((130,755,920,755),fill=tuple(int(c*.55) for c in accent),width=2);d.text((130,785),"Сигнал успешно отработал" if result=="win" else "Один сигнал → один результат" if kind!="core" else "GOOL AI продолжает анализ матча",font=_font(27),fill=TEXT)
+    if result is None:
+        d.text((130,830),f"Рейтинг {int(round(score))}/100",font=_font(24,True),fill=TEXT)
+        if odd and float(odd)>1:d.text((700,830),f"LIVE {float(odd):.2f}",font=_font(24,True),fill=accent)
+    _center(d,"GOOL AI  •  LIVE FOOTBALL ANALYTICS",990,_font(23,True),MUTED);_center(d,"ЗОЛОТО • ПЕРВЫЙ ТАЙМ • ВТОРОЙ ТАЙМ",1040,_font(18,True),accent)
     out=BytesIO();img.convert("RGB").save(out,"PNG",optimize=True);return out.getvalue()
