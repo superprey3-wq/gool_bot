@@ -1,9 +1,9 @@
 """Send actionable GOOL LIVE events as infographic PNG cards.
 
-Entry cards are sent immediately. Goal-result cards are confirmed independently in a
-small background verifier so a valid win cannot disappear merely because another patch
-advanced TRACK before the next LIVE scan. The verifier re-reads the authoritative
-Flashscore summary after a debounce window; a rollback/cancelled goal is never sent.
+Entry cards are synchronized against a fresh Flashscore LIVE snapshot immediately before
+rendering. Goal-result cards are confirmed independently in a background verifier; the
+verifier re-reads authoritative Flashscore summary after a debounce window, so cancelled
+VAR goals are never announced as wins.
 """
 from __future__ import annotations
 import asyncio,copy,logging,math,re,requests,threading,time
@@ -77,7 +77,6 @@ def _send_photo_all(match,pressure,recs,kind,master=None):
     logger.info("TELEGRAM_SIGNAL_DELIVERED %s %d/%d",kind,delivered,len(recipients));return delivered>0
 
 def _close_confirmed_entry(event_id,score,minute):
-    """Persist WIN and drop TRACK only after the green card was actually delivered."""
     try:
         from signal_journal_runtime_patch import mark_latest_entry_win
         mark_latest_entry_win(event_id,final_score=f"{score[0]}:{score[1]}",goal_minute=minute)
@@ -85,18 +84,37 @@ def _close_confirmed_entry(event_id,score,minute):
     try:
         state=unified_bot._load_sent();key=f"TRACK:{event_id}"
         if key in state:
-            state.pop(key,None);unified_bot._save_sent(state)
-            logger.info("GOAL_TRACK_CLOSED %s after confirmed green card",event_id)
+            state.pop(key,None);unified_bot._save_sent(state);logger.info("GOAL_TRACK_CLOSED %s after confirmed green card",event_id)
     except Exception:logger.exception("Could not close TRACK after confirmed WIN for %s",event_id)
 
 def _fresh_live_match(event_id):
-    """Return the freshest Flashscore live object for score/minute synchronization."""
-    try:
-        matches=asyncio.run(unified_bot.discover_live_matches())
-        return next((x for x in matches if str(getattr(x,"event_id",""))==str(event_id)),None)
-    except Exception as exc:
-        logger.warning("GOAL_CONFIRM_LIVE_REFRESH_FAILED %s: %s",event_id,exc)
-        return None
+    """Fetch one fresh Flashscore LIVE snapshot safely from sync or async caller contexts."""
+    box={}
+    def worker():
+        try:
+            matches=asyncio.run(unified_bot.discover_live_matches())
+            box["match"]=next((x for x in matches if str(getattr(x,"event_id",""))==str(event_id)),None)
+        except Exception as exc:box["error"]=exc
+    t=threading.Thread(target=worker,name=f"live-refresh-{event_id}",daemon=True);t.start();t.join(12)
+    if t.is_alive():
+        logger.warning("LIVE_REFRESH_TIMEOUT %s",event_id);return None
+    if box.get("error") is not None:
+        logger.warning("LIVE_REFRESH_FAILED %s: %s",event_id,box["error"]);return None
+    return box.get("match")
+
+def _sync_entry_match(match):
+    """Use score and minute from one newest LIVE snapshot before the entry card is rendered."""
+    event_id=str(getattr(match,"event_id","") or "")
+    fresh=_fresh_live_match(event_id) if event_id else None
+    if fresh is None:
+        logger.warning("ENTRY_CARD_SYNC_FALLBACK %s minute=%s score=%s:%s",event_id,getattr(match,"minute",None),getattr(match,"home_score",None),getattr(match,"away_score",None));return match
+    synced=copy.copy(match)
+    synced.minute=int(getattr(fresh,"minute",getattr(match,"minute",0)) or 0)
+    synced.home_score=int(getattr(fresh,"home_score",getattr(match,"home_score",0)) or 0)
+    synced.away_score=int(getattr(fresh,"away_score",getattr(match,"away_score",0)) or 0)
+    synced.is_halftime=bool(getattr(fresh,"is_halftime",getattr(match,"is_halftime",False)))
+    logger.info("ENTRY_CARD_SYNCED %s score=%d:%d minute=%d",event_id,synced.home_score,synced.away_score,synced.minute)
+    return synced
 
 def _confirm_goal_worker(event_id):
     time.sleep(GOAL_CONFIRM_MIN_SECONDS)
@@ -117,25 +135,17 @@ def _confirm_goal_worker(event_id):
             logger.warning("GOAL_CANCELLED %s before=%s candidate=%s current=%s",event_id,before,target,current)
             with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
             return
-
-        # Refresh the LIVE object immediately before rendering the green card so score
-        # and minute are from the same current Flashscore snapshot, not from the old
-        # object captured when the goal was first noticed.
         fresh=_fresh_live_match(event_id)
         if fresh is not None:
-            m=copy.copy(fresh)
-            # Summary remains authoritative for score/VAR; LIVE feed supplies current minute.
-            m.home_score,m.away_score=current
+            m=copy.copy(fresh);m.home_score,m.away_score=current
             logger.info("GOAL_CARD_SYNCED %s score=%s minute=%s",event_id,current,getattr(m,"minute",None))
         else:
             m=copy.copy(candidate["match"]);m.home_score,m.away_score=current
             logger.warning("GOAL_CARD_SYNC_FALLBACK %s using captured minute=%s",event_id,getattr(m,"minute",None))
-
         p=candidate["pressure"];recs=candidate["recs"];master=candidate["master"]
         delivered=_send_photo_all(m,p,recs,"goal",master)
         if delivered:
-            logger.info("GOAL_CONFIRMED_ASYNC %s %s -> %s at %s'",event_id,before,current,int(getattr(m,"minute",0) or 0))
-            _close_confirmed_entry(event_id,current,int(getattr(m,"minute",0) or 0))
+            logger.info("GOAL_CONFIRMED_ASYNC %s %s -> %s at %s'",event_id,before,current,int(getattr(m,"minute",0) or 0));_close_confirmed_entry(event_id,current,int(getattr(m,"minute",0) or 0))
         else:logger.error("GOAL_CONFIRMED_BUT_DELIVERY_FAILED %s",event_id)
         with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
         return
@@ -149,9 +159,7 @@ def _schedule_goal_confirmation(m,p,recs,master):
             if sum(current)>sum(tuple(existing.get("after") or (0,0))):existing["after"]=current;existing["match"]=copy.copy(m)
             return True
         _GOAL_CANDIDATES[event_id]={"before":previous,"after":current,"match":copy.copy(m),"pressure":p,"recs":list(recs or []),"master":master,"ts":time.time()}
-    logger.info("GOAL_CONFIRM_SCHEDULED %s %s -> %s",event_id,previous,current)
-    threading.Thread(target=_confirm_goal_worker,args=(event_id,),name=f"goal-confirm-{event_id}",daemon=True).start()
-    return True
+    logger.info("GOAL_CONFIRM_SCHEDULED %s %s -> %s",event_id,previous,current);threading.Thread(target=_confirm_goal_worker,args=(event_id,),name=f"goal-confirm-{event_id}",daemon=True).start();return True
 
 def _send(m,p,recs,text):
     if not text:return False
@@ -163,9 +171,11 @@ def _send(m,p,recs,text):
         except ValueError:master=None
     if master is None:master=float(getattr(p,"score",0) or 0)
     if kind=="goal":
-        _schedule_goal_confirmation(m,p,recs,master)
-        return False
-    if _send_photo_all(m,p,recs,"entry",master):logger.info("TELEGRAM_IMAGE_SENT entry %d' %s — %s",int(getattr(m,"minute",0) or 0),getattr(m,"home",""),getattr(m,"away",""));return True
+        _schedule_goal_confirmation(m,p,recs,master);return False
+    # ENTRY: refresh score+minute immediately before rendering, so the yellow card cannot
+    # be one scan behind Flashscore. Analysis/selection itself is unchanged.
+    synced=_sync_entry_match(m)
+    if _send_photo_all(synced,p,recs,"entry",master):logger.info("TELEGRAM_IMAGE_SENT entry %d' %s — %s",int(getattr(synced,"minute",0) or 0),getattr(synced,"home",""),getattr(synced,"away",""));return True
     return False
 
 lc._send=_send
