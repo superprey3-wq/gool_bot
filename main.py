@@ -17,21 +17,20 @@ import market_math_patch
 import gool_xg_consensus
 import telegram_signal_filter_patch
 import telegram_image_signal_patch
-import goal_reset_patch       # goal confirmation closes the old signal; next scan starts fresh
-import live_status_heartbeat  # wraps the final LIVE scan only for operational counters
+import signal_journal_runtime_patch
+import goal_reset_patch
+import live_status_heartbeat
 from telegram_subscribers import polling_loop
 import production_logging
 
 async def run_live():
     try:await visual_feed_unified_bot.unified_bot.scan_live_once()
     except Exception:logger.exception("LIVE scan failed; runner will continue")
-
 async def status_loop():
     while True:
         await asyncio.sleep(live_status_heartbeat.STATUS_INTERVAL_SECONDS)
         try:await asyncio.to_thread(live_status_heartbeat.send_heartbeat)
         except Exception:logger.exception("LIVE heartbeat failed; runner will continue")
-
 async def main():
     tg_ok,tg_reason=visual_feed_unified_bot.telegram_config_status();logger.info("Telegram configuration: OK" if tg_ok else "Telegram configuration: INVALID — %s",*([] if tg_ok else [tg_reason]))
     poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
