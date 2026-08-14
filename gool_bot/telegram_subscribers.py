@@ -34,17 +34,29 @@ def unsubscribe(chat_id):
     chat_id=str(chat_id).strip();s=_read_saved();existed=chat_id in s;s.discard(chat_id);_write_saved(s);return existed
 
 def _main_keyboard():
-    return {"keyboard":[[{"text":"🟢 В игре"},{"text":"📊 Отчёт"}],[{"text":"🧠 Анализ"}]],"resize_keyboard":True,"is_persistent":True}
+    # Keep markup deliberately minimal for maximum Bot API compatibility.
+    return {"keyboard":[[{"text":"🟢 В игре"},{"text":"📊 Отчёт"}],[{"text":"🧠 Анализ"}]],"resize_keyboard":True}
 
-def _send_reply(chat_id,text,keyboard=True):
+def _post_message(chat_id,text,reply_markup=None):
     token=_token()
-    if not token:return
+    if not token:return False
     payload={"chat_id":str(chat_id),"text":text,"parse_mode":"HTML","disable_web_page_preview":True}
-    if keyboard:payload["reply_markup"]=_main_keyboard()
+    if reply_markup is not None:payload["reply_markup"]=reply_markup
     try:
         r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage",json=payload,timeout=15)
-        if not r.ok:logger.warning("Telegram command reply failed: HTTP %s %s",r.status_code,r.text[:200])
+        if r.ok:return True
+        logger.warning("Telegram command reply failed: HTTP %s %s",r.status_code,r.text[:300])
     except requests.RequestException as exc:logger.warning("Telegram command reply failed: %s",exc)
+    return False
+
+def _send_reply(chat_id,text,keyboard=True):
+    if keyboard:
+        # If Telegram rejects ReplyKeyboardMarkup for any reason, never leave the
+        # user without a response: retry the same message as plain text.
+        if _post_message(chat_id,text,_main_keyboard()):return True
+        logger.warning("Telegram keyboard rejected for %s; retrying plain message",chat_id)
+    return _post_message(chat_id,text)
+
 def _send_live(chat_id):
     _send_reply(chat_id,"🔎 Проверяю активные сигналы…")
     try:
@@ -56,10 +68,10 @@ def _handle_message(message:dict):
     if chat_id is None:return
     text=str(message.get("text") or "").strip();command=text.split(maxsplit=1)[0].lower()
     if "@" in command:command=command.split("@",1)[0]
-    if command=="/start":
+    if command in {"/start","/menu"}:
         subscribe(chat_id);name=str((message.get("from") or {}).get("first_name") or "").strip();greeting=f", {name}" if name else ""
-        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> мгновенно показывает матчи с активными входами.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
-        logger.info("Telegram subscriber activated: %s",chat_id)
+        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> показывает только активные входы.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
+        logger.info("Telegram subscriber activated/menu opened: %s",chat_id)
     elif command=="/stop":
         if str(chat_id)==_owner_chat_id():_send_reply(chat_id,"👑 Основной чат владельца всегда остаётся активным.");return
         unsubscribe(chat_id);_send_reply(chat_id,"🔕 Рассылка GOOL AI отключена. Вернуть её можно командой /start.");logger.info("Telegram subscriber deactivated: %s",chat_id)
@@ -84,14 +96,20 @@ def _poll_once(offset):
     if offset is not None:params["offset"]=offset
     try:
         r=requests.get(f"https://api.telegram.org/bot{token}/getUpdates",params=params,timeout=35)
-        if not r.ok:logger.warning("Telegram getUpdates failed: HTTP %s",r.status_code);return offset
+        if not r.ok:logger.warning("Telegram getUpdates failed: HTTP %s %s",r.status_code,r.text[:200]);return offset
         for update in (r.json().get("result") or []):
             uid=update.get("update_id")
             if isinstance(uid,int):offset=uid+1
             msg=update.get("message")
-            if isinstance(msg,dict):_handle_message(msg)
+            if isinstance(msg,dict):
+                try:_handle_message(msg)
+                except Exception as exc:logger.exception("Telegram message handler failed but polling continues: %s",exc)
     except (requests.RequestException,ValueError) as exc:logger.warning("Telegram polling failed: %s",exc)
+    except Exception as exc:logger.exception("Unexpected Telegram polling error: %s",exc)
     return offset
 async def polling_loop():
     offset=None;logger.info("Telegram command polling started")
-    while True:offset=await asyncio.to_thread(_poll_once,offset);await asyncio.sleep(.5)
+    while True:
+        try:offset=await asyncio.to_thread(_poll_once,offset)
+        except Exception as exc:logger.exception("Telegram polling iteration crashed; restarting: %s",exc)
+        await asyncio.sleep(.5)
