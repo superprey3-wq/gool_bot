@@ -17,7 +17,8 @@ import market_math_patch
 import gool_xg_consensus
 import telegram_signal_filter_patch
 import telegram_image_signal_patch
-import live_status_heartbeat
+import goal_reset_patch       # goal confirmation closes the old signal; next scan starts fresh
+import live_status_heartbeat  # wraps the final LIVE scan only for operational counters
 from telegram_subscribers import polling_loop
 import production_logging
 
@@ -33,8 +34,7 @@ async def status_loop():
 
 async def main():
     tg_ok,tg_reason=visual_feed_unified_bot.telegram_config_status();logger.info("Telegram configuration: OK" if tg_ok else "Telegram configuration: INVALID — %s",*([] if tg_ok else [tg_reason]))
-    poller=asyncio.create_task(polling_loop(),name="telegram-command-poller")
-    heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
+    poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
     logger.info("GOOL BOT 24/7 started | LIVE every %ss | heartbeat every %ss | server PREMATCH loop disabled",LIVE_INTERVAL_SECONDS,live_status_heartbeat.STATUS_INTERVAL_SECONDS)
     try:
         while True:
