@@ -30,7 +30,7 @@ def _logo_names(event_id):
         if needle in chunk:
             f=_fields(chunk);return f.get("OA",""),f.get("OB","")
     return "",""
-def _download_logo(filename,size=120):
+def _download_logo(filename,size=128):
     if not filename:return None
     try:
         r=requests.get(f"https://static.flashscore.com/res/image/data/{filename}",timeout=5,headers={"User-Agent":"Mozilla/5.0"})
@@ -44,7 +44,17 @@ def _badge(img,draw,x,y,logo,name,won=False):
     r=68;glow=GREEN if won else (30,98,166)
     draw.ellipse((x-r-5,y-r-5,x+r+5,y+r+5),fill=(9,21,35),outline=glow,width=3)
     draw.ellipse((x-r,y-r,x+r,y+r),fill=(28,40,58),outline=LINE,width=2)
-    if logo:img.alpha_composite(logo,(x-logo.width//2,y-logo.height//2))
+    if logo:
+        # Flashscore crests often contain transparent padding. Scale the visible crest,
+        # not the full source canvas, so it visually fills the badge.
+        bbox=logo.getbbox()
+        if bbox:
+            logo=logo.crop(bbox)
+        max_side=116
+        scale=min(max_side/max(1,logo.width),max_side/max(1,logo.height))
+        nw=max(1,int(logo.width*scale));nh=max(1,int(logo.height*scale))
+        logo=logo.resize((nw,nh),Image.Resampling.LANCZOS)
+        img.alpha_composite(logo,(x-logo.width//2,y-logo.height//2))
     else:
         t=_initials(name);f=_font(34,True);b=draw.textbbox((0,0),t,font=f);draw.text((x-(b[2]-b[0])/2,y-(b[3]-b[1])/2-3),t,font=f,fill=TEXT)
 def _fit(draw,text,width,start=38,bold=True):
@@ -97,7 +107,6 @@ def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None
         if best:draw.text((650,606),f"ТБ {float(best['line']):g}  •  {float(best['odd']):.2f}",font=_font(40,True),fill=TEXT);draw.text((650,660),str(best.get("source") or "LIVE"),font=_font(22,True),fill=GREEN)
         else:draw.text((650,620),"КЭФ НЕ НАЙДЕН",font=_font(28,True),fill=MUTED)
         _draw_stat_card(draw,probs)
-        # Give the explanation real vertical space and wrap by rendered width, not a single long line.
         draw.rounded_rectangle((55,910,1025,1090),28,fill=PANEL,outline=LINE,width=2);draw.text((95,936),"ПОЧЕМУ МОЖНО ЗАХОДИТЬ",font=_font(23,True),fill=GOLD)
         reason=_reason(match,pressure,recs,probs);lines=textwrap.wrap(reason,width=58)[:3];yy=980
         for line in lines:draw.text((95,yy),line,font=_font(22,False),fill=TEXT);yy+=34
