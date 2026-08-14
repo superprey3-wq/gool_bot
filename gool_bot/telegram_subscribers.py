@@ -51,13 +51,28 @@ def _send_reply(chat_id,text,keyboard=True):
         logger.warning("Telegram keyboard rejected for %s; retrying plain message",chat_id)
     return _post_message(chat_id,text)
 
-def _active_signal_rows(live_ids):
+def _open_track_ids():
+    """Our own runtime truth: TRACK exists until the entry is confirmed/closed."""
+    try:
+        import unified_bot
+        state=unified_bot._load_sent()
+        return {str(k).split(":",1)[1] for k,v in state.items() if str(k).startswith("TRACK:") and isinstance(v,dict)}
+    except Exception as exc:
+        logger.exception("Could not read GOOL open tracks: %s",exc)
+        return set()
+
+def _active_signal_rows():
+    """Show only GOOL entries that are still open in our own tracker.
+
+    No Flashscore request is made here. A signal stays in this list while TRACK exists;
+    after confirmed goal the green-card flow closes TRACK and it disappears immediately.
+    """
     from report_now import _today_rows,_live_signal_rows,_is_pending_entry
-    latest={}
+    open_ids=_open_track_ids();latest={}
     for r in _live_signal_rows(_today_rows()):
         if not _is_pending_entry(r):continue
         eid=str(r.get("event_id","") or "")
-        if not eid or eid not in live_ids:continue
+        if not eid or eid not in open_ids:continue
         if eid not in latest or int(r.get("created_ts",0) or 0)>int(latest[eid].get("created_ts",0) or 0):latest[eid]=r
     return sorted(latest.values(),key=lambda r:int(r.get("created_ts",0) or 0),reverse=True)
 def _active_signal_buttons(rows):
@@ -70,10 +85,10 @@ def _active_signal_buttons(rows):
         buttons.append([{"text":label,"callback_data":f"show:{r.get('event_id')}"}])
     return {"inline_keyboard":buttons}
 def _live_text(rows):
-    if not rows:return "🟢 <b>В ИГРЕ</b>\n\nСейчас незакрытых LIVE-сигналов нет."
+    if not rows:return "🟢 <b>В ИГРЕ</b>\n\nСейчас незакрытых сигналов нет."
     from datetime import datetime
     from report_now import MOSCOW
-    lines=[f"🟢 <b>В ИГРЕ — {len(rows)}</b>","<i>Только наши сигналы, где матч ещё идёт и гол после входа ещё не подтверждён.</i>",""]
+    lines=[f"🟢 <b>В ИГРЕ — {len(rows)}</b>","<i>Наши сигналы, по которым ещё нет подтверждённого гола.</i>",""]
     for r in rows[:20]:
         try:when=datetime.fromtimestamp(int(r.get("created_ts",0)),MOSCOW).strftime("%H:%M")
         except Exception:when="—"
@@ -82,14 +97,9 @@ def _live_text(rows):
     return "\n".join(lines)
 def _send_live(chat_id):
     try:
-        from report_now import _current_live_ids
-        live_ids=_current_live_ids()
-        if live_ids is None:
-            _post_message(chat_id,"⚠️ Flashscore временно не ответил. Нажми «🟢 В игре» ещё раз чуть позже.")
-            return
-        rows=_active_signal_rows(live_ids)
-        _post_message(chat_id,_live_text(rows),_active_signal_buttons(rows));logger.info("Telegram unresolved in-game list sent to: %s",chat_id)
-    except Exception as exc:logger.exception("Telegram in-game failed: %s",exc);_post_message(chat_id,"⚠️ Не удалось получить активные сигналы прямо сейчас.")
+        rows=_active_signal_rows()
+        _post_message(chat_id,_live_text(rows),_active_signal_buttons(rows));logger.info("Telegram GOOL open-signal list sent to: %s",chat_id)
+    except Exception as exc:logger.exception("Telegram in-game failed: %s",exc);_post_message(chat_id,"⚠️ Не удалось прочитать список незакрытых сигналов.")
 def _send_report(chat_id):
     _send_reply(chat_id,"📊 Собираю текущий отчёт…")
     try:
@@ -103,7 +113,7 @@ def _handle_message(message:dict):
     if "@" in command:command=command.split("@",1)[0]
     if command in {"/start","/menu"}:
         subscribe(chat_id);name=str((message.get("from") or {}).get("first_name") or "").strip();greeting=f", {name}" if name else ""
-        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> показывает только незакрытые входы: матч ещё идёт, а гол после сигнала ещё не подтверждён.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
+        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> показывает наши незакрытые входы — те, где подтверждённого гола ещё нет.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
         logger.info("Telegram subscriber activated/menu opened: %s",chat_id)
     elif command=="/stop":
         if str(chat_id)==_owner_chat_id():_send_reply(chat_id,"👑 Основной чат владельца всегда остаётся активным.");return
