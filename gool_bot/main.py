@@ -9,9 +9,11 @@ LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
 import visual_feed_unified_bot
 import live_candidate_patch
+import halftime_hazard_patch          # keep HT probability horizon consistent with root runner
 import period_market_patch
 import phase_market_patch
-import market_math_patch  # PREMATCH_MATH stays inside LIVE
+import score_sync_patch               # reconcile stale list score with event summary
+import market_math_patch              # PREMATCH_MATH stays inside LIVE
 import gool_xg_consensus
 import telegram_signal_filter_patch
 import telegram_image_signal_patch
