@@ -16,6 +16,7 @@ import telegram_signal_filter_patch
 import telegram_image_signal_patch
 import prematch_standard_scanner
 from telegram_subscribers import get_subscribers,polling_loop
+import production_logging  # final logging profile; GOOL_DEBUG=1 restores diagnostics
 
 def _non_owner_subscribers():
     owner=os.getenv("TELEGRAM_CHAT_ID","").strip();return [x for x in get_subscribers() if x!=owner]
