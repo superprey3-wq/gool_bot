@@ -41,20 +41,17 @@ def _download_logo(filename,size=128):
 def _initials(name):
     w=re.findall(r"[A-Za-zА-Яа-я0-9]+",name);return "".join(x[0] for x in w[:2]).upper() if w else "?"
 def _badge(img,draw,x,y,logo,name,won=False):
-    r=68;glow=GREEN if won else (30,98,166)
-    draw.ellipse((x-r-5,y-r-5,x+r+5,y+r+5),fill=(9,21,35),outline=glow,width=3)
-    draw.ellipse((x-r,y-r,x+r,y+r),fill=(28,40,58),outline=LINE,width=2)
+    r=68;glow=GREEN if won else BLUE
+    # layered glow to imitate the approved neon mockup
+    for extra,width in ((14,2),(10,3),(6,4)):
+        shade=tuple(max(0,min(255,int(c*(0.42 if extra==14 else 0.62 if extra==10 else 0.82)))) for c in glow)
+        draw.ellipse((x-r-extra,y-r-extra,x+r+extra,y+r+extra),outline=shade,width=width)
+    draw.ellipse((x-r-3,y-r-3,x+r+3,y+r+3),fill=(9,21,35),outline=glow,width=4)
+    draw.ellipse((x-r,y-r,x+r,y+r),fill=(24,35,52),outline=(66,83,108),width=2)
     if logo:
-        # Flashscore crests often contain transparent padding. Scale the visible crest,
-        # not the full source canvas, so it visually fills the badge.
         bbox=logo.getbbox()
-        if bbox:
-            logo=logo.crop(bbox)
-        max_side=116
-        scale=min(max_side/max(1,logo.width),max_side/max(1,logo.height))
-        nw=max(1,int(logo.width*scale));nh=max(1,int(logo.height*scale))
-        logo=logo.resize((nw,nh),Image.Resampling.LANCZOS)
-        img.alpha_composite(logo,(x-logo.width//2,y-logo.height//2))
+        if bbox:logo=logo.crop(bbox)
+        max_side=120;scale=min(max_side/max(1,logo.width),max_side/max(1,logo.height));nw=max(1,int(logo.width*scale));nh=max(1,int(logo.height*scale));logo=logo.resize((nw,nh),Image.Resampling.LANCZOS);img.alpha_composite(logo,(x-logo.width//2,y-logo.height//2))
     else:
         t=_initials(name);f=_font(34,True);b=draw.textbbox((0,0),t,font=f);draw.text((x-(b[2]-b[0])/2,y-(b[3]-b[1])/2-3),t,font=f,fill=TEXT)
 def _fit(draw,text,width,start=38,bold=True):
@@ -82,11 +79,15 @@ def _reason(match,pressure,recs,probabilities):
     if not reasons:reasons.append("Сигнал подтверждён LIVE-моделью, историей команд и рынком.")
     return " ".join(reasons[:2])
 def _draw_header(draw,accent,win):
+    for d,c in ((10,tuple(int(x*.35) for x in accent)),(6,tuple(int(x*.55) for x in accent)),(3,tuple(int(x*.8) for x in accent))):
+        draw.rounded_rectangle((24-d,20-d,W-24+d,105+d),24+d,outline=c,width=2)
     draw.rounded_rectangle((24,20,W-24,105),24,fill=PANEL,outline=LINE,width=2);draw.text((54,43),"GOOL AI",font=_font(32,True),fill=TEXT)
     tag="SIGNAL WON" if win else "LIVE SIGNAL";tf=_font(26,True);tb=draw.textbbox((0,0),tag,font=tf);draw.rounded_rectangle((W-250,37,W-48,89),18,fill=(31,43,60),outline=accent,width=2);draw.text((W-149-(tb[2]-tb[0])/2,49),tag,font=tf,fill=accent)
 def _draw_match(img,draw,match,accent,won=False):
     hn,an=_logo_names(getattr(match,"event_id",""));hl=_download_logo(hn);al=_download_logo(an);_badge(img,draw,190,320,hl,match.home,won);_badge(img,draw,W-190,320,al,match.away,won)
-    draw.rounded_rectangle((390,235,690,405),30,fill=(10,20,32),outline=GREEN if won else LINE,width=2);_center(draw,"● LIVE",247,_font(24,True),GREEN);_center(draw,f"{match.home_score} : {match.away_score}",286,_font(74,True),TEXT)
+    score_outline=GREEN if won else GOLD
+    for d in (8,4):draw.rounded_rectangle((390-d,235-d,690+d,405+d),30+d,outline=tuple(int(x*(0.35 if d==8 else 0.6)) for x in score_outline),width=2)
+    draw.rounded_rectangle((390,235,690,405),30,fill=(10,20,32),outline=score_outline,width=3);_center(draw,"● LIVE",247,_font(24,True),GREEN);_center(draw,f"{match.home_score} : {match.away_score}",286,_font(74,True),TEXT)
     minute="ПЕРЕРЫВ" if getattr(match,"is_halftime",False) else f"{match.minute}'";_center(draw,minute,363,_font(28,True),accent)
     hf=_fit(draw,match.home,330,36);af=_fit(draw,match.away,330,36);hb=draw.textbbox((0,0),match.home,font=hf);ab=draw.textbbox((0,0),match.away,font=af);draw.text((190-(hb[2]-hb[0])/2,420),match.home,font=hf,fill=TEXT);draw.text((W-190-(ab[2]-ab[0])/2,420),match.away,font=af,fill=TEXT)
     league=getattr(match,"league","") or "LIVE FOOTBALL";lf=_fit(draw,league,850,24,False);_center(draw,league,474,lf,MUTED)
@@ -101,14 +102,13 @@ def _draw_stat_card(draw,probs):
 def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind:str="entry",master:float|None=None,probabilities:dict|None=None)->bytes:
     win=kind=="goal";accent=GREEN if win else GOLD;H=790 if win else 1180;img=Image.new("RGBA",(W,H),BG+(255,));draw=ImageDraw.Draw(img);_draw_header(draw,accent,win);_center(draw,"ЗАХОД!" if win else "МОЖНО ЗАХОДИТЬ",132,_font(52,True),accent);_draw_match(img,draw,match,accent,win)
     if win:
+        for d in (8,4):draw.rounded_rectangle((70-d,540-d,1010+d,690+d),30+d,outline=tuple(int(x*(0.38 if d==8 else 0.65)) for x in GREEN),width=2)
         draw.rounded_rectangle((70,540,1010,690),30,fill=(9,24,25),outline=GREEN,width=3);draw.ellipse((105,575,195,665),fill=(11,35,31),outline=GREEN,width=3);cx=150;draw.line((cx-20,620,cx-4,638),fill=GREEN,width=8);draw.line((cx-4,638,cx+25,602),fill=GREEN,width=8);draw.text((235,570),"✓ ГОЛ ПОДТВЕРЖДЁН",font=_font(37,True),fill=GREEN);draw.line((235,620,925,620),fill=(36,91,66),width=2);draw.text((235,642),"Сигнал успешно отработал",font=_font(25,False),fill=TEXT);footer=735
     else:
         probs=probabilities or {};p=int(round(float(master if master is not None else getattr(pressure,"score",0) or 0)));best=_best(recs);draw.rounded_rectangle((55,535,1025,705),28,fill=PANEL2,outline=LINE,width=2);draw.line((540,558,540,682),fill=LINE,width=2);draw.text((105,565),"РЕЙТИНГ GOOL AI",font=_font(22,True),fill=MUTED);draw.text((105,605),f"{p}/100",font=_font(48,True),fill=GOLD);grade="СИЛЬНЫЙ СИГНАЛ" if p>=80 else "ХОРОШИЙ СИГНАЛ" if p>=70 else "РАБОЧИЙ СИГНАЛ";draw.text((105,660),grade,font=_font(20,True),fill=GREEN);draw.text((650,565),"LIVE РЫНОК",font=_font(22,True),fill=MUTED)
         if best:draw.text((650,606),f"ТБ {float(best['line']):g}  •  {float(best['odd']):.2f}",font=_font(40,True),fill=TEXT);draw.text((650,660),str(best.get("source") or "LIVE"),font=_font(22,True),fill=GREEN)
         else:draw.text((650,620),"КЭФ НЕ НАЙДЕН",font=_font(28,True),fill=MUTED)
-        _draw_stat_card(draw,probs)
-        draw.rounded_rectangle((55,910,1025,1090),28,fill=PANEL,outline=LINE,width=2);draw.text((95,936),"ПОЧЕМУ МОЖНО ЗАХОДИТЬ",font=_font(23,True),fill=GOLD)
-        reason=_reason(match,pressure,recs,probs);lines=textwrap.wrap(reason,width=58)[:3];yy=980
+        _draw_stat_card(draw,probs);draw.rounded_rectangle((55,910,1025,1090),28,fill=PANEL,outline=LINE,width=2);draw.text((95,936),"ПОЧЕМУ МОЖНО ЗАХОДИТЬ",font=_font(23,True),fill=GOLD);reason=_reason(match,pressure,recs,probs);lines=textwrap.wrap(reason,width=58)[:3];yy=980
         for line in lines:draw.text((95,yy),line,font=_font(22,False),fill=TEXT);yy+=34
         footer=1135
     _center(draw,"GOOL AI  •  LIVE FOOTBALL ANALYTICS",footer,_font(21,True),MUTED);out=BytesIO();img.convert("RGB").save(out,"PNG",optimize=True);return out.getvalue()
