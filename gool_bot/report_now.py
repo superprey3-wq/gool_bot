@@ -20,23 +20,18 @@ def _live_signal_rows(rows):
     return [r for r in rows if r.get("kind")=="live" and str(r.get("reason") or "signal") in {"signal","reentry"}]
 
 def _current_live_ids():
+    """Return current Flashscore LIVE IDs, or None only when feed lookup itself failed."""
     try:matches=asyncio.run(discover_live_matches())
     except Exception:return None
     return {str(m.event_id) for m in matches}
 
-def _still_plausibly_running(row)->bool:
-    """Do not settle a no-goal entry too early when LIVE discovery misses a match.
-
-    Allow enough wall-clock time for the match to reach roughly 100 minutes from
-    the signal minute. This is conservative and prevents live games from becoming
-    false losses during temporary feed gaps.
-    """
+def _fallback_plausibly_running(row)->bool:
+    """Used only when Flashscore LIVE discovery itself failed during /report."""
     try:
         minute=max(0,int(row.get("minute") or 0));created=float(row.get("created_ts") or 0)
     except Exception:return True
     if created<=0:return True
-    grace_minutes=max(12,100-minute)
-    return (time.time()-created) < grace_minutes*60
+    return (time.time()-created)<max(12,100-minute)*60
 
 def build_report_text()->str:
     rows=_today_rows();live_rows=_live_signal_rows(rows);pre_rows=[r for r in rows if r.get("kind")=="prematch"];current_live_ids=_current_live_ids();summary_cache={}
@@ -52,26 +47,31 @@ def build_report_text()->str:
         event_id=str(row.get("event_id", ""));body=get_summary(event_id)
         try:sh,sa=map(int,str(row.get("score_at_signal","0:0")).split(":"))
         except Exception:sh=sa=0
+        is_live=(current_live_ids is not None and event_id in current_live_ids)
+        feed_unknown=(current_live_ids is None)
         if not body:
+            # Without a summary we cannot know the final score. If Flashscore still
+            # says LIVE it is pending; if the LIVE feed failed, use time fallback.
             live_wait+=1;mark="⏳";fh,fa=sh,sa
         else:
             try:fh,fa,_,_=_score_from_summary(body)
             except Exception:
                 live_wait+=1;mark="⏳";fh,fa=sh,sa
             else:
-                # A summary can occasionally be incomplete/regressive (e.g. 1:0 -> 0:0).
-                # Such data is impossible and must never be counted as a loss.
+                # Regressive score is impossible (e.g. signal 1:0, summary 0:0), so
+                # never turn bad source data into a false loss.
                 if (fh+fa)<(sh+sa):
                     live_wait+=1;mark="⏳"
                 elif (fh+fa)>(sh+sa):
                     live_ok+=1;mark="✅"
+                elif is_live:
+                    live_wait+=1;mark="⏳"
+                elif feed_unknown and _fallback_plausibly_running(row):
+                    live_wait+=1;mark="⏳"
                 else:
-                    definitely_live=(current_live_ids is not None and event_id in current_live_ids)
-                    feed_unknown=(current_live_ids is None)
-                    if definitely_live or feed_unknown or _still_plausibly_running(row):
-                        live_wait+=1;mark="⏳"
-                    else:
-                        live_bad+=1;mark="❌"
+                    # Flashscore LIVE loaded successfully and this event is no
+                    # longer live. No goal after the entry means a settled loss.
+                    live_bad+=1;mark="❌"
         reason=str(row.get("reason") or "signal");label="ПОВТОРНЫЙ ВХОД" if reason=="reentry" else "ВХОД"
         live_details.append(f"{mark} {label} · {row.get('home')} — {row.get('away')} | {row.get('minute')}' {row.get('score_at_signal')} → {fh}:{fa}")
     pre_ok=pre_bad=pre_wait=0;pre_details=[]
@@ -86,7 +86,7 @@ def build_report_text()->str:
         pre_details.append(f"{mark} {row.get('home')} — {row.get('away')} | {row.get('scope')} {row.get('side')} {row.get('line')} → {fh}:{fa}")
     settled=live_ok+live_bad;live_rate=round(live_ok/settled*100) if settled else 0
     initial=sum(1 for r in live_rows if str(r.get("reason") or "signal")=="signal");reentries=sum(1 for r in live_rows if str(r.get("reason") or "signal")=="reentry")
-    lines=["📊 <b>GOOL BOT — ОТЧЁТ НА СЕЙЧАС</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🔴 <b>LIVE</b>",f"Реальных входов: <b>{len(live_rows)}</b>",f"↳ Первичных: <b>{initial}</b> · повторных после гола: <b>{reentries}</b>",f"✅ Зашло: <b>{live_ok}</b>",f"❌ Не зашло: <b>{live_bad}</b>",f"⏳ Ещё в игре: <b>{live_wait}</b>","ℹ️ Гол-подтверждения и служебные обновления отдельными сигналами не считаются."]
+    lines=["📊 <b>GOOL BOT — ОТЧЁТ НА СЕЙЧАС</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🔴 <b>LIVE</b>",f"Реальных входов: <b>{len(live_rows)}</b>",f"↳ Первичных: <b>{initial}</b> · повторных после гола: <b>{reentries}</b>",f"✅ Зашло: <b>{live_ok}</b>",f"❌ Не зашло: <b>{live_bad}</b>",f"⏳ Реально ещё в LIVE: <b>{live_wait}</b>","ℹ️ Статус LIVE берётся напрямую из Flashscore; гол-подтверждения и служебные обновления сигналами не считаются."]
     if settled:lines.append(f"🎯 Проходимость завершённых входов: <b>{live_rate}%</b>")
     lines += ["","🔥 <b>ПРЕМАТЧ</b>",f"Всего сигналов: <b>{len(pre_rows)}</b>",f"✅ Сейчас проходят: <b>{pre_ok}</b>",f"❌ Сейчас не проходят: <b>{pre_bad}</b>",f"⏳ Нет данных/возврат: <b>{pre_wait}</b>"]
     if live_details:lines += ["","<b>Последние LIVE-входы:</b>"]+live_details[-12:]
