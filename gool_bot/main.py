@@ -18,6 +18,7 @@ import market_math_patch
 import gool_xg_consensus
 import telegram_signal_filter_patch
 import telegram_image_signal_patch
+import core_result_card_patch
 import signal_journal_runtime_patch
 import goal_reset_patch
 import live_status_heartbeat
