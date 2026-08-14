@@ -81,8 +81,8 @@ def _send_report(chat_id):
     _send_reply(chat_id,"📊 Собираю текущий отчёт…")
     try:
         from report_now import build_report_text
-        # Active matches appear as tappable buttons directly under the report.
-        _post_message(chat_id,build_report_text(),_active_signal_buttons());logger.info("Telegram report sent to: %s",chat_id)
+        # Report is deliberately plain: match navigation belongs only to 'В игре'.
+        _send_reply(chat_id,build_report_text());logger.info("Telegram report sent to: %s",chat_id)
     except Exception as exc:logger.exception("Telegram /report failed: %s",exc);_send_reply(chat_id,"⚠️ Не удалось собрать отчёт прямо сейчас. Ошибка записана в лог.")
 def _handle_message(message:dict):
     chat=message.get("chat") or {};chat_id=chat.get("id")
@@ -91,7 +91,7 @@ def _handle_message(message:dict):
     if "@" in command:command=command.split("@",1)[0]
     if command in {"/start","/menu"}:
         subscribe(chat_id);name=str((message.get("from") or {}).get("first_name") or "").strip();greeting=f", {name}" if name else ""
-        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> показывает только активные входы. В отчёте активный матч можно нажать и сразу снова открыть его карточку.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
+        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> показывает только активные входы и служит быстрым навигатором по их карточкам.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
         logger.info("Telegram subscriber activated/menu opened: %s",chat_id)
     elif command=="/stop":
         if str(chat_id)==_owner_chat_id():_send_reply(chat_id,"👑 Основной чат владельца всегда остаётся активным.");return
@@ -121,7 +121,7 @@ def _handle_callback(query:dict):
     card=get_entry_card(event_id)
     if not card:
         _answer_callback(cid,"Карточка была отправлена до обновления бота")
-        _send_reply(chat_id,"ℹ️ Эту старую карточку бот ещё не успел сохранить. Новые сигналы уже будут открываться по нажатию.")
+        _send_reply(chat_id,"ℹ️ Эту старую карточку бот ещё не успел сохранить. Новые сигналы уже будут доступны из «🟢 В игре».")
         return
     token=_token();payload={"chat_id":str(chat_id),"photo":card.get("file_id"),"caption":card.get("caption") or "🔥 GOOL AI • МОЖНО ЗАХОДИТЬ"}
     try:
