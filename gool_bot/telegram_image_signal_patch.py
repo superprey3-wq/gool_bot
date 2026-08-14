@@ -15,6 +15,7 @@ from daily_report import _score_from_summary
 from signal_card import render_signal_card
 from telegram_subscribers import get_subscribers
 from signal_card_archive import save_entry_card
+from signal_journal import all_signals
 logger=logging.getLogger("telegram_image_signal_patch")
 _orig_send=lc._send
 _GOAL_CANDIDATES={}
@@ -24,6 +25,7 @@ GOAL_CONFIRM_RETRIES=3
 GOAL_CONFIRM_RETRY_SECONDS=20
 ENTRY_REFRESH_RETRIES=2
 ENTRY_REFRESH_RETRY_SECONDS=2
+_PENDING_VALUES={"","pending","wait","waiting"}
 
 def _score_tuple(value):
     try:a,b=str(value).split(":",1);return int(a),int(b)
@@ -33,6 +35,21 @@ def _tracked_score(match):
     try:
         state=unified_bot._load_sent();row=state.get(f"TRACK:{match.event_id}") or {};return _score_tuple(row.get("score",f"{match.home_score}:{match.away_score}"))
     except Exception:return int(getattr(match,"home_score",0) or 0),int(getattr(match,"away_score",0) or 0)
+
+def _has_pending_entry(event_id):
+    """A goal may be announced only while one real entry for this event is still open."""
+    eid=str(event_id or "")
+    try:rows=all_signals()
+    except Exception as exc:
+        logger.warning("PENDING_ENTRY_CHECK_FAILED %s: %s",eid,exc)
+        # Fail open: journal I/O trouble must not silently lose a legitimate win.
+        return True
+    for r in rows:
+        if r.get("kind")!="live" or str(r.get("event_id") or "")!=eid:continue
+        if str(r.get("reason") or "signal") not in {"signal","reentry"}:continue
+        result=str(r.get("result") or "pending").strip().lower()
+        if result in _PENDING_VALUES:return True
+    return False
 
 def _display_probabilities(match,master,xg):
     minute=int(getattr(match,"minute",0) or 0);full_remaining=49.0 if getattr(match,"is_halftime",False) else max(0.0,94.0-minute);m=max(0.0,min(100.0,float(master or 0)));rate=(2.7/90.0)*(0.45+1.35*m/100.0);engine_lambda=max(0.0,rate*full_remaining);lam=engine_lambda;sources=int((xg or {}).get("sources",0) or 0);xg_lambda=float((xg or {}).get("lambda",0) or 0)
@@ -129,6 +146,14 @@ def _confirm_goal_worker(event_id):
     for attempt in range(GOAL_CONFIRM_RETRIES):
         with _GOAL_LOCK:candidate=_GOAL_CANDIDATES.get(event_id)
         if not candidate:return
+
+        # The entry may already have been settled by another confirmation path. This
+        # guard is intentionally immediately before the expensive Flashscore refresh.
+        if not _has_pending_entry(event_id):
+            logger.warning("DUPLICATE_GOAL_CONFIRM_SUPPRESSED %s: entry already closed",event_id)
+            with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
+            return
+
         before=tuple(candidate["before"]);target=tuple(candidate["after"])
         try:
             body=fetch_summary(event_id)
@@ -151,6 +176,14 @@ def _confirm_goal_worker(event_id):
             m=copy.copy(candidate["match"]);m.home_score,m.away_score=current
             logger.warning("GOAL_CARD_SYNC_FALLBACK %s using captured minute=%s",event_id,getattr(m,"minute",None))
         p=candidate["pressure"];recs=candidate["recs"];master=candidate["master"]
+
+        # Check once more immediately before Telegram delivery. If another worker/process
+        # settled the same journal entry while we were refreshing LIVE, do not duplicate it.
+        if not _has_pending_entry(event_id):
+            logger.warning("DUPLICATE_GOAL_SEND_SUPPRESSED %s: entry closed during refresh",event_id)
+            with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
+            return
+
         delivered=_send_photo_all(m,p,recs,"goal",master)
         if delivered:
             logger.info("GOAL_CONFIRMED_ASYNC %s %s -> %s at %s'",event_id,before,current,int(getattr(m,"minute",0) or 0));_close_confirmed_entry(event_id,current,int(getattr(m,"minute",0) or 0))
@@ -159,8 +192,17 @@ def _confirm_goal_worker(event_id):
         return
 
 def _schedule_goal_confirmation(m,p,recs,master):
-    event_id=str(getattr(m,"event_id","") or "");current=(int(getattr(m,"home_score",0) or 0),int(getattr(m,"away_score",0) or 0));previous=_tracked_score(m)
-    if not event_id or sum(current)<=sum(previous):return False
+    event_id=str(getattr(m,"event_id","") or "")
+    if not event_id:return False
+
+    # A resurrected stale TRACK must never create a second green card for an entry that
+    # the journal has already settled.
+    if not _has_pending_entry(event_id):
+        logger.warning("DUPLICATE_GOAL_SCHEDULE_SUPPRESSED %s: no pending GOOL entry",event_id)
+        return False
+
+    current=(int(getattr(m,"home_score",0) or 0),int(getattr(m,"away_score",0) or 0));previous=_tracked_score(m)
+    if sum(current)<=sum(previous):return False
     with _GOAL_LOCK:
         existing=_GOAL_CANDIDATES.get(event_id)
         if existing:
@@ -180,7 +222,6 @@ def _send(m,p,recs,text):
     if master is None:master=float(getattr(p,"score",0) or 0)
     if kind=="goal":
         _schedule_goal_confirmation(m,p,recs,master);return False
-    # ENTRY: never render from the analysis snapshot. Require a fresh event_id match first.
     synced=_sync_entry_match(m)
     if synced is None:
         logger.warning("ENTRY_SIGNAL_DEFERRED %s — %s: no fresh LIVE snapshot",getattr(m,"home",""),getattr(m,"away",""))
