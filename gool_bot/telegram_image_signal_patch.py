@@ -27,14 +27,31 @@ def _tracked_score(match):
     except Exception:return int(getattr(match,"home_score",0) or 0),int(getattr(match,"away_score",0) or 0)
 
 def _goal_confirmed(match):
-    event_id=str(getattr(match,"event_id","") or "");current=(int(getattr(match,"home_score",0) or 0),int(getattr(match,"away_score",0) or 0));previous=_tracked_score(match);current_total=sum(current);previous_total=sum(previous)
-    if current_total<=previous_total:
-        if event_id in _GOAL_CANDIDATES:logger.info("GOAL_CANDIDATE_CANCELLED %s tracked=%s current=%s",event_id,previous,current);_GOAL_CANDIDATES.pop(event_id,None)
+    """Confirm a score increase across scans even if another patch already advanced TRACK.
+
+    The old implementation re-read TRACK on the second scan. If TRACK had already been
+    updated to the new score, the candidate looked like 'no increase' and the green WON
+    card was silently suppressed forever. The candidate now owns its pre-goal and
+    post-goal scores until confirmation or rollback.
+    """
+    event_id=str(getattr(match,"event_id","") or "")
+    current=(int(getattr(match,"home_score",0) or 0),int(getattr(match,"away_score",0) or 0))
+    now=time.time();candidate=_GOAL_CANDIDATES.get(event_id)
+    if candidate:
+        before=tuple(candidate.get("before") or (0,0));after=tuple(candidate.get("after") or (0,0))
+        # Any rollback below the candidate score means VAR/correction: cancel it.
+        if sum(current)<sum(after):
+            logger.info("GOAL_CANDIDATE_CANCELLED %s before=%s candidate=%s current=%s",event_id,before,after,current)
+            _GOAL_CANDIDATES.pop(event_id,None);return False
+        # Same or even higher score after the debounce window confirms the original goal.
+        if sum(current)>=sum(after) and now-float(candidate.get("ts",now))>=GOAL_CONFIRM_MIN_SECONDS:
+            _GOAL_CANDIDATES.pop(event_id,None)
+            logger.info("GOAL_CONFIRMED %s %s -> %s current=%s",event_id,before,after,current);return True
         return False
-    now=time.time();candidate=_GOAL_CANDIDATES.get(event_id);signature=(previous,current)
-    if not candidate or candidate.get("signature")!=signature:_GOAL_CANDIDATES[event_id]={"signature":signature,"ts":now};logger.info("GOAL_CANDIDATE %s %s -> %s; waiting next scan",event_id,previous,current);return False
-    if now-float(candidate.get("ts",now))<GOAL_CONFIRM_MIN_SECONDS:return False
-    _GOAL_CANDIDATES.pop(event_id,None);logger.info("GOAL_CONFIRMED %s %s -> %s",event_id,previous,current);return True
+    previous=_tracked_score(match)
+    if sum(current)<=sum(previous):return False
+    _GOAL_CANDIDATES[event_id]={"before":previous,"after":current,"ts":now}
+    logger.info("GOAL_CANDIDATE %s %s -> %s; waiting next scan",event_id,previous,current);return False
 
 def _display_probabilities(match,master,xg):
     minute=int(getattr(match,"minute",0) or 0);full_remaining=49.0 if getattr(match,"is_halftime",False) else max(0.0,94.0-minute);m=max(0.0,min(100.0,float(master or 0)));rate=(2.7/90.0)*(0.45+1.35*m/100.0);engine_lambda=max(0.0,rate*full_remaining);lam=engine_lambda;sources=int((xg or {}).get("sources",0) or 0);xg_lambda=float((xg or {}).get("lambda",0) or 0)
@@ -82,7 +99,7 @@ def _send_photo_all(match,pressure,recs,kind,master=None):
 
 def _send(m,p,recs,text):
     if not text:return False
-    kind="goal" if "СИГНАЛ ЗАШЁЛ" in text else "entry" if "МОЖНО ЗАХОДИТЬ" in text else None
+    kind="goal" if "СИГНАЛ ЗАШЁЛ" in text or "ГОЛ — СИГНАЛ СРАБОТАЛ" in text else "entry" if "МОЖНО ЗАХОДИТЬ" in text else None
     if not kind:return _orig_send(m,p,recs,text)
     if kind=="goal" and not _goal_confirmed(m):return False
     master=None;mm=re.search(r"Рейтинг сигнала:\s*<b>([0-9.]+)/100",text)
