@@ -6,7 +6,7 @@ advanced TRACK before the next LIVE scan. The verifier re-reads the authoritativ
 Flashscore summary after a debounce window; a rollback/cancelled goal is never sent.
 """
 from __future__ import annotations
-import copy,logging,math,re,requests,threading,time
+import asyncio,copy,logging,math,re,requests,threading,time
 import live_candidate_patch as lc
 import unified_bot
 import gool_xg_consensus as gx
@@ -89,6 +89,15 @@ def _close_confirmed_entry(event_id,score,minute):
             logger.info("GOAL_TRACK_CLOSED %s after confirmed green card",event_id)
     except Exception:logger.exception("Could not close TRACK after confirmed WIN for %s",event_id)
 
+def _fresh_live_match(event_id):
+    """Return the freshest Flashscore live object for score/minute synchronization."""
+    try:
+        matches=asyncio.run(unified_bot.discover_live_matches())
+        return next((x for x in matches if str(getattr(x,"event_id",""))==str(event_id)),None)
+    except Exception as exc:
+        logger.warning("GOAL_CONFIRM_LIVE_REFRESH_FAILED %s: %s",event_id,exc)
+        return None
+
 def _confirm_goal_worker(event_id):
     time.sleep(GOAL_CONFIRM_MIN_SECONDS)
     for attempt in range(GOAL_CONFIRM_RETRIES):
@@ -108,12 +117,24 @@ def _confirm_goal_worker(event_id):
             logger.warning("GOAL_CANCELLED %s before=%s candidate=%s current=%s",event_id,before,target,current)
             with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
             return
-        # The score still contains the goal after the debounce window: it is safe to announce.
-        m=copy.copy(candidate["match"]);m.home_score,m.away_score=current
+
+        # Refresh the LIVE object immediately before rendering the green card so score
+        # and minute are from the same current Flashscore snapshot, not from the old
+        # object captured when the goal was first noticed.
+        fresh=_fresh_live_match(event_id)
+        if fresh is not None:
+            m=copy.copy(fresh)
+            # Summary remains authoritative for score/VAR; LIVE feed supplies current minute.
+            m.home_score,m.away_score=current
+            logger.info("GOAL_CARD_SYNCED %s score=%s minute=%s",event_id,current,getattr(m,"minute",None))
+        else:
+            m=copy.copy(candidate["match"]);m.home_score,m.away_score=current
+            logger.warning("GOAL_CARD_SYNC_FALLBACK %s using captured minute=%s",event_id,getattr(m,"minute",None))
+
         p=candidate["pressure"];recs=candidate["recs"];master=candidate["master"]
         delivered=_send_photo_all(m,p,recs,"goal",master)
         if delivered:
-            logger.info("GOAL_CONFIRMED_ASYNC %s %s -> %s",event_id,before,current)
+            logger.info("GOAL_CONFIRMED_ASYNC %s %s -> %s at %s'",event_id,before,current,int(getattr(m,"minute",0) or 0))
             _close_confirmed_entry(event_id,current,int(getattr(m,"minute",0) or 0))
         else:logger.error("GOAL_CONFIRMED_BUT_DELIVERY_FAILED %s",event_id)
         with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
@@ -125,7 +146,6 @@ def _schedule_goal_confirmation(m,p,recs,master):
     with _GOAL_LOCK:
         existing=_GOAL_CANDIDATES.get(event_id)
         if existing:
-            # Keep the highest valid observed score while the verifier is waiting.
             if sum(current)>sum(tuple(existing.get("after") or (0,0))):existing["after"]=current;existing["match"]=copy.copy(m)
             return True
         _GOAL_CANDIDATES[event_id]={"before":previous,"after":current,"match":copy.copy(m),"pressure":p,"recs":list(recs or []),"master":master,"ts":time.time()}
@@ -143,8 +163,6 @@ def _send(m,p,recs,text):
         except ValueError:master=None
     if master is None:master=float(getattr(p,"score",0) or 0)
     if kind=="goal":
-        # Do not rely on live_candidate_patch calling us again next scan. Schedule one
-        # independent authoritative verification and let the core keep the old TRACK.
         _schedule_goal_confirmation(m,p,recs,master)
         return False
     if _send_photo_all(m,p,recs,"entry",master):logger.info("TELEGRAM_IMAGE_SENT entry %d' %s — %s",int(getattr(m,"minute",0) or 0),getattr(m,"home",""),getattr(m,"away",""));return True
