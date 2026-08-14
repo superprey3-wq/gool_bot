@@ -35,6 +35,7 @@ import phase_market_patch  # noqa: E402,F401 - 1H +1/+2 goals, then remainder-of
 import score_sync_patch  # noqa: E402,F401 - reconcile stale list score with event summary
 import market_math_patch  # noqa: E402,F401 - Kambi fallback + conservative Elo/Poisson context
 import gool_xg_consensus  # noqa: E402,F401 - secondary XG confirmation; never primary entry engine
+import telegram_signal_filter_patch  # noqa: E402,F401 - Telegram: only actionable entry + hit
 import prematch_standard_scanner  # noqa: E402
 from telegram_subscribers import get_subscribers, polling_loop  # noqa: E402
 
