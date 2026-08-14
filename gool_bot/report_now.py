@@ -19,6 +19,9 @@ def _today_rows():
 def _live_signal_rows(rows):
     return [r for r in rows if r.get("kind")=="live" and str(r.get("reason") or "signal") in {"signal","reentry"}]
 
+def _is_pending_entry(row):
+    return str(row.get("result") or "pending").strip().lower() in {"","pending","wait","waiting"}
+
 def _current_live_ids():
     try:matches=asyncio.run(discover_live_matches())
     except Exception:return None
@@ -31,22 +34,21 @@ def _fallback_plausibly_running(row)->bool:
     return (time.time()-created)<max(12,100-minute)*60
 
 def build_live_signals_text()->str:
-    """Compact list for the Telegram 'В игре' button: only entries whose match is LIVE now."""
-    rows=_live_signal_rows(_today_rows());live_ids=_current_live_ids()
+    """Only unresolved GOOL entries whose matches are still LIVE right now."""
+    rows=[r for r in _live_signal_rows(_today_rows()) if _is_pending_entry(r)];live_ids=_current_live_ids()
     if live_ids is None:return "⚠️ Не удалось получить LIVE-список Flashscore. Попробуй ещё раз через минуту."
     active=[r for r in rows if str(r.get("event_id","")) in live_ids]
-    # One row per match: show the newest still-relevant entry, not historical duplicates.
     latest={}
     for r in active:
         eid=str(r.get("event_id",""));old=latest.get(eid)
         if old is None or int(r.get("created_ts",0) or 0)>int(old.get("created_ts",0) or 0):latest[eid]=r
     active=sorted(latest.values(),key=lambda r:int(r.get("created_ts",0) or 0),reverse=True)
-    if not active:return "🟢 <b>В ИГРЕ</b>\n\nСейчас активных матчей с сигналом нет."
-    lines=[f"🟢 <b>В ИГРЕ — {len(active)}</b>","<i>Только матчи, по которым был вход и которые прямо сейчас LIVE.</i>",""]
+    if not active:return "🟢 <b>В ИГРЕ</b>\n\nСейчас незакрытых LIVE-сигналов нет."
+    lines=[f"🟢 <b>В ИГРЕ — {len(active)}</b>","<i>Только сигналы, где матч ещё идёт и гол после входа ещё не подтверждён.</i>",""]
     for r in active[:20]:
         try:when=datetime.fromtimestamp(int(r.get("created_ts",0)),MOSCOW).strftime("%H:%M")
         except Exception:when="—"
-        lines.append(f"🔥 <b>{r.get('home')} — {r.get('away')}</b>\n↳ вход {r.get('minute')}' · {r.get('score_at_signal')} · {when}")
+        lines.append(f"⏳ <b>{r.get('home')} — {r.get('away')}</b>\n↳ вход {r.get('minute')}' · {r.get('score_at_signal')} · {when}")
     if len(active)>20:lines.append(f"\n…и ещё {len(active)-20}")
     return "\n".join(lines)
 
