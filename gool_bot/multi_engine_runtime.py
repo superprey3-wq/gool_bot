@@ -79,7 +79,8 @@ def scan_engines(live):
     journal=all_signals()
     for m in live:
         minute=int(getattr(m,"minute",0) or 0)
-        if not (25<=minute<=45 or 70<=minute<=90):continue
+        # Collect trend before the entry windows, but never issue HT after 38' or LATE RISK after 85'.
+        if not (25<=minute<=38 or 70<=minute<=85):continue
         body=fetch_stats(m.event_id)
         if not body:continue
         stats=parse_stats(body)
@@ -92,8 +93,8 @@ def scan_engines(live):
         d=delta(stats,old[-1].get("stats"));goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
         if persistent_goal_cooldown(m.event_id,minute):last=minute
         prev=get_previous_values(m.event_id,minute,8);pressure=calculate_goal_pressure(m,stats,prev);engines=[]
-        if 35<=minute<=45:engines.append((HT_HUNTER,ht_hunter(minute,d,last)))
-        if 80<=minute<=90:engines.append((LATE_RISK,late_risk(minute,d,last)))
+        if 35<=minute<=38:engines.append((HT_HUNTER,ht_hunter(minute,d,last)))
+        if 80<=minute<=85:engines.append((LATE_RISK,late_risk(minute,d,last)))
         for engine,dec in engines:
             if not dec.eligible:continue
             if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):continue
