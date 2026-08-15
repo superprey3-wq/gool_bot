@@ -61,6 +61,7 @@ def _active_rows():return [r for r in all_signals() if r.get("engine") in {HT_HU
 
 def scan_engines(live):
     state=_load();live_by={str(m.event_id):m for m in live};now=time.time()
+    counters={"live":len(live),"window":0,"stats":0,"baseline":0,"eligible":0,"duplicate":0,"market":0,"no_market":0,"sent":0}
     for row in _active_rows():
         eid=str(row.get("event_id"));engine=row.get("engine");m=live_by.get(eid);ek=f"active:{engine}:{eid}";st=state.setdefault(ek,{"ts":now})
         try:sh,sa=map(int,str(row.get("score_at_signal","0:0")).split(":"))
@@ -79,14 +80,17 @@ def scan_engines(live):
     for m in live:
         minute=int(getattr(m,"minute",0) or 0)
         if not (25<=minute<=38 or 70<=minute<=85):continue
+        counters["window"]+=1
         body=fetch_stats(m.event_id)
         if not body:continue
         stats=parse_stats(body)
         if not stats:continue
+        counters["stats"]+=1
         key=f"trend:{m.event_id}";s=state.setdefault(key,{"ts":now,"snaps":[]});snaps=s.setdefault("snaps",[]);snap={"minute":minute,"stats":snapshot(stats)}
         if not snaps or int(snaps[-1].get("minute",-1))!=minute:snaps.append(snap)
         s["snaps"]=[x for x in snaps if minute-int(x.get("minute",minute))<=20][-24:];old=[x for x in s["snaps"] if int(x.get("minute",0))<=minute-10];s["ts"]=now
         if not old:continue
+        counters["baseline"]+=1
         d=delta(stats,old[-1].get("stats"));goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
         if persistent_goal_cooldown(m.event_id,minute):last=minute
         prev=get_previous_values(m.event_id,minute,8);pressure=calculate_goal_pressure(m,stats,prev);engines=[]
@@ -96,10 +100,20 @@ def scan_engines(live):
             timing=timing_context(m,LATE_RISK);dlr=dict(d);dlr["_timing"]=timing;engines.append((LATE_RISK,late_risk(minute,d,last,timing.get("bonus",0)),dlr))
         for engine,dec,card_delta in engines:
             if not dec.eligible:continue
-            if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):continue
+            counters["eligible"]+=1
+            if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):
+                counters["duplicate"]+=1;continue
             market=_market(m,pressure,engine)
-            if not market:continue
-            odd=float(market.get("odd",0) or 0)
+            if market:
+                counters["market"]+=1
+                try:odd=float(market.get("odd",0) or 0)
+                except:odd=0.0
+            else:
+                counters["no_market"]+=1
+                odd=None
+                logger.info("ENGINE_NO_MARKET %s %s - %s minute=%d score=%.1f; sending signal anyway",engine,m.home,m.away,minute,dec.score)
             if _record(m,engine,dec.score,card_delta,odd) and _send_all(m,engine,dec.score,card_delta,odd):
-                logger.info("ENGINE_SIGNAL %s %s - %s minute=%d score=%.1f odd=%.2f timing=%s",engine,m.home,m.away,minute,dec.score,odd,(card_delta.get("_timing") or {}).get("pct"));journal=all_signals()
+                counters["sent"]+=1
+                logger.info("ENGINE_SIGNAL %s %s - %s minute=%d score=%.1f odd=%s timing=%s",engine,m.home,m.away,minute,dec.score,"N/A" if odd is None else f"{odd:.2f}",(card_delta.get("_timing") or {}).get("pct"));journal=all_signals()
     _save(state)
+    logger.info("ENGINE_SCAN_DIAG live=%d window=%d stats=%d baseline=%d eligible=%d duplicate=%d market=%d no_market=%d sent=%d",counters["live"],counters["window"],counters["stats"],counters["baseline"],counters["eligible"],counters["duplicate"],counters["market"],counters["no_market"],counters["sent"])
