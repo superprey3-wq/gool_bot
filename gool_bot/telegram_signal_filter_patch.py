@@ -19,8 +19,11 @@ logger = logging.getLogger("telegram_signal_filter_patch")
 _orig_format = lc._format_strategy_signal
 _orig_send = lc._send
 
+# IMPORTANT: the formatter normalizes ENTRY/STRONG/re-entry actions to
+# "МОЖНО ЗАХОДИТЬ".  Keep that exact marker here; previously the filter only
+# allowed "СИГНАЛ — МОЖНО ЗАХОДИТЬ", so every valid CORE entry was suppressed.
 _ALLOWED_MARKERS = (
-    "СИГНАЛ — МОЖНО ЗАХОДИТЬ",
+    "МОЖНО ЗАХОДИТЬ",
     "СИГНАЛ ЗАШЁЛ",
 )
 
@@ -49,7 +52,6 @@ def _format_strategy_signal(m, p, s, recs, goals, reason, route, master, hz, mar
     text = _orig_format(m, p, s, recs, goals, reason, route, master, hz, market)
 
     if reason in {"signal", "reentry"}:
-        # Re-entry is still the same user concept: there is a fresh actionable entry.
         replacements = (
             ("🔴 <b>LIVE-СИГНАЛ</b>", "🔥 <b>СИГНАЛ — МОЖНО ЗАХОДИТЬ</b>"),
             ("🔵 <b>ПРОГНОЗ НА 2-Й ТАЙМ</b>", "🔥 <b>СИГНАЛ — МОЖНО ЗАХОДИТЬ</b>"),
@@ -62,7 +64,6 @@ def _format_strategy_signal(m, p, s, recs, goals, reason, route, master, hz, mar
             text = text.replace(old, new)
 
     elif reason == "goal":
-        # Both normal and late goal confirmations use one clean title.
         text = text.replace("✅ <b>ГОЛ — СИГНАЛ СРАБОТАЛ!</b>", "✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>")
         text = text.replace("✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>\n🔄 Матч и LIVE-линии пересчитаны", "✅ <b>СИГНАЛ ЗАШЁЛ — ГОЛ!</b>")
 
@@ -76,6 +77,10 @@ def _send(m, p, recs, text):
             int(getattr(m, "minute", 0) or 0), getattr(m, "home", ""), getattr(m, "away", ""),
         )
         return False
+    logger.info(
+        "TELEGRAM_ALLOW actionable %d' %s — %s",
+        int(getattr(m, "minute", 0) or 0), getattr(m, "home", ""), getattr(m, "away", ""),
+    )
     return _orig_send(m, p, recs, text)
 
 
