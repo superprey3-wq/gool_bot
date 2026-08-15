@@ -21,6 +21,7 @@ import telegram_image_signal_patch
 import entry_sync_failopen_patch
 import core_result_card_patch
 import robust_goal_cooldown_patch
+import fast_core_runtime
 import signal_journal_runtime_patch
 import goal_reset_patch
 import live_status_heartbeat
@@ -31,9 +32,13 @@ import production_logging
 
 async def run_live():
     try:
-        await visual_feed_unified_bot.unified_bot.scan_live_once()
+        cycle_started=time.monotonic()
         live=await visual_feed_unified_bot.unified_bot.discover_live_matches()
+        discovery_s=time.monotonic()-cycle_started
+        score_sync_patch.reuse_once(live)
+        await visual_feed_unified_bot.unified_bot.scan_live_once()
         await asyncio.to_thread(multi_engine_runtime.scan_engines,live)
+        logger.info("GOOL_CYCLE_DONE live=%d discovery=%.1fs total=%.1fs",len(live),discovery_s,time.monotonic()-cycle_started)
     except Exception:logger.exception("LIVE scan failed; runner will continue")
 async def status_loop():
     while True:
@@ -44,7 +49,7 @@ async def main():
     poller=asyncio.create_task(polling_loop(),name="telegram-command-poller")
     heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
     goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
-    logger.info("GOOL BOT MULTI-ENGINE 24/7 started | CORE + HT HUNTER + LATE RISK + FAST GOAL WATCH | every %ss",LIVE_INTERVAL_SECONDS)
+    logger.info("GOOL BOT LIGHT 24/7 started | ONE LIVE FEED -> CORE + HT + LATE | FAST GOAL WATCH 20s")
     try:
         while True:
             started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
