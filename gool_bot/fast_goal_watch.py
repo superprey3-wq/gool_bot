@@ -1,7 +1,7 @@
 """Fast goal watcher for already-issued GOOL entries.
 
-The main CORE scan can take several minutes when 100-200 matches are live.  Once an
-entry is sent we must not wait for the next full scan to notice the goal.  This module
+The main CORE scan can take several minutes when 100-200 matches are live. Once an
+entry is sent we must not wait for the next full scan to notice the goal. This module
 checks only events with a real pending entry, using the lightweight Flashscore summary
 endpoint, and schedules the existing VAR-safe green-card confirmation immediately.
 """
@@ -19,7 +19,6 @@ from live_engine import fetch_summary
 from signal_journal import all_signals
 import score_sync_patch
 import telegram_image_signal_patch as tip
-import robust_goal_cooldown_patch as cooldown
 
 logger = logging.getLogger("fast_goal_watch")
 INTERVAL_SECONDS = max(15, int(os.getenv("GOAL_WATCH_INTERVAL_SECONDS", "20")))
@@ -62,7 +61,7 @@ def _schedule_direct(row, current_score, goal_minute):
     """Create the same candidate used by the normal goal-confirmation path.
 
     Comparison is against score_at_signal from the persistent journal rather than the
-    mutable TRACK score.  This avoids missing a goal when a long main scan updates TRACK
+    mutable TRACK score. This avoids missing a goal when a long main scan updates TRACK
     before it reaches Telegram confirmation code.
     """
     eid = str(row.get("event_id") or "")
@@ -104,7 +103,6 @@ def _schedule_direct(row, current_score, goal_minute):
             "ts": time.time(),
         }
 
-    cooldown.mark(eid, int(goal_minute or row.get("minute") or 0), f"{current[0]}:{current[1]}")
     logger.warning(
         "FAST_GOAL_DETECTED %s %s — %s | %s -> %s at %s'",
         eid, row.get("home", ""), row.get("away", ""), before, current,
