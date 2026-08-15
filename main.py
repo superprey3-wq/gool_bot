@@ -32,6 +32,7 @@ import signal_journal_runtime_patch
 import goal_reset_patch
 import hard_goal_cooldown_patch
 import live_status_heartbeat
+import fast_goal_watch
 
 # One-shot HT HUNTER and LATE RISK engines.
 import multi_engine_runtime
@@ -55,12 +56,14 @@ async def status_loop():
 
 async def main():
     tg_ok,tg_reason=visual_feed_unified_bot.telegram_config_status();logger.info("Telegram configuration: OK" if tg_ok else "Telegram configuration: INVALID — %s",*([] if tg_ok else [tg_reason]))
-    poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
-    logger.info("GOOL BOT MULTI-ENGINE 24/7 started | CORE + HT HUNTER + LATE RISK | every %ss",LIVE_INTERVAL_SECONDS)
+    poller=asyncio.create_task(polling_loop(),name="telegram-command-poller")
+    heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
+    goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
+    logger.info("GOOL BOT MULTI-ENGINE 24/7 started | CORE + HT HUNTER + LATE RISK + FAST GOAL WATCH | every %ss",LIVE_INTERVAL_SECONDS)
     try:
         while True:
             started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
     finally:
-        poller.cancel();heartbeat.cancel();await asyncio.gather(poller,heartbeat,return_exceptions=True)
+        poller.cancel();heartbeat.cancel();goal_watch.cancel();await asyncio.gather(poller,heartbeat,goal_watch,return_exceptions=True)
 
 if __name__=="__main__":asyncio.run(main())
