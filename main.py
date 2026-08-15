@@ -37,6 +37,7 @@ import fast_goal_watch
 
 # One-shot HT HUNTER and LATE RISK engines use the same LIVE list.
 import multi_engine_runtime
+import engine_result_reconcile_patch
 
 from telegram_subscribers import polling_loop
 import production_logging
