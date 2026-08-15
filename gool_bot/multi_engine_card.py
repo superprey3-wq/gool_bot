@@ -1,83 +1,120 @@
 from __future__ import annotations
 from io import BytesIO
-import requests
+import re,requests
 from PIL import Image,ImageDraw,ImageFont,ImageFilter
 from live_engine import _feed
-GOLD=(255,188,42);BLUE=(25,154,255);RED=(255,48,60);WHITE=(248,250,255);MUTED=(165,177,198);BG=(3,7,14)
-CATS={'core':'https://www.meme-arsenal.com/memes/6c1fa93dc90aef18cb6575813e808033.jpg','ht':'https://kartinkof.club/uploads/posts/2022-03/1648297537_10-kartinkof-club-p-mem-kot-v-shoke-11.png','risk':'https://upload.wikimedia.org/wikipedia/commons/3/33/Hannibal_Poenaru_-_Nasty_cat_%21_%28by-sa%29.jpg'}
-def F(s,b=False):
- for p in ((f'/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if b else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),(f'/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf' if b else '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf')):
-  try:return ImageFont.truetype(p,s)
-  except:pass
- return ImageFont.load_default()
-def center(d,t,y,f,c,w):
- b=d.textbbox((0,0),str(t),font=f);d.text(((w-(b[2]-b[0]))/2,y),str(t),font=f,fill=c)
-def fit(d,t,w,s=30,b=True):
- for z in range(s,12,-2):
-  f=F(z,b)
-  if d.textbbox((0,0),str(t),font=f)[2]<=w:return f
- return F(12,b)
-def fields(r):
- o={}
- for x in r.split('¬'):
-  if '÷' in x:k,v=x.split('÷',1);o.setdefault(k,v)
- return o
+
+GOLD=(246,181,48);BLUE=(40,158,255);RED=(255,61,67);WHITE=(246,248,252);MUTED=(157,170,192);GREEN=(82,220,116);BG=(4,9,17);PANEL=(10,18,31)
+
+def F(size,bold=False):
+    paths=["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf","/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"]
+    for p in paths:
+        try:return ImageFont.truetype(p,size)
+        except:pass
+    return ImageFont.load_default()
+
+def fields(rec):
+    out={}
+    for t in rec.split("¬"):
+        if "÷" in t:
+            k,v=t.split("÷",1);out.setdefault(k,v)
+    return out
+
 def logos(eid):
- try:body=_feed('f_1_0_0_en_1') or ''
- except:return '',''
- for c in body.split('~'):
-  if f'AA÷{eid}¬' in c:
-   f=fields(c);return f.get('OA',''),f.get('OB','')
- return '',''
-def dl(url,n=150):
- if not url:return None
- try:
-  r=requests.get(url,timeout=6,headers={'User-Agent':'Mozilla/5.0'})
-  if r.ok:
-   im=Image.open(BytesIO(r.content)).convert('RGBA');im.thumbnail((n,n),Image.Resampling.LANCZOS);return im
- except:pass
- return None
-def logo(n,s=125):return dl(f'https://static.flashscore.com/res/image/data/{n}',s) if n else None
-def glow(img,box,a,r=24):
- g=Image.new('RGBA',img.size,(0,0,0,0));d=ImageDraw.Draw(g)
- for e,al in ((16,55),(10,90),(5,150)):d.rounded_rectangle((box[0]-e,box[1]-e,box[2]+e,box[3]+e),r+e,outline=a+(al,),width=3)
- img.alpha_composite(g.filter(ImageFilter.GaussianBlur(7)));ImageDraw.Draw(img).rounded_rectangle(box,r,fill=(7,12,22,246),outline=a,width=3)
-def frame(img,a):
- w,h=img.size;g=Image.new('RGBA',img.size,(0,0,0,0));d=ImageDraw.Draw(g)
- for i,al in ((14,45),(24,80),(34,140)):d.rounded_rectangle((i,i,w-i,h-i),42,outline=a+(al,),width=4)
- img.alpha_composite(g.filter(ImageFilter.GaussianBlur(8)));ImageDraw.Draw(img).rounded_rectangle((32,28,w-32,h-28),40,outline=a,width=4)
-def paste(img,im,x,y):
- if im:img.alpha_composite(im,(int(x-im.width/2),int(y-im.height/2)))
-def kind(e):return 'core' if e in {'core','main','primary'} else 'ht' if e in {'first_half','ht_hunter','ht'} else 'risk'
-def accent(k):return GOLD if k=='core' else BLUE if k=='ht' else RED
-def sig(m,k,score,delta,odd):
- W,H=1080,1450;a=accent(k);im=Image.new('RGBA',(W,H),BG+(255,));frame(im,a);d=ImageDraw.Draw(im)
- title='GOOL CORE' if k=='core' else 'GOOL HT HUNTER' if k=='ht' else 'GOOL LATE RISK';sub='ГЛАВНЫЙ СИГНАЛ' if k=='core' else 'ГОЛ ДО ПЕРЕРЫВА' if k=='ht' else 'ПОЗДНИЙ ГОЛ';icon='♛' if k=='core' else '⚽' if k=='ht' else '🔥'
- center(d,icon,42,F(72,True),a,W);center(d,title,135,F(66,True),WHITE,W);center(d,sub,215,F(28,True),a,W)
- glow(im,(310,270,770,330),a);center(d,'MASTER SIGNAL' if k=='core' else 'FIRST HALF SIGNAL' if k=='ht' else 'SECOND HALF RISK',283,F(24,True),WHITE,W)
- center(d,'⚽  '+(getattr(m,'league','') or 'LIVE FOOTBALL'),360,fit(d,getattr(m,'league',''),760,24,False),MUTED,W)
- glow(im,(85,410,995,590),a);hn,an=logos(getattr(m,'event_id',''));paste(im,logo(hn),185,495);paste(im,logo(an),895,495)
- center(d,f"{m.home_score} : {m.away_score}",442,F(70,True),WHITE,W);hf=fit(d,m.home,250,30);af=fit(d,m.away,250,30);hb=d.textbbox((0,0),m.home,font=hf);ab=d.textbbox((0,0),m.away,font=af);d.text((185-(hb[2]-hb[0])/2,555),m.home,font=hf,fill=WHITE);d.text((895-(ab[2]-ab[0])/2,555),m.away,font=af,fill=WHITE)
- glow(im,(430,545,650,630),a);center(d,f"{m.minute}'",560,F(46,True),a,W)
- glow(im,(120,675,960,805),a);center(d,'🔥  СИГНАЛ НА ГОЛ',700,F(48,True),WHITE,W);center(d,'ДО КОНЦА 1-ГО ТАЙМА' if k=='ht' else 'ПОЗДНИЙ ГОЛ' if k=='risk' else 'ОСНОВНОЙ ДВИЖОК',758,F(24,True),a,W)
- glow(im,(315,840,765,985),a);center(d,'MASTER' if k=='core' else 'HT SCORE' if k=='ht' else 'RISK SCORE',860,F(26,True),MUTED,W);center(d,f'{int(round(float(score or 0)))}/100',902,F(58,True),a,W)
- xs=[70,305,540,775,1010];vals=[('xG',str(delta.get('xg_total','—'))) if k=='core' else ("xG (10')",f"+{float(delta.get('xg',0)):.2f}"),('Удары',str(delta.get('shots_pair','—'))) if k=='core' else ('Удары',f"+{int(float(delta.get('shots',0)))}"),('В створ',str(delta.get('sot_pair','—'))) if k=='core' else ('В створ',f"+{int(float(delta.get('shots_on_target',0)))}"),('LIVE кэф',f'{float(odd):.2f}' if odd else '—')]
- for i,(lab,val) in enumerate(vals):
-  b=(xs[i]+10,1025,xs[i+1]-10,1155);glow(im,b,a,18);cx=(b[0]+b[2])//2;lf=fit(d,lab,185,19,False);vf=fit(d,val,185,34);lb=d.textbbox((0,0),lab,font=lf);vb=d.textbbox((0,0),val,font=vf);d.text((cx-(lb[2]-lb[0])/2,1048),lab,font=lf,fill=MUTED);d.text((cx-(vb[2]-vb[0])/2,1090),val,font=vf,fill=a)
- glow(im,(75,1200,1005,1370),a);reasons=['Сильное давление на ворота','Матч сохраняет атакующий темп','Высокая вероятность ещё одного гола'] if k=='core' else ['Явное усиление атаки перед перерывом','Свежий тренд последних 10 минут','Один сигнал → один результат'] if k=='ht' else ['Сильный навал в концовке матча','Интенсивность продолжает расти','Один сигнал → один результат']
- for i,t in enumerate(reasons):d.text((120,1230+i*43),'⚡' if i==0 else '●',font=F(23,True),fill=a);d.text((170,1230+i*43),t,font=fit(d,t,760,23,False),fill=WHITE)
- o=BytesIO();im.convert('RGB').save(o,'PNG',optimize=True);return o.getvalue()
-def _draw_at(d,text,x,y,font,fill,center_x=None):
- if center_x is None:d.text((x,y),text,font=font,fill=fill);return
- b=d.textbbox((0,0),text,font=font);d.text((center_x-(b[2]-b[0])/2,y),text,font=font,fill=fill)
-def win(m,k):
- W,H=1536,500;a=accent(k);im=Image.new('RGBA',(W,H),BG+(255,));frame(im,a);d=ImageDraw.Draw(im);cat=dl(CATS[k],480)
- if cat:
-  scale=max(410/cat.width,410/cat.height);cat=cat.resize((int(cat.width*scale),int(cat.height*scale)),Image.Resampling.LANCZOS);cat=cat.crop(((cat.width-410)//2,(cat.height-410)//2,(cat.width+410)//2,(cat.height+410)//2));mask=Image.new('L',(410,410),0);ImageDraw.Draw(mask).rounded_rectangle((0,0,409,409),30,fill=235);cat.putalpha(mask);im.alpha_composite(cat,(40,45))
- title='GOOL CORE' if k=='core' else 'HT HUNTER' if k=='ht' else 'LATE RISK';d.text((55,45),title,font=F(32,True),fill=a);d.text((300,120),'ГОООЛ!',font=F(54,True),fill=a);d.text((520,75),'ЗАХОД!',font=F(92,True),fill=a);d.text((575,188),'✓  ГОЛ ПОДТВЕРЖДЁН',font=F(38,True),fill=a);d.text((620,240),'Сигнал успешно отработал',font=F(25),fill=WHITE);d.rounded_rectangle((1320,42,1490,90),16,fill=(8,12,20),outline=a,width=2);d.text((1337,54),'SIGNAL WON',font=F(21,True),fill=a)
- glow(im,(1010,110,1245,330),a);_draw_at(d,'● LIVE',0,135,F(25,True),a,1127);_draw_at(d,f"{m.home_score} : {m.away_score}",0,190,F(58,True),WHITE,1127);_draw_at(d,f"{m.minute}'",0,270,F(29,True),a,1127)
- hn,an=logos(getattr(m,'event_id',''));paste(im,logo(hn,95),1320,190);paste(im,logo(an,95),1440,190);d.text((575,322),getattr(m,'league','') or 'LIVE FOOTBALL',font=fit(d,getattr(m,'league',''),590,22,False),fill=MUTED);d.text((575,382),'ОДИН СИГНАЛ → ОДИН РЕЗУЛЬТАТ   •   5 МИНУТ ПОСЛЕ ГОЛА',font=F(20,True),fill=MUTED)
- o=BytesIO();im.convert('RGB').save(o,'PNG',optimize=True);return o.getvalue()
+    try:body=_feed("f_1_0_0_en_1") or ""
+    except:return "",""
+    needle=f"AA÷{eid}¬"
+    for c in body.split("~"):
+        if needle in c:
+            f=fields(c);return f.get("OA",""),f.get("OB","")
+    return "",""
+
+def dl(name):
+    if not name:return None
+    try:
+        r=requests.get(f"https://static.flashscore.com/res/image/data/{name}",timeout=5,headers={"User-Agent":"Mozilla/5.0"})
+        if r.ok:return Image.open(BytesIO(r.content)).convert("RGBA")
+    except:pass
+    return None
+
+def fit(draw,text,maxw,size=42,bold=True):
+    for s in range(size,18,-2):
+        ft=F(s,bold)
+        if draw.textbbox((0,0),str(text),font=ft)[2]<=maxw:return ft
+    return F(18,bold)
+
+def center(draw,text,y,font,fill,w):
+    b=draw.textbbox((0,0),str(text),font=font);draw.text(((w-(b[2]-b[0]))/2,y),str(text),font=font,fill=fill)
+
+def glow_round(base,box,accent,radius=28,width=3):
+    glow=Image.new("RGBA",base.size,(0,0,0,0));g=ImageDraw.Draw(glow)
+    for e,a in [(13,55),(8,85),(4,120)]:g.rounded_rectangle((box[0]-e,box[1]-e,box[2]+e,box[3]+e),radius+e,outline=accent+(a,),width=3)
+    glow=glow.filter(ImageFilter.GaussianBlur(5));base.alpha_composite(glow)
+    d=ImageDraw.Draw(base);d.rounded_rectangle(box,radius,fill=PANEL+(255,),outline=accent,width=width)
+
+def crest(base,im,cx,cy,accent,size=165):
+    d=ImageDraw.Draw(base)
+    for r,a in [(size//2+16,45),(size//2+9,80),(size//2+3,150)]:d.ellipse((cx-r,cy-r,cx+r,cy+r),outline=accent+(a,),width=3)
+    d.ellipse((cx-size//2,cy-size//2,cx+size//2,cy+size//2),fill=(12,23,38,255),outline=accent,width=3)
+    if im:
+        bb=im.getbbox(); im=im.crop(bb) if bb else im
+        scale=min((size-18)/max(1,im.width),(size-18)/max(1,im.height));im=im.resize((max(1,int(im.width*scale)),max(1,int(im.height*scale))),Image.Resampling.LANCZOS)
+        base.alpha_composite(im,(cx-im.width//2,cy-im.height//2))
+
+def kind_info(engine):
+    if engine in {"core","main","primary"}:return "core",GOLD,"GOOL CORE","ГЛАВНЫЙ СИГНАЛ"
+    if engine in {"first_half","ht_hunter","ht"}:return "ht",BLUE,"GOOL HT HUNTER","ГОЛ ДО ПЕРЕРЫВА"
+    return "risk",RED,"GOOL LATE RISK","ПОЗДНИЙ ГОЛ"
+
+def timing_strip(d,x1,y1,x2,accent,timing):
+    segs=(timing or {}).get("segments") or {}
+    labels=["0-15'","16-30'","31-45'","46-60'","61-75'","76-90'"]
+    keys=["0-15","16-30","31-45","46-60","61-75","76-90"]
+    d.text((x1,y1-34),"ТАЙМИНГ ГОЛОВ (ЛИГА)",font=F(23,True),fill=accent)
+    w=(x2-x1)/6
+    active=(timing or {}).get("segment")
+    for i,(lab,key) in enumerate(zip(labels,keys)):
+        xa=int(x1+i*w);xb=int(x1+(i+1)*w)
+        fill=(18,33,53) if key!=active else tuple(min(255,int(c*.38)) for c in accent)
+        d.rectangle((xa,y1,xb,y1+70),fill=fill,outline=accent,width=1)
+        pct=segs.get(key)
+        tf=F(17,True);pf=F(22,True)
+        tb=d.textbbox((0,0),lab,font=tf);d.text((xa+(xb-xa-(tb[2]-tb[0]))/2,y1+8),lab,font=tf,fill=WHITE)
+        val="—" if pct is None else f"{float(pct):.0f}%";pb=d.textbbox((0,0),val,font=pf);d.text((xa+(xb-xa-(pb[2]-pb[0]))/2,y1+37),val,font=pf,fill=accent if key==active else WHITE)
+
 def render_engine_card(match,engine,score=0,delta=None,odd=None,result=None):
- k=kind(engine);delta=delta or {}
- return win(match,k) if result=='win' else sig(match,k,score,delta,odd)
+    delta=delta or {};timing=delta.get("_timing") or {}
+    kind,accent,title,subtitle=kind_info(engine)
+    if result is not None:return render_result_card(match,kind,accent,title,result)
+    W,H=1200,1200
+    img=Image.new("RGBA",(W,H),BG+(255,));d=ImageDraw.Draw(img)
+    glow_round(img,(24,20,W-24,H-22),accent,32,3);d=ImageDraw.Draw(img)
+    icon="♛" if kind=="core" else "◉" if kind=="ht" else "⚡"
+    d.text((55,42),icon,font=F(42,True),fill=accent);d.text((110,42),title,font=F(42,True),fill=accent);d.text((112,94),subtitle,font=F(23,True),fill=WHITE)
+    d.rounded_rectangle((930,48,1145,105),16,outline=accent,width=2);d.text((965,63),"LIVE SIGNAL",font=F(22,True),fill=accent)
+    hn,an=logos(getattr(match,"event_id",""));crest(img,dl(hn),195,310,accent,185);crest(img,dl(an),1005,310,accent,185);d=ImageDraw.Draw(img)
+    glow_round(img,(430,215,770,405),accent,28,2);d=ImageDraw.Draw(img);center(d,f"{match.home_score} : {match.away_score}",257,F(72,True),WHITE,W);center(d,f"{match.minute}'",343,F(34,True),accent,W)
+    hf=fit(d,match.home,340,34);af=fit(d,match.away,340,34);hb=d.textbbox((0,0),match.home,font=hf);ab=d.textbbox((0,0),match.away,font=af);d.text((195-(hb[2]-hb[0])/2,430),match.home,font=hf,fill=WHITE);d.text((1005-(ab[2]-ab[0])/2,430),match.away,font=af,fill=WHITE)
+    center(d,getattr(match,"league","") or "LIVE FOOTBALL",482,F(23),MUTED,W)
+    glow_round(img,(55,535,1145,675),accent,22,2);d=ImageDraw.Draw(img);d.text((90,566),"РЕЙТИНГ GOOL AI",font=F(22,True),fill=MUTED);d.text((90,600),f"{int(round(score))}/100",font=F(42,True),fill=accent);d.line((575,555,575,655),fill=(65,82,105),width=2);d.text((640,566),"LIVE РЫНОК",font=F(22,True),fill=MUTED);d.text((640,605),(f"КЭФ • {float(odd):.2f}" if odd and float(odd)>1 else "НЕТ ДАННЫХ"),font=F(36,True),fill=WHITE)
+    vals=[("xG (10')",delta.get("xg")),("УДАРЫ",delta.get("shots")),("В СТВОР",delta.get("shots_on_target")),("ОПАСНЫЕ АТАКИ",delta.get("touches_box"))]
+    x=55;y=700;cell=272
+    for i,(lab,val) in enumerate(vals):
+        xa=x+i*cell;d.rounded_rectangle((xa,y,xa+250,y+105),18,fill=(9,18,31),outline=accent,width=1);d.text((xa+18,y+18),lab,font=F(18,True),fill=MUTED);d.text((xa+18,y+53),("—" if val is None else f"+{float(val):.2f}" if lab.startswith("xG") else f"+{int(float(val))}"),font=F(29,True),fill=WHITE)
+    timing_strip(d,65,855,1135,accent,timing)
+    why_y=985;d.text((80,why_y),"ПОЧЕМУ СИГНАЛ",font=F(25,True),fill=accent)
+    why="Свежий LIVE-тренд подтверждает давление"
+    if timing.get("pct") is not None:why+=f" • {timing.get('segment')} в лиге: {float(timing['pct']):.0f}%"
+    d.text((80,why_y+43),why,font=fit(d,why,1030,25,False),fill=WHITE);d.text((80,why_y+82),"Один сигнал → один результат",font=F(22),fill=MUTED)
+    center(d,"GOOL AI  •  LIVE FOOTBALL ANALYTICS",1130,F(20,True),MUTED,W)
+    out=BytesIO();img.convert("RGB").save(out,"PNG",optimize=True);return out.getvalue()
+
+def render_result_card(match,kind,accent,title,result):
+    W,H=1200,820;img=Image.new("RGBA",(W,H),BG+(255,));d=ImageDraw.Draw(img);glow_round(img,(24,20,W-24,H-22),accent,32,3);d=ImageDraw.Draw(img)
+    d.text((55,42),title,font=F(34,True),fill=accent);d.rounded_rectangle((930,42,1145,96),16,outline=accent,width=2);d.text((958,56),"SIGNAL WON" if result=="win" else "SIGNAL LOST",font=F(21,True),fill=accent)
+    headline="ЗАХОД!" if result=="win" else "НЕ ЗАШЁЛ";center(d,headline,115,F(72,True),accent,W)
+    hn,an=logos(getattr(match,"event_id",""));crest(img,dl(hn),190,370,accent,185);crest(img,dl(an),1010,370,accent,185);glow_round(img,(425,265,775,470),accent,28,2);d=ImageDraw.Draw(img);center(d,f"{match.home_score} : {match.away_score}",310,F(74,True),WHITE,W);center(d,f"{match.minute}'",400,F(34,True),accent,W)
+    hf=fit(d,match.home,320,33);af=fit(d,match.away,320,33);hb=d.textbbox((0,0),match.home,font=hf);ab=d.textbbox((0,0),match.away,font=af);d.text((190-(hb[2]-hb[0])/2,490),match.home,font=hf,fill=WHITE);d.text((1010-(ab[2]-ab[0])/2,490),match.away,font=af,fill=WHITE);center(d,getattr(match,"league","") or "LIVE FOOTBALL",545,F(22),MUTED,W)
+    glow_round(img,(80,605,1120,720),accent,22,2);d=ImageDraw.Draw(img);d.text((125,632),"⚽  ✓  ГОЛ ПОДТВЕРЖДЁН" if result=="win" else "✕  СИГНАЛ ЗАКРЫТ",font=F(36,True),fill=accent);d.text((125,680),"Сигнал успешно отработал" if result=="win" else "Гола в заданном окне не было",font=F(24),fill=WHITE)
+    center(d,"GOOL AI  •  LIVE FOOTBALL ANALYTICS",760,F(19,True),MUTED,W)
+    out=BytesIO();img.convert("RGB").save(out,"PNG",optimize=True);return out.getvalue()
