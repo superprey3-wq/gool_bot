@@ -20,8 +20,11 @@ import market_math_patch
 import gool_xg_consensus
 import telegram_signal_filter_patch
 import telegram_image_signal_patch
+# The current scan is already synchronized by score_sync_patch. Do not launch a
+# second full LIVE discovery before every card; that old guard timed out on busy feeds.
+import entry_sync_failopen_patch
 
-# Approved visual routing: CORE gold + meme result, HT blue, LATE red.
+# Approved visual routing: CORE gold, HT blue, LATE red.
 import core_result_card_patch
 
 # Journal / post-goal safety.
