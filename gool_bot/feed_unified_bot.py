@@ -13,15 +13,14 @@ _SMART_BLOCK_TOKEN = "__SMART_LIVE_BET_BLOCK__"
 
 
 async def discover_live_matches():
-    """Keep tracked matches to FT, but never start monitoring a new match after 75'."""
-    matches = await discover_all_live_matches()
-    state = unified_bot._load_sent()
-    result = []
-    for match in matches:
-        tracked = f"TRACK:{match.event_id}" in state
-        if match.minute <= 75 or tracked:
-            result.append(match)
-    return result
+    """Return the full LIVE feed.
+
+    CORE applies its own minute gate (new entries only through 75'), while HT HUNTER
+    and LATE RISK need to see their dedicated windows up to 38' and 85'. Filtering
+    the shared feed at 75' here prevented LATE RISK from ever receiving new 80–85'
+    matches unless they were already tracked by CORE.
+    """
+    return await discover_all_live_matches()
 
 
 def _scope_current_goals(match, scope: str) -> int:
@@ -106,7 +105,6 @@ def _model_pick(entries, match, pressure, ctx, analysis) -> str:
     prices = _median_over_prices(entries, "FULL_TIME")
     goals = match.home_score + match.away_score
     if not prices:
-        # Model opinion exists even when a bookmaker price is temporarily unavailable.
         p = unified_bot._live_over_probability(pressure.score, pressure.momentum, goals + 0.5, goals, "FULL_TIME", match.minute, None)
         return (
             "🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n"
