@@ -10,13 +10,12 @@ from telegram_subscribers import get_subscribers
 from multi_engine import HT_HUNTER,LATE_RISK,delta,ht_hunter,late_risk,snapshot
 from multi_engine_card import render_engine_card
 from robust_goal_cooldown_patch import active as persistent_goal_cooldown
+from goal_timing import context as timing_context
 logger=logging.getLogger("multi_engine_runtime")
-STATE_FILE=Path("multi_engine_state.json")
-GOAL_CONFIRM_SECONDS=35
+STATE_FILE=Path("multi_engine_state.json");GOAL_CONFIRM_SECONDS=35
 
 def _load():
-    try:
-        d=json.loads(STATE_FILE.read_text("utf-8"));return d if isinstance(d,dict) else {}
+    try:d=json.loads(STATE_FILE.read_text("utf-8"));return d if isinstance(d,dict) else {}
     except:return {}
 def _save(d):
     cutoff=time.time()-10*3600;d={k:v for k,v in d.items() if isinstance(v,dict) and float(v.get("ts",0) or 0)>=cutoff};STATE_FILE.write_text(json.dumps(d,ensure_ascii=False),"utf-8")
@@ -79,7 +78,6 @@ def scan_engines(live):
     journal=all_signals()
     for m in live:
         minute=int(getattr(m,"minute",0) or 0)
-        # Collect trend before the entry windows, but never issue HT after 38' or LATE RISK after 85'.
         if not (25<=minute<=38 or 70<=minute<=85):continue
         body=fetch_stats(m.event_id)
         if not body:continue
@@ -87,20 +85,21 @@ def scan_engines(live):
         if not stats:continue
         key=f"trend:{m.event_id}";s=state.setdefault(key,{"ts":now,"snaps":[]});snaps=s.setdefault("snaps",[]);snap={"minute":minute,"stats":snapshot(stats)}
         if not snaps or int(snaps[-1].get("minute",-1))!=minute:snaps.append(snap)
-        s["snaps"]=[x for x in snaps if minute-int(x.get("minute",minute))<=20][-24:];old=[x for x in s["snaps"] if int(x.get("minute",0))<=minute-10]
-        s["ts"]=now
+        s["snaps"]=[x for x in snaps if minute-int(x.get("minute",minute))<=20][-24:];old=[x for x in s["snaps"] if int(x.get("minute",0))<=minute-10];s["ts"]=now
         if not old:continue
         d=delta(stats,old[-1].get("stats"));goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
         if persistent_goal_cooldown(m.event_id,minute):last=minute
         prev=get_previous_values(m.event_id,minute,8);pressure=calculate_goal_pressure(m,stats,prev);engines=[]
-        if 35<=minute<=38:engines.append((HT_HUNTER,ht_hunter(minute,d,last)))
-        if 80<=minute<=85:engines.append((LATE_RISK,late_risk(minute,d,last)))
-        for engine,dec in engines:
+        if 35<=minute<=38:
+            timing=timing_context(m,HT_HUNTER);dht=dict(d);dht["_timing"]=timing;engines.append((HT_HUNTER,ht_hunter(minute,d,last,timing.get("bonus",0)),dht))
+        if 80<=minute<=85:
+            timing=timing_context(m,LATE_RISK);dlr=dict(d);dlr["_timing"]=timing;engines.append((LATE_RISK,late_risk(minute,d,last,timing.get("bonus",0)),dlr))
+        for engine,dec,card_delta in engines:
             if not dec.eligible:continue
             if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):continue
             market=_market(m,pressure,engine)
             if not market:continue
             odd=float(market.get("odd",0) or 0)
-            if _record(m,engine,dec.score,d,odd) and _send_all(m,engine,dec.score,d,odd):
-                logger.info("ENGINE_SIGNAL %s %s - %s minute=%d score=%.1f odd=%.2f",engine,m.home,m.away,minute,dec.score,odd);journal=all_signals()
+            if _record(m,engine,dec.score,card_delta,odd) and _send_all(m,engine,dec.score,card_delta,odd):
+                logger.info("ENGINE_SIGNAL %s %s - %s minute=%d score=%.1f odd=%.2f timing=%s",engine,m.home,m.away,minute,dec.score,odd,(card_delta.get("_timing") or {}).get("pct"));journal=all_signals()
     _save(state)
