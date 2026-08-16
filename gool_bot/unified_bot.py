@@ -32,11 +32,6 @@ def telegram_send(text):
     except requests.RequestException:return False
 
 def telegram_send_signal(match, pressure, recs, text):
-    """Send visual match card first, then the compact text signal.
-
-    Card generation/upload is best-effort: a photo failure must never suppress the
-    actual text signal.
-    """
     if not BOT_TOKEN or not CHAT_ID:return False
     try:
         from signal_card import render_signal_card
@@ -110,8 +105,10 @@ def _format_signal(match,pressure,stats,recs,goal_times,reason="signal"):
     return f"{title}\n\n⚽ <b>{match.home} — {match.away}</b>\n{league}⏱ {status} | Счёт <b>{match.home_score}:{match.away_score}</b>\n{goals_line}\n📊 <b>Статистика</b>\nxG: <b>{pair('xg')}</b>\nУдары: {pair('shots')}\nУдары в створ: {pair('shots_on_target')}\n\n🔥 Давление на гол: <b>{pressure.score:.0f}/100</b>\n{verdict}\n\n🎯 <b>Варианты</b>\n{bets}\n\n{reasons}"
 def _record_live(match,pressure,stats,recs,reason):
     primary=next((r for r in recs if r["scope"]=="FULL_TIME"),recs[0] if recs else None); key=f"live:{match.event_id}:{match.minute}:{match.home_score}:{match.away_score}:{reason}"; add_signal({"kind":"live","event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","pressure":pressure.score,"momentum":pressure.momentum,"stats":stats,"primary":primary,"reason":reason},key)
-async def scan_live_once():
-    live=await discover_live_matches(); logger.info("Найдено LIVE-матчей: %d",len(live)); state=_load_sent(); sent=0; live_ids={m.event_id for m in live}
+async def scan_live_once(live=None):
+    if live is None:
+        live=await discover_live_matches()
+    logger.info("Найдено LIVE-матчей: %d",len(live)); state=_load_sent(); sent=0; live_ids={m.event_id for m in live}
     for key in list(state):
         if key.startswith("TRACK:") and key.split(":",1)[1] not in live_ids:state.pop(key,None)
     for match in live:
