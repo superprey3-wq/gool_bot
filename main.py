@@ -11,6 +11,7 @@ logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(messa
 # Core pipeline
 import visual_feed_unified_bot
 import live_candidate_patch
+import gemini_shadow_patch
 import core_warmup_patch
 import halftime_hazard_patch
 import period_market_patch
