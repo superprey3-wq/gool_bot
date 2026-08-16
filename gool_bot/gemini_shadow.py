@@ -1,10 +1,11 @@
 """Non-blocking Gemini shadow reviewer for GOOL candidates.
 
-Shadow mode never blocks, creates, or cancels Telegram signals. It only logs Gemini's
-opinion and appends compact JSONL rows for later comparison with real outcomes.
+Gemini never blocks, creates, or cancels GOOL signals. After a successful review it
+sends a separate compact Telegram message so its opinion can be compared live.
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ logger = logging.getLogger("gemini_shadow")
 MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 ENABLED = os.getenv("GEMINI_SHADOW_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+TELEGRAM_VISIBLE = os.getenv("GEMINI_TELEGRAM_VISIBLE", "1").strip().lower() not in {"0", "false", "no", "off"}
 TIMEOUT_SECONDS = max(5, int(os.getenv("GEMINI_TIMEOUT_SECONDS", "20")))
 OUT_FILE = Path(os.getenv("GEMINI_SHADOW_FILE", "gemini_shadow.jsonl"))
 _MAX_CONCURRENT = max(1, int(os.getenv("GEMINI_MAX_CONCURRENT", "2")))
@@ -48,6 +50,29 @@ def _append(row):
         with OUT_FILE.open("a",encoding="utf-8") as f:f.write(json.dumps(row,ensure_ascii=False)+"\n")
     except Exception as exc:logger.warning("GEMINI_SHADOW_SAVE_FAILED: %s",exc)
 
+def _telegram_verdict(payload,verdict):
+    if not TELEGRAM_VISIBLE:return
+    try:
+        import visual_feed_unified_bot as vf
+        decision=str(verdict.get("decision") or "CAUTION").upper()
+        icon={"APPROVE":"✅","CAUTION":"⚠️","REJECT":"❌"}.get(decision,"🤖")
+        label={"APPROVE":"ОДОБРЯЕТ","CAUTION":"ОСТОРОЖНО","REJECT":"НЕ ОДОБРЯЕТ"}.get(decision,decision)
+        confidence={"LOW":"низкая","MEDIUM":"средняя","HIGH":"высокая"}.get(str(verdict.get("confidence") or "").upper(),str(verdict.get("confidence") or "—"))
+        home=html.escape(str(payload.get("home") or ""));away=html.escape(str(payload.get("away") or ""))
+        reason=html.escape(str(verdict.get("reason") or "—"));risk=html.escape(str(verdict.get("risk") or "—"))
+        text=(f"🤖 <b>GEMINI AI · ВТОРОЕ МНЕНИЕ</b>\n"
+              f"⚽ <b>{home} — {away}</b> · {payload.get('minute',0)}' · {html.escape(str(payload.get('score') or ''))}\n\n"
+              f"{icon} <b>{label}</b>\n"
+              f"🎯 Вероятность ещё гола: <b>{verdict.get('goal_probability','—')}%</b>\n"
+              f"🧠 Уверенность AI: <b>{html.escape(confidence)}</b>\n"
+              f"⭐ GOOL MASTER: <b>{float(payload.get('master') or 0):.0f}/100</b>\n\n"
+              f"💬 {reason}\n"
+              f"⚠️ Риск: {risk}\n\n"
+              f"<i>Shadow-mode: мнение Gemini не меняет решение GOOL.</i>")
+        if vf._send_text(text):logger.info("GEMINI_SHADOW_TELEGRAM_SENT %s",payload.get("event_id"))
+        else:logger.warning("GEMINI_SHADOW_TELEGRAM_FAILED %s",payload.get("event_id"))
+    except Exception:logger.exception("GEMINI_SHADOW_TELEGRAM_EXCEPTION %s",payload.get("event_id"))
+
 def _review(payload,dedupe):
     if not _SEM.acquire(blocking=False):logger.info("GEMINI_SHADOW_SKIPPED busy %s",dedupe);return
     try:
@@ -61,6 +86,7 @@ def _review(payload,dedupe):
         except Exception:logger.warning("GEMINI_SHADOW_BAD_JSON %s %s",dedupe,text[:240]);return
         row={"ts":int(time.time()),"model":MODEL,"event_id":payload.get("event_id"),"home":payload.get("home"),"away":payload.get("away"),"minute":payload.get("minute"),"score":payload.get("score"),"entry_type":payload.get("entry_type"),"gool_master":payload.get("master"),"gemini":verdict,"latency_s":elapsed};_append(row)
         logger.info("GEMINI_SHADOW %s %s — %s %s' %s | GOOL=%.0f | %s %s%% %s | risk=%s",payload.get("entry_type"),payload.get("home"),payload.get("away"),payload.get("minute"),payload.get("score"),float(payload.get("master") or 0),verdict.get("decision"),verdict.get("goal_probability"),verdict.get("confidence"),str(verdict.get("risk") or "")[:120])
+        _telegram_verdict(payload,verdict)
     except requests.RequestException as exc:logger.warning("GEMINI_SHADOW_REQUEST_FAILED %s: %s",dedupe,exc)
     except Exception:logger.exception("GEMINI_SHADOW_FAILED %s",dedupe)
     finally:_SEM.release()
