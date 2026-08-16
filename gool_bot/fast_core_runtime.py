@@ -13,6 +13,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import gemini_shadow
 import live_candidate_patch as lc
 import unified_bot
 from live_engine import StatsSnapshot, calculate_goal_pressure, fetch_stats, fetch_summary, get_previous_values, parse_goal_timeline, parse_stats, save_snapshot
@@ -55,8 +56,6 @@ async def scan_live_once_fast():
     for key in list(state):
         if str(key).startswith("TRACK:") and str(key).split(":",1)[1] not in ids:state.pop(key,None)
 
-    # A tracked event already has one real entry. FAST GOAL WATCH owns its result,
-    # so CORE does not waste time re-analysing it every large cycle.
     pending=[]
     for m in live:
         if not _core_minute_ok(m):continue
@@ -81,9 +80,6 @@ async def scan_live_once_fast():
         try:save_snapshot(m.event_id,StatsSnapshot(int(time.time()),m.minute,s))
         except Exception as exc:logger.info("FAST_CORE_SNAPSHOT_FAILED %s: %s",m.event_id,exc)
 
-        # Cheap local gate before history/summary/odds.  We keep four independent
-        # football signals so a strong cumulative match is not lost just because
-        # the latest momentum sample is quiet.
         cheap=max(float(p.score),float(lc._dom(m,s)),float(lc._threat(s)),float(lc._under(m,s)))
         if cheap<CHEAP_PREFILTER:continue
         shortlisted+=1
@@ -96,7 +92,6 @@ async def scan_live_once_fast():
         logger.info("FAST_CORE_EVAL %d' %s — %s %d:%d cheap=%.0f master=%.0f grade=%s %s",m.minute,m.home,m.away,m.home_score,m.away_score,cheap,master,grade,"PASS" if qualifies else "REJECT")
         if not qualifies or grade not in {"ENTRY","STRONG"}:continue
 
-        # Odds are display-only now. Fetch them only after football analytics passed.
         try:
             entries=unified_bot._fetch_event_odds(m.event_id)
             recs,market=lc._market(entries,m,p)
@@ -107,6 +102,16 @@ async def scan_live_once_fast():
         text=lc._format_strategy_signal(m,p,s,recs,goals,"signal",route,master,hz,market)
         if not lc._send(m,p,recs,text):continue
         unified_bot._record_live(m,p,s,recs,"signal")
+
+        # Direct Gemini trigger from the exact runtime that produced the CORE entry.
+        # gemini_shadow has its own dedupe, so this is safe even if the generic hook
+        # also sees the same message.
+        try:
+            started=gemini_shadow.submit(m,p,s,recs,master,"signal")
+            logger.info("GEMINI_DIRECT_TRIGGER %s %s — %s minute=%d started=%s",m.event_id,m.home,m.away,m.minute,started)
+        except Exception:
+            logger.exception("GEMINI_DIRECT_TRIGGER_FAILED %s",m.event_id)
+
         state[f"TRACK:{m.event_id}"]={
             "tracked_since":time.time(),"ts":time.time(),"score":f"{m.home_score}:{m.away_score}",
             "minute":m.minute,"pressure":p.score,"candidate_score":master,"grade":grade,
