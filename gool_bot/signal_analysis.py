@@ -49,10 +49,8 @@ def _settled(entries,all_rows):
     live_ids=_current_live_ids();cache={};out=[]
     for r in entries:
         eid=str(r.get("event_id") or "");stored=str(r.get("result") or "pending").lower()
-        # Strongest truth: result recorded by runtime on confirmed goal.
         if stored in {"+","win","won"}:
             out.append((r,True,str(r.get("final_score") or "✓")));continue
-        # Backfill older same-day entries from the historical goal-confirmation row.
         if _has_goal_confirmation(r,all_rows):
             out.append((r,True,"подтверждённый гол"));continue
         if live_ids is not None and eid in live_ids:continue
@@ -63,8 +61,6 @@ def _settled(entries,all_rows):
         if not body:continue
         try:fh,fa,_,_=_score_from_summary(body);sh,sa=map(int,str(r.get("score_at_signal","0:0")).split(":"))
         except Exception:continue
-        # Regressive/equally-total-but-different scores are unreliable source data,
-        # never evidence of a loss.
         if fh<sh or fa<sa:continue
         if fh+fa<sh+sa:continue
         out.append((r,(fh+fa)>(sh+sa),f"{fh}:{fa}"))
@@ -79,25 +75,42 @@ def _fmt_groups(title,d,order=None):
         if k not in d:continue
         n,w=d[k];lines.append(f"• {k}: <b>{w}/{n} · {round(w/n*100) if n else 0}%</b>")
     return lines
+def _summary_line(label,items):
+    n=len(items);w=sum(int(win) for _,win,_ in items);l=n-w
+    return f"• {label}: <b>{n}</b> закрыто · ✅ {w} · ❌ {l} · <b>{round(w/n*100) if n else 0}%</b>"
 def build_analysis_text()->str:
     all_rows=_today_live_rows();rows=_entries(all_rows);items=_settled(rows,all_rows);wins=sum(int(w) for _,w,_ in items);losses=len(items)-wins
     lines=["🧠 <b>GOOL — АНАЛИЗ СИГНАЛОВ</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","",f"Закрытых входов: <b>{len(items)}</b> · ✅ {wins} · ❌ {losses}"]
     if not items:return "\n".join(lines+["","Пока недостаточно закрытых входов для анализа."])
+
+    primary=[x for x in items if str(x[0].get("reason") or "signal")=="signal"]
+    reentry=[x for x in items if str(x[0].get("reason") or "signal")=="reentry"]
+    lines += ["","♻️ <b>Первичный vs повторный вход</b>",_summary_line("Первичные",primary),_summary_line("После гола",reentry)]
+
     lines += [""]+_fmt_groups("⏱ По минуте входа",_groups(items,lambda r:_bucket_minute(r.get("minute"))),["1–20'","21–40'","41–60'","61–74'","75+'"]) 
     lines += [""]+_fmt_groups("⭐ По MASTER-рейтингу",_groups(items,lambda r:_bucket_rating(_num(r,"master"))),["60–69","70–79","80–89","90+","нет данных"])
     lines += [""]+_fmt_groups("⚽ По счёту/результативности на входе",_groups(items,lambda r:(lambda g:"0–1 гол" if g<=1 else "2–3 гола" if g<=3 else "4+ гола")(sum(map(int,str(r.get("score_at_signal","0:0")).split(":"))))),["0–1 гол","2–3 гола","4+ гола"])
+
+    if reentry:
+        lines += [""]+_fmt_groups("♻️ Повторные — по минуте",_groups(reentry,lambda r:_bucket_minute(r.get("minute"))),["1–20'","21–40'","41–60'","61–74'","75+'"]) 
+        lines += [""]+_fmt_groups("♻️ Повторные — по MASTER",_groups(reentry,lambda r:_bucket_rating(_num(r,"master"))),["60–69","70–79","80–89","90+","нет данных"])
+
     candidates=[]
     for label,d in [("минута",_groups(items,lambda r:_bucket_minute(r.get("minute")))),("MASTER",_groups(items,lambda r:_bucket_rating(_num(r,"master"))))]:
         for k,(n,w) in d.items():
             if n>=3 and k!="нет данных":candidates.append((w/n*100,n,label,k))
+    if reentry:
+        for label,d in [("повторный вход, минута",_groups(reentry,lambda r:_bucket_minute(r.get("minute")))),("повторный вход, MASTER",_groups(reentry,lambda r:_bucket_rating(_num(r,"master"))))]:
+            for k,(n,w) in d.items():
+                if n>=3 and k!="нет данных":candidates.append((w/n*100,n,label,k))
     lines += ["","🔎 <b>Что проверить в первую очередь</b>"]
     if candidates:
-        for rate,n,label,k in sorted(candidates)[:3]:lines.append(f"• {label} {k}: {round(rate)}% на {n} закрытых входах")
+        for rate,n,label,k in sorted(candidates)[:4]:lines.append(f"• {label} {k}: {round(rate)}% на {n} закрытых входах")
     else:lines.append("• Пока выборка по группам слишком маленькая — пороги лучше не менять.")
     if losses:
         lines += ["","❌ <b>Последние незашедшие:</b>"]
         for r,_,score in [x for x in items if not x[1]][-8:]:
-            rating=_num(r,"master");rt=f" · MASTER {rating:.0f}" if rating is not None else ""
-            lines.append(f"• {r.get('home')} — {r.get('away')} | {r.get('minute')}' {r.get('score_at_signal')} → {score}{rt}")
+            rating=_num(r,"master");rt=f" · MASTER {rating:.0f}" if rating is not None else "";tag="♻️ " if str(r.get("reason") or "signal")=="reentry" else ""
+            lines.append(f"• {tag}{r.get('home')} — {r.get('away')} | {r.get('minute')}' {r.get('score_at_signal')} → {score}{rt}")
     lines += ["","<i>WIN берётся из подтверждённого LIVE-гола; финальный summary используется только когда runtime-подтверждения нет.</i>"]
     return "\n".join(lines)
