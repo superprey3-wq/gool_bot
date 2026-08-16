@@ -30,6 +30,22 @@ import multi_engine_runtime
 from telegram_subscribers import polling_loop
 import production_logging
 
+async def health_server():
+    port=int(os.getenv("PORT","3000"))
+    async def handle(reader,writer):
+        try:
+            await reader.read(4096)
+            body=b"OK"
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\n"+body)
+            await writer.drain()
+        finally:
+            writer.close()
+            try:await writer.wait_closed()
+            except Exception:pass
+    server=await asyncio.start_server(handle,"0.0.0.0",port)
+    logger.info("Health server listening on port %d",port)
+    async with server:await server.serve_forever()
+
 async def run_live():
     try:
         cycle_started=time.monotonic()
@@ -46,6 +62,7 @@ async def status_loop():
         try:await asyncio.to_thread(live_status_heartbeat.send_heartbeat)
         except Exception:logger.exception("LIVE heartbeat failed; runner will continue")
 async def main():
+    health=asyncio.create_task(health_server(),name="health-server")
     poller=asyncio.create_task(polling_loop(),name="telegram-command-poller")
     heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
     goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
@@ -54,5 +71,5 @@ async def main():
         while True:
             started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
     finally:
-        poller.cancel();heartbeat.cancel();goal_watch.cancel();await asyncio.gather(poller,heartbeat,goal_watch,return_exceptions=True)
+        health.cancel();poller.cancel();heartbeat.cancel();goal_watch.cancel();await asyncio.gather(health,poller,heartbeat,goal_watch,return_exceptions=True)
 if __name__=="__main__":asyncio.run(main())
