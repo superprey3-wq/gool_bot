@@ -1,15 +1,14 @@
-"""Keep HT/LATE journal results consistent with the actual Flashscore score.
+"""Keep HT/LATE journal results consistent with Flashscore and notify outcomes.
 
-HT HUNTER must be settled only from the FIRST-HALF score.  A goal scored in the
-second half must never turn an already lost HT signal into a win.
-
-LATE RISK still uses the full/current score because its signal belongs to the
-second half.
+HT HUNTER is settled only from the first-half score. LATE RISK uses the
+second-half/full score. When a still-pending signal is settled by summary
+reconciliation, send the same blue/red result card as the live runtime.
 """
 from __future__ import annotations
 
 import logging
 import re
+from types import SimpleNamespace
 
 import multi_engine_runtime
 from daily_report import _score_from_summary
@@ -21,7 +20,6 @@ _ENGINES = {"first_half", "second_half"}
 
 
 def _has_reached_second_half(body: str) -> bool:
-    """True once Flashscore summary contains any event after minute 45."""
     for chunk in (body or "").split("~III"):
         mm = re.search(r"(?:IB|IBX)(?:÷|¬)(\d{1,3})", chunk)
         if mm:
@@ -31,6 +29,40 @@ def _has_reached_second_half(body: str) -> bool:
             except Exception:
                 pass
     return False
+
+
+def _result_match(row, score, minute):
+    try:
+        hs, as_ = map(int, str(score or row.get("score_at_signal") or "0:0").split(":"))
+    except Exception:
+        hs, as_ = 0, 0
+    return SimpleNamespace(
+        event_id=str(row.get("event_id") or ""),
+        home=str(row.get("home") or ""),
+        away=str(row.get("away") or ""),
+        league=str(row.get("league") or ""),
+        home_score=hs,
+        away_score=as_,
+        minute=int(minute or row.get("minute") or 0),
+        is_halftime=False,
+    )
+
+
+def _notify_pending_settlement(row, engine, result, score, minute):
+    """Only notify real pending->result transitions; never replay historical fixes."""
+    try:
+        match = _result_match(row, score, minute)
+        multi_engine_runtime._send_all(
+            match,
+            engine,
+            float(row.get("risk_score", 0) or 0),
+            row.get("trend_delta") or {},
+            row.get("odd"),
+            result,
+        )
+        logger.info("ENGINE_RECONCILE_RESULT_CARD %s %s %s", engine, result, row.get("event_id"))
+    except Exception:
+        logger.exception("ENGINE_RECONCILE_RESULT_CARD_FAILED %s %s", engine, row.get("event_id"))
 
 
 def reconcile_engine_results() -> int:
@@ -56,22 +88,21 @@ def reconcile_engine_results() -> int:
             continue
 
         current = str(row.get("result") or "pending").strip().lower()
+        was_pending = current == "pending"
 
         if engine == "first_half":
-            # Critical rule: compare the signal score with the HALF-TIME score,
-            # never with the full-time/current score.
             ht_goal_after_signal = (hh + ha) > (sh + sa)
             if ht_goal_after_signal:
                 target = "+"
+                result_name = "win"
                 final_score = f"{hh}:{ha}"
+                result_minute = 45
             elif _has_reached_second_half(body):
-                # Once 2H has started, the HT market is definitively lost if no
-                # first-half goal occurred after the signal. This also repairs
-                # historical false wins produced by the old reconciliation code.
                 target = "-"
+                result_name = "loss"
                 final_score = f"{hh}:{ha}"
+                result_minute = 45
             else:
-                # First half is still live and no goal has happened yet.
                 continue
 
             if current != target:
@@ -83,35 +114,32 @@ def reconcile_engine_results() -> int:
                     reconciled_market="first_half",
                 ):
                     fixed += 1
+                    if was_pending:
+                        _notify_pending_settlement(row, engine, result_name, final_score, result_minute)
                     logger.warning(
                         "ENGINE_RESULT_RECONCILED first_half %s - %s %s -> HT %s (%s)",
-                        row.get("home"),
-                        row.get("away"),
-                        row.get("score_at_signal"),
-                        final_score,
-                        target,
+                        row.get("home"), row.get("away"), row.get("score_at_signal"), final_score, target,
                     )
             continue
 
-        # LATE RISK: a later goal in the second half is the intended outcome.
+        # LATE RISK win: any later second-half goal after the entry.
         if (fh + fa) <= (sh + sa):
             continue
         if current not in {"+", "win", "won"}:
+            final_score = f"{fh}:{fa}"
             if update_signal(
                 str(row.get("dedupe_key") or ""),
                 result="+",
-                final_score=f"{fh}:{fa}",
+                final_score=final_score,
                 reconciled_from_summary=True,
                 reconciled_market="second_half",
             ):
                 fixed += 1
+                if was_pending:
+                    _notify_pending_settlement(row, engine, "win", final_score, 90)
                 logger.warning(
-                    "ENGINE_RESULT_RECONCILED second_half %s - %s %s -> %s:%s",
-                    row.get("home"),
-                    row.get("away"),
-                    row.get("score_at_signal"),
-                    fh,
-                    fa,
+                    "ENGINE_RESULT_RECONCILED second_half %s - %s %s -> %s",
+                    row.get("home"), row.get("away"), row.get("score_at_signal"), final_score,
                 )
     return fixed
 
