@@ -19,6 +19,7 @@ from live_engine import fetch_summary
 from signal_journal import all_signals
 import score_sync_patch
 import telegram_image_signal_patch as tip
+import robust_goal_cooldown_patch as goal_cooldown
 
 logger = logging.getLogger("fast_goal_watch")
 INTERVAL_SECONDS = max(15, int(os.getenv("GOAL_WATCH_INTERVAL_SECONDS", "20")))
@@ -63,6 +64,10 @@ def _schedule_direct(row, current_score, goal_minute):
     Comparison is against score_at_signal from the persistent journal rather than the
     mutable TRACK score. This avoids missing a goal when a long main scan updates TRACK
     before it reaches Telegram confirmation code.
+
+    IMPORTANT: this direct path used to bypass the normal post-goal cooldown hook. That
+    allowed FAST CORE to issue a fresh entry immediately after the goal. We now write the
+    same persistent 5-minute cooldown marker here before confirmation is scheduled.
     """
     eid = str(row.get("event_id") or "")
     before = _score_tuple(row.get("score_at_signal"))
@@ -70,14 +75,20 @@ def _schedule_direct(row, current_score, goal_minute):
     if not eid or sum(current) <= sum(before):
         return False
 
+    minute = int(goal_minute or row.get("minute") or 0)
+
     with tip._GOAL_LOCK:
         existing = tip._GOAL_CANDIDATES.get(eid)
         if existing:
-            if sum(current) > sum(tuple(existing.get("after") or (0, 0))):
+            previous_after = tuple(existing.get("after") or (0, 0))
+            if sum(current) > sum(previous_after):
                 existing["after"] = current
+                goal_cooldown.mark(eid, minute, f"{current[0]}:{current[1]}")
             return True
 
-        minute = int(goal_minute or row.get("minute") or 0)
+        # Mark immediately, before TRACK/result cleanup can make the event eligible again.
+        goal_cooldown.mark(eid, minute, f"{current[0]}:{current[1]}")
+
         match = SimpleNamespace(
             event_id=eid,
             home=str(row.get("home") or ""),
@@ -106,7 +117,7 @@ def _schedule_direct(row, current_score, goal_minute):
     logger.warning(
         "FAST_GOAL_DETECTED %s %s — %s | %s -> %s at %s'",
         eid, row.get("home", ""), row.get("away", ""), before, current,
-        int(goal_minute or row.get("minute") or 0),
+        minute,
     )
     threading.Thread(
         target=tip._confirm_goal_worker,
