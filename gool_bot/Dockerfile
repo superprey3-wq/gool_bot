@@ -2,16 +2,19 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Установка зависимостей
+# Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копирование кода
+# Install the Chromium browser and Linux dependencies required by Playwright.
+# Keeping this in the image makes the runtime self-contained on Northflank.
+RUN python -m playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+# Application code
 COPY . .
 
-# Создаем файл-флаг, чтобы пространство не засыпало сразу (для CPU spaces)
-# Но для Docker space это не критично, главное - процесс работает
-ENV HF_HOME=/tmp/huggingface
+ENV HF_HOME=/tmp/huggingface \
+    PYTHONUNBUFFERED=1
 
-# Запуск бота
 CMD ["python", "main.py"]
