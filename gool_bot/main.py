@@ -7,7 +7,6 @@ if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
 os.environ.setdefault("LIVE_SIGNAL_THRESHOLD","75");os.environ.setdefault("LIVE_COOLDOWN_MINUTES","12")
 LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
-logger.info("GITHUB AUTO-UPDATE TEST OK")
 import visual_feed_unified_bot
 import live_candidate_patch
 import core_warmup_patch
