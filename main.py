@@ -40,6 +40,9 @@ import fast_goal_watch
 import multi_engine_runtime
 import engine_result_reconcile_patch
 
+# Owner-only read-only 1xBet LiveFeed probe. This monkey-patches the Telegram
+# command handler before polling_loop is imported by the production runner.
+import xbet_probe_patch
 from telegram_subscribers import polling_loop
 import production_logging
 
