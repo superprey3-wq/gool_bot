@@ -15,6 +15,15 @@ def _pair(stats,key):
     try:a,b=stats.get(key,(0,0));return float(a or 0),float(b or 0)
     except:return 0.0,0.0
 
+def _xbet_score(game,fh,fa):
+    """Use 1xBet full score when exposed unambiguously; otherwise keep synced Flashscore score."""
+    try:
+        sc=game.get("SC") or {};fs=sc.get("FS") or {}
+        h=fs.get("S1");a=fs.get("S2")
+        if h is not None and a is not None:return int(h),int(a)
+    except Exception:pass
+    return int(fh),int(fa)
+
 def _market_snapshot(match):
     """Best-effort 1xBet snapshot for card rendering. Never affects CORE logic."""
     try:
@@ -26,7 +35,9 @@ def _market_snapshot(match):
         if not event or float(sim or 0)<0.62:return {}
         game,game_root,game_err,game_attempts=fetch_game(event.get("I"),root)
         if not game:return {}
-        minute=int(getattr(match,"minute",0) or 0);goals=int(getattr(match,"home_score",0) or 0)+int(getattr(match,"away_score",0) or 0)
+        minute=int(getattr(match,"minute",0) or 0)
+        fh=int(getattr(match,"home_score",0) or 0);fa=int(getattr(match,"away_score",0) or 0)
+        sh,sa=_xbet_score(game,fh,fa);goals=sh+sa
         d=decode(game,goals,minute)
         out={"source":"1xBet","target":d.get("target")}
         half=d.get("half") or {}
@@ -37,7 +48,6 @@ def _market_snapshot(match):
         target=float(d.get("target",goals+0.5))
         if target in full:
             p=full[target];out["next_over"]=(p.get("over") or {}).get("C");out["next_under"]=(p.get("under") or {}).get("C")
-        # Main line = closest priced two-sided half-goal line.
         best=None
         for line,p in full.items():
             try:o=float((p.get("over") or {}).get("C"));u=float((p.get("under") or {}).get("C"))
@@ -52,13 +62,27 @@ def _market_snapshot(match):
     except Exception:
         return {}
 
+def _fresh_stats(match):
+    """Fetch the same authoritative Flashscore stats used by GOOL right before card render."""
+    try:
+        from live_engine import fetch_stats,parse_stats
+        body=fetch_stats(str(getattr(match,"event_id","") or ""))
+        return parse_stats(body) if body else {}
+    except Exception:return {}
+
 def _visual_stats(match,pressure):
-    stats=getattr(pressure,"stats",None) or getattr(pressure,"raw_stats",None) or {};out={"_timing":timing_context(match,"core"),"_xbet":_market_snapshot(match)}
-    xg=_pair(stats,"xg");shots=_pair(stats,"shots");sot=_pair(stats,"shots_on_target");touch=_pair(stats,"touches_box")
+    # GoalPressureResult contains scores/reasons only, not the raw stats. Fetch them here.
+    stats=_fresh_stats(match) or getattr(pressure,"stats",None) or getattr(pressure,"raw_stats",None) or {}
+    out={"_timing":timing_context(match,"core"),"_xbet":_market_snapshot(match)}
+    xg=_pair(stats,"xg");shots=_pair(stats,"shots");sot=_pair(stats,"shots_on_target")
+    # Card label says dangerous attacks. Flashscore feed has touches_box in some leagues,
+    # so keep that as a conservative proxy only when available.
+    danger=_pair(stats,"dangerous_attacks");touch=_pair(stats,"touches_box")
     if xg!=(0.0,0.0):out["xg"]=round(sum(xg),2)
     if shots!=(0.0,0.0):out["shots"]=round(sum(shots),0)
     if sot!=(0.0,0.0):out["shots_on_target"]=round(sum(sot),0)
-    if touch!=(0.0,0.0):out["touches_box"]=round(sum(touch),0)
+    if danger!=(0.0,0.0):out["touches_box"]=round(sum(danger),0)
+    elif touch!=(0.0,0.0):out["touches_box"]=round(sum(touch),0)
     return out
 
 def _render(match,pressure,recs=None,kind="entry",master=None,probabilities=None):
