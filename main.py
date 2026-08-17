@@ -38,6 +38,7 @@ import fast_goal_watch
 
 # One-shot HT HUNTER and LATE RISK engines use the same LIVE list.
 import multi_engine_runtime
+import all_engine_xbet_patch
 import engine_result_reconcile_patch
 
 # Owner-only read-only 1xBet LiveFeed probe. This monkey-patches the Telegram
