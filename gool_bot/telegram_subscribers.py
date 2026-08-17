@@ -50,6 +50,21 @@ def _send_reply(chat_id,text,keyboard=True):
         if _post_message(chat_id,text,_main_keyboard()):return True
         logger.warning("Telegram keyboard rejected for %s; retrying plain message",chat_id)
     return _post_message(chat_id,text)
+def _send_journal(chat_id):
+    if str(chat_id)!=_owner_chat_id():
+        _send_reply(chat_id,"⛔ Экспорт журнала доступен только владельцу.");return
+    journal=Path(os.getenv("SIGNAL_JOURNAL_FILE","signal_journal.json"))
+    if not journal.is_absolute():journal=Path.cwd()/journal
+    if not journal.exists():
+        _send_reply(chat_id,f"⚠️ Журнал не найден: <code>{journal}</code>");return
+    token=_token()
+    try:
+        with journal.open("rb") as fh:
+            r=requests.post(f"https://api.telegram.org/bot{token}/sendDocument",data={"chat_id":str(chat_id),"caption":"📦 GOOL · signal_journal.json"},files={"document":("signal_journal.json",fh,"application/json")},timeout=60)
+        if r.ok:logger.info("Signal journal exported to owner: %s",chat_id);return
+        logger.warning("Telegram journal export failed: HTTP %s %s",r.status_code,r.text[:300])
+    except (OSError,requests.RequestException) as exc:logger.exception("Telegram journal export failed: %s",exc)
+    _send_reply(chat_id,"⚠️ Не удалось отправить журнал. Ошибка записана в лог.")
 
 def _open_track_ids():
     """Our own runtime truth: TRACK exists until the entry is confirmed/closed."""
@@ -62,11 +77,6 @@ def _open_track_ids():
         return set()
 
 def _active_signal_rows():
-    """Show only GOOL entries that are still open in our own tracker.
-
-    No Flashscore request is made here. A signal stays in this list while TRACK exists;
-    after confirmed goal the green-card flow closes TRACK and it disappears immediately.
-    """
     from report_now import _today_rows,_live_signal_rows,_is_pending_entry
     open_ids=_open_track_ids();latest={}
     for r in _live_signal_rows(_today_rows()):
@@ -97,8 +107,7 @@ def _live_text(rows):
     return "\n".join(lines)
 def _send_live(chat_id):
     try:
-        rows=_active_signal_rows()
-        _post_message(chat_id,_live_text(rows),_active_signal_buttons(rows));logger.info("Telegram GOOL open-signal list sent to: %s",chat_id)
+        rows=_active_signal_rows();_post_message(chat_id,_live_text(rows),_active_signal_buttons(rows));logger.info("Telegram GOOL open-signal list sent to: %s",chat_id)
     except Exception as exc:logger.exception("Telegram in-game failed: %s",exc);_post_message(chat_id,"⚠️ Не удалось прочитать список незакрытых сигналов.")
 def _send_report(chat_id):
     _send_reply(chat_id,"📊 Собираю текущий отчёт…")
@@ -119,6 +128,7 @@ def _handle_message(message:dict):
         if str(chat_id)==_owner_chat_id():_send_reply(chat_id,"👑 Основной чат владельца всегда остаётся активным.");return
         unsubscribe(chat_id);_send_reply(chat_id,"🔕 Рассылка GOOL AI отключена. Вернуть её можно командой /start.");logger.info("Telegram subscriber deactivated: %s",chat_id)
     elif command=="/status":_send_reply(chat_id,"✅ Подписка активна." if str(chat_id) in set(get_subscribers()) else "🔕 Подписка отключена. Отправь /start.")
+    elif command=="/journal":_send_journal(chat_id)
     elif command=="/live" or text.casefold() in {"🟢 в игре","в игре"}:_send_live(chat_id)
     elif command=="/report" or text.casefold()=="📊 отчёт":_send_report(chat_id)
     elif command=="/analysis" or text.casefold()=="🧠 анализ":
