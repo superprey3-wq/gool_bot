@@ -42,30 +42,37 @@ def _buckets(nodes):
     b=defaultdict(list)
     for n in nodes:
         if n.get("T") in (9,10):b[(n.get("sg"),n.get("ge"),str(n.get("G","-")))].append(n)
-    out=[]
-    for key,items in b.items():out.append({"sg":key[0],"ge":key[1],"g":key[2],"pairs":pair_totals(items)})
-    return out
+    return [{"sg":k[0],"ge":k[1],"g":k[2],"pairs":pair_totals(v)} for k,v in b.items()]
 def _odd(node):return (node or {}).get("C","—")
 def _fmt_pair(line,pair):return f"ТБ {line} <b>{_odd(pair.get('over'))}</b> · ТМ {line} <b>{_odd(pair.get('under'))}</b>"
-def _candidate_score(bucket,target,period):
-    pairs=bucket["pairs"]
-    if target not in pairs:return -999
-    score=0
-    # Current compact feed consistently nests active period markets under SG.
-    if bucket["sg"] is not None:score+=2
-    # Prefer a bucket with several neighbouring total lines: this is a true totals ladder.
-    score+=min(len(pairs),8)*0.25
-    # First-half/current-period totals generally sit in an earlier SG; full-game ladder is retained separately.
-    if period=="half":
-        score+=3 if bucket["sg"]==0 else 0
-    else:
-        score+=2 if bucket["sg"] is None else 0
-    return score
-def _pick(buckets,target,period,exclude=None):
-    ranked=sorted((( _candidate_score(b,target,period),b) for b in buckets if b is not exclude),key=lambda x:x[0],reverse=True)
-    return ranked[0][1] if ranked and ranked[0][0]>-900 else None
+def _is_half(p):return abs((float(p)%1)-0.5)<1e-9
+def _pick_half(buckets,target):
+    cand=[]
+    for b in buckets:
+        if target not in b["pairs"]:continue
+        score=0
+        if b["sg"]==0:score+=5
+        score+=4 if all(_is_half(p) for p in b["pairs"]) else 0
+        score-=max(0,len(b["pairs"])-3)*0.3
+        cand.append((score,b))
+    return max(cand,key=lambda x:x[0])[1] if cand else None
+def _pick_full(buckets,exclude=None):
+    cand=[]
+    for b in buckets:
+        if b is exclude:continue
+        pairs=b["pairs"]
+        half=[p for p in pairs if _is_half(p)]
+        if not half:continue
+        score=0
+        # Standard 1xBet "Total goals in match" ladder is predominantly x.5 lines.
+        score+=8*(len(half)/max(1,len(pairs)))
+        score+=min(len(half),6)
+        # Prefer a visible ladder of several half-goal lines over Asian integer totals.
+        if len(half)>=2:score+=4
+        if len(pairs)==len(half):score+=3
+        cand.append((score,b))
+    return max(cand,key=lambda x:x[0])[1] if cand else None
 def _yes_no_candidates(nodes):
-    # Keep BTTS conservative: only expose when payload itself carries Yes/No text.
     yes=no=None
     for n in nodes:
         txt=(" ".join(n.get("context") or [])+" "+str(n.get("N") or "")).lower()
@@ -75,25 +82,22 @@ def _yes_no_candidates(nodes):
     return yes,no
 def decode(game,current_goals,minute=0):
     nodes=collect_nodes(game);buckets=_buckets(nodes);target=float(current_goals)+0.5
-    half=None;full=None
-    if int(minute or 0)<=45:half=_pick(buckets,target,"half")
-    full=_pick(buckets,target,"full",exclude=half)
+    half=_pick_half(buckets,target) if int(minute or 0)<=45 else None
+    full=_pick_full(buckets,exclude=half)
     y,n=_yes_no_candidates(nodes)
     return {"count":len(nodes),"target":target,"minute":int(minute or 0),"half":half,"full":full,"btts_yes":y,"btts_no":n,"buckets":buckets}
 def format_markets(d):
     target=d["target"];lines=[]
     if d.get("minute",0)<=45:
         lines.append("⏱ <b>ГОЛ В 1-М ТАЙМЕ</b>")
-        h=d.get("half")
-        lines.append(_fmt_pair(target,h["pairs"][target]) if h else f"Тотал {target}: рынок не найден")
+        h=d.get("half");lines.append(_fmt_pair(target,h["pairs"][target]) if h else f"Тотал {target}: рынок не найден")
     lines.append("🏁 <b>ТОТАЛЫ МАТЧА</b>")
     f=d.get("full")
     if f:
-        pairs=f["pairs"]
-        for p in sorted(pairs):lines.append(_fmt_pair(p,pairs[p]))
+        for p in sorted(f["pairs"]):
+            if _is_half(p):lines.append(_fmt_pair(p,f["pairs"][p]))
     else:lines.append("рынок общего тотала пока не определён")
     lines.append("🤝 <b>ОБЕ ЗАБЬЮТ</b>")
-    y,n=d.get("btts_yes"),d.get("btts_no")
-    lines.append(f"ДА <b>{_odd(y)}</b> · НЕТ <b>{_odd(n)}</b>" if y or n else "рынок пока не расшифрован")
+    y,n=d.get("btts_yes"),d.get("btts_no");lines.append(f"ДА <b>{_odd(y)}</b> · НЕТ <b>{_odd(n)}</b>" if y or n else "рынок пока не расшифрован")
     lines.append("⚠️ shadow: CORE не затронут")
     return lines
