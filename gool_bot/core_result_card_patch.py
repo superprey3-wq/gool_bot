@@ -55,9 +55,14 @@ def _market_snapshot(match):
             cand=(abs(o-u),float(line),o,u)
             if best is None or cand[0]<best[0]:best=cand
         if best:out.update({"main_line":best[1],"main_over":best[2],"main_under":best[3]})
-        y,n=d.get("btts_yes"),d.get("btts_no")
-        if y:out["btts_yes"]=y.get("C")
-        if n:out["btts_no"]=n.get("C")
+        # BTTS is already settled once both teams have scored. Never show live
+        # BTTS prices in that state, even if 1xBet exposes another G=22 pair.
+        if sh>0 and sa>0:
+            out["btts_settled"]=True
+        else:
+            y,n=d.get("btts_yes"),d.get("btts_no")
+            if y:out["btts_yes"]=y.get("C")
+            if n:out["btts_no"]=n.get("C")
         return out
     except Exception:
         return {}
@@ -71,12 +76,9 @@ def _fresh_stats(match):
     except Exception:return {}
 
 def _visual_stats(match,pressure):
-    # GoalPressureResult contains scores/reasons only, not the raw stats. Fetch them here.
     stats=_fresh_stats(match) or getattr(pressure,"stats",None) or getattr(pressure,"raw_stats",None) or {}
     out={"_timing":timing_context(match,"core"),"_xbet":_market_snapshot(match)}
     xg=_pair(stats,"xg");shots=_pair(stats,"shots");sot=_pair(stats,"shots_on_target")
-    # Card label says dangerous attacks. Flashscore feed has touches_box in some leagues,
-    # so keep that as a conservative proxy only when available.
     danger=_pair(stats,"dangerous_attacks");touch=_pair(stats,"touches_box")
     if xg!=(0.0,0.0):out["xg"]=round(sum(xg),2)
     if shots!=(0.0,0.0):out["shots"]=round(sum(shots),0)
