@@ -82,8 +82,37 @@ def timing_strip(d,x1,y1,x2,accent,timing):
         tb=d.textbbox((0,0),lab,font=tf);d.text((xa+(xb-xa-(tb[2]-tb[0]))/2,y1+8),lab,font=tf,fill=WHITE)
         val="—" if pct is None else f"{float(pct):.0f}%";pb=d.textbbox((0,0),val,font=pf);d.text((xa+(xb-xa-(pb[2]-pb[0]))/2,y1+37),val,font=pf,fill=accent if key==active else WHITE)
 
+def _odd(v):
+    try:
+        x=float(v);return f"{x:.2f}" if x>1 else "—"
+    except:return "—"
+
+def odds_strip(d,x1,y1,x2,accent,data,minute):
+    data=data or {};d.text((x1,y1-34),"1XBET LIVE • КОЭФФИЦИЕНТЫ",font=F(23,True),fill=accent)
+    target=data.get("target")
+    # Three compact cells: 1H goal / match total / BTTS.
+    if int(minute or 0)<45:
+        lab1=f"1-Й ТАЙМ • ТБ {target:g}" if isinstance(target,(int,float)) else "1-Й ТАЙМ"
+        val1=_odd(data.get("half_over"))
+    else:
+        lab1="ЕЩЁ 1 ГОЛ"
+        val1=_odd(data.get("next_over"))
+    ml=data.get("main_line")
+    lab2=f"ТОТАЛ МАТЧА • {ml:g}" if isinstance(ml,(int,float)) else "ТОТАЛ МАТЧА"
+    if ml is not None:
+        val2=f"ТБ {_odd(data.get('main_over'))}  •  ТМ {_odd(data.get('main_under'))}"
+    else:val2="—"
+    val3=f"ДА {_odd(data.get('btts_yes'))}  •  НЕТ {_odd(data.get('btts_no'))}"
+    cards=[(lab1,val1),(lab2,val2),("ОБЕ ЗАБЬЮТ",val3)]
+    gap=14;w=(x2-x1-gap*2)/3
+    for i,(lab,val) in enumerate(cards):
+        xa=int(x1+i*(w+gap));xb=int(xa+w)
+        d.rounded_rectangle((xa,y1,xb,y1+82),16,fill=(9,18,31),outline=accent,width=1)
+        d.text((xa+16,y1+13),lab,font=fit(d,lab,w-32,18,True),fill=MUTED)
+        d.text((xa+16,y1+43),val,font=fit(d,val,w-32,25,True),fill=WHITE if val!="—" else MUTED)
+
 def render_engine_card(match,engine,score=0,delta=None,odd=None,result=None):
-    delta=delta or {};timing=delta.get("_timing") or {}
+    delta=delta or {};timing=delta.get("_timing") or {};xbet=delta.get("_xbet") or {}
     kind,accent,title,subtitle=kind_info(engine)
     if result is not None:return render_result_card(match,kind,accent,title,result)
     W,H=1200,1200
@@ -101,7 +130,7 @@ def render_engine_card(match,engine,score=0,delta=None,odd=None,result=None):
     x=55;y=700;cell=272
     for i,(lab,val) in enumerate(vals):
         xa=x+i*cell;d.rounded_rectangle((xa,y,xa+250,y+105),18,fill=(9,18,31),outline=accent,width=1);d.text((xa+18,y+18),lab,font=F(18,True),fill=MUTED);d.text((xa+18,y+53),("—" if val is None else f"+{float(val):.2f}" if lab.startswith("xG") else f"+{int(float(val))}"),font=F(29,True),fill=WHITE)
-    timing_strip(d,65,855,1135,accent,timing)
+    odds_strip(d,65,855,1135,accent,xbet,getattr(match,"minute",0))
     why_y=985;d.text((80,why_y),"ПОЧЕМУ СИГНАЛ",font=F(25,True),fill=accent)
     why="Свежий LIVE-тренд подтверждает давление"
     if timing.get("pct") is not None:why+=f" • {timing.get('segment')} в лиге: {float(timing['pct']):.0f}%"
