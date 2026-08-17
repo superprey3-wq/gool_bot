@@ -28,6 +28,7 @@ import goal_reset_patch
 import live_status_heartbeat
 import fast_goal_watch
 import multi_engine_runtime
+import xbet_probe_patch
 from telegram_subscribers import polling_loop
 import production_logging
 
