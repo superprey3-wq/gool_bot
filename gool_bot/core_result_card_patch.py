@@ -15,8 +15,45 @@ def _pair(stats,key):
     try:a,b=stats.get(key,(0,0));return float(a or 0),float(b or 0)
     except:return 0.0,0.0
 
+def _market_snapshot(match):
+    """Best-effort 1xBet snapshot for card rendering. Never affects CORE logic."""
+    try:
+        from xbet_live_odds import fetch_live_football,match_event,fetch_game
+        from xbet_market_decoder import decode
+        events,root,err,attempts=fetch_live_football()
+        if not events:return {}
+        event,sim,rev=match_event(str(getattr(match,"home","")),str(getattr(match,"away","")),events)
+        if not event or float(sim or 0)<0.62:return {}
+        game,game_root,game_err,game_attempts=fetch_game(event.get("I"),root)
+        if not game:return {}
+        minute=int(getattr(match,"minute",0) or 0);goals=int(getattr(match,"home_score",0) or 0)+int(getattr(match,"away_score",0) or 0)
+        d=decode(game,goals,minute)
+        out={"source":"1xBet","target":d.get("target")}
+        half=d.get("half") or {}
+        if half:
+            out["half_over"]=(half.get("over") or {}).get("C")
+            out["half_under"]=(half.get("under") or {}).get("C")
+        full=d.get("full") or {}
+        target=float(d.get("target",goals+0.5))
+        if target in full:
+            p=full[target];out["next_over"]=(p.get("over") or {}).get("C");out["next_under"]=(p.get("under") or {}).get("C")
+        # Main line = closest priced two-sided half-goal line.
+        best=None
+        for line,p in full.items():
+            try:o=float((p.get("over") or {}).get("C"));u=float((p.get("under") or {}).get("C"))
+            except:continue
+            cand=(abs(o-u),float(line),o,u)
+            if best is None or cand[0]<best[0]:best=cand
+        if best:out.update({"main_line":best[1],"main_over":best[2],"main_under":best[3]})
+        y,n=d.get("btts_yes"),d.get("btts_no")
+        if y:out["btts_yes"]=y.get("C")
+        if n:out["btts_no"]=n.get("C")
+        return out
+    except Exception:
+        return {}
+
 def _visual_stats(match,pressure):
-    stats=getattr(pressure,"stats",None) or getattr(pressure,"raw_stats",None) or {};out={"_timing":timing_context(match,"core")}
+    stats=getattr(pressure,"stats",None) or getattr(pressure,"raw_stats",None) or {};out={"_timing":timing_context(match,"core"),"_xbet":_market_snapshot(match)}
     xg=_pair(stats,"xg");shots=_pair(stats,"shots");sot=_pair(stats,"shots_on_target");touch=_pair(stats,"touches_box")
     if xg!=(0.0,0.0):out["xg"]=round(sum(xg),2)
     if shots!=(0.0,0.0):out["shots"]=round(sum(shots),0)
