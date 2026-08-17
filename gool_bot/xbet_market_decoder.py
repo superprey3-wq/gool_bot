@@ -71,28 +71,44 @@ def _yes_no_candidates(nodes):
         if re.search(r"\b(yes|да)\b",txt):yes=n
         if re.search(r"\b(no|нет)\b",txt):no=n
     return yes,no
-def _binary_groups(nodes):
-    groups=defaultdict(list)
-    for n in nodes:groups[(n.get("sg"),n.get("ge"),str(n.get("G","-")))].append(n)
-    out=[]
-    for (sg,ge,g),items in groups.items():
-        if len(items)!=2:continue
-        odds=[]
-        for n in items:
-            try:odds.append(float(n.get("C")))
-            except:pass
-        if len(odds)==2 and all(x>1 for x in odds):out.append({"sg":sg,"ge":ge,"g":g,"items":items})
-    return out
 def _fingerprint(b):return f"SG={b.get('sg')} GE={b.get('ge')} G={b.get('g')}"
+def _target_candidates(buckets,target):
+    out=[]
+    for b in buckets:
+        pair=b["pairs"].get(target)
+        if pair and (pair.get("over") or pair.get("under")):out.append({"bucket":b,"pair":pair})
+    return out
+def _binary_type_pairs(nodes):
+    groups=defaultdict(lambda:defaultdict(list))
+    for n in nodes:
+        key=(n.get("sg"),n.get("ge"),str(n.get("G","-")))
+        groups[key][str(n.get("T"))].append(n)
+    out=[]
+    for (sg,ge,g),types in groups.items():
+        compact=[]
+        for t,items in types.items():
+            if len(items)==1:
+                n=items[0]
+                try:c=float(n.get("C"))
+                except:continue
+                if c>1:compact.append((t,n))
+        if 2<=len(compact)<=8:
+            compact=sorted(compact,key=lambda z:z[0])
+            out.append({"sg":sg,"ge":ge,"g":g,"items":compact})
+    return out
 def decode(game,current_goals,minute=0):
     nodes=collect_nodes(game);buckets=_buckets(nodes);target=float(current_goals)+0.5
     half=_pick_half(buckets,target) if int(minute or 0)<=45 else None;full=_pick_full(buckets,exclude=half);y,n=_yes_no_candidates(nodes)
-    return {"count":len(nodes),"target":target,"minute":int(minute or 0),"half":half,"full":full,"btts_yes":y,"btts_no":n,"buckets":buckets,"binary":_binary_groups(nodes)}
+    return {"count":len(nodes),"target":target,"minute":int(minute or 0),"half":half,"full":full,"btts_yes":y,"btts_no":n,"buckets":buckets,"target_candidates":_target_candidates(buckets,target),"binary_type_pairs":_binary_type_pairs(nodes)}
 def format_markets(d):
     target=d["target"];lines=[]
     if d.get("minute",0)<=45:
         lines.append("⏱ <b>ГОЛ В 1-М ТАЙМЕ</b>");h=d.get("half")
         lines.append((_fmt_pair(target,h["pairs"][target])+f" · <code>{_fingerprint(h)}</code>") if h else f"Тотал {target}: рынок не найден")
+        cand=[]
+        for x in d.get("target_candidates",[]):
+            b=x["bucket"];p=x["pair"];cand.append(f"{_fingerprint(b)} O={_odd(p.get('over'))}/U={_odd(p.get('under'))}")
+        if cand:lines.append("🔬 все кандидаты: <code>"+"; ".join(cand[:12])+"</code>")
     lines.append("🏁 <b>ТОТАЛЫ МАТЧА</b>");f=d.get("full")
     if f:
         for p in sorted(f["pairs"]):
@@ -103,12 +119,10 @@ def format_markets(d):
     if y or n:lines.append(f"ДА <b>{_odd(y)}</b> · НЕТ <b>{_odd(n)}</b>")
     else:
         lines.append("рынок пока не расшифрован")
-        # Diagnostic shortlist: lets us map raw T/G group to the visible BTTS pair without guessing.
         cand=[]
-        for b in d.get("binary",[]):
-            vals="/".join(str(x.get("C")) for x in b["items"])
-            types="/".join(str(x.get("T")) for x in b["items"])
-            cand.append(f"{_fingerprint(b)} T={types} C={vals}")
-        if cand:lines.append("🔬 пары: "+"; ".join(cand[:8]))
+        for b in d.get("binary_type_pairs",[]):
+            vals=", ".join(f"T={t}:{_odd(n)}" for t,n in b["items"])
+            cand.append(f"{_fingerprint(b)} [{vals}]")
+        if cand:lines.append("🔬 бинарные группы: <code>"+"; ".join(cand[:12])+"</code>")
     lines.append("⚠️ shadow: CORE не затронут")
     return lines
