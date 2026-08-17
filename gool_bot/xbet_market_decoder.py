@@ -1,4 +1,4 @@
-"""Shadow-only decoder for compact 1xBet LiveFeed market selections."""
+"""Shadow-only 1xBet market decoder focused on GOOL markets."""
 from __future__ import annotations
 import re
 from collections import defaultdict
@@ -38,45 +38,62 @@ def pair_totals(nodes):
         if n.get("T")==9:out[p]["over"]=n
         elif n.get("T")==10:out[p]["under"]=n
     return dict(out)
-def main_line(pairs):
-    best=None
-    for p,d in pairs.items():
-        try:o=float((d.get("over") or {}).get("C"));u=float((d.get("under") or {}).get("C"))
-        except:continue
-        v=abs(o-u)
-        if best is None or v<best[0]:best=(v,p,o,u)
-    return None if best is None else {"line":best[1],"over":best[2],"under":best[3]}
 def _buckets(nodes):
     b=defaultdict(list)
     for n in nodes:
         if n.get("T") in (9,10):b[(n.get("sg"),n.get("ge"),str(n.get("G","-")))].append(n)
     out=[]
-    for (sg,ge,g),items in b.items():
-        pairs=pair_totals(items);vals=[]
-        for p,x in sorted(pairs.items()):vals.append(f"{p}:O={(x.get('over') or {}).get('C','—')}/U={(x.get('under') or {}).get('C','—')}")
-        out.append({"sg":sg,"ge":ge,"g":g,"count":len(items),"pairs":pairs,"main":main_line(pairs),"lines":vals})
-    return sorted(out,key=lambda x:((99 if x['sg'] is None else x['sg']),(99 if x['ge'] is None else x['ge']),x['g']))
-def _types(nodes):
-    d=defaultdict(list)
-    for n in nodes:d[str(n.get("T"))].append(n)
-    out=[]
-    for t,items in d.items():
-        sample=[]
-        for n in items[:4]:sample.append(f"P={n.get('P','-')} C={n.get('C')} G={n.get('G','-')} SG={n.get('sg')} GE={n.get('ge')}")
-        out.append((len(items),t,sample))
-    return sorted(out,reverse=True)
-def decode(game,current_goals):
-    nodes=collect_nodes(game);return {"count":len(nodes),"target":current_goals+0.5,"buckets":_buckets(nodes),"types":_types(nodes)}
+    for key,items in b.items():out.append({"sg":key[0],"ge":key[1],"g":key[2],"pairs":pair_totals(items)})
+    return out
+def _odd(node):return (node or {}).get("C","—")
+def _fmt_pair(line,pair):return f"ТБ {line} <b>{_odd(pair.get('over'))}</b> · ТМ {line} <b>{_odd(pair.get('under'))}</b>"
+def _candidate_score(bucket,target,period):
+    pairs=bucket["pairs"]
+    if target not in pairs:return -999
+    score=0
+    # Current compact feed consistently nests active period markets under SG.
+    if bucket["sg"] is not None:score+=2
+    # Prefer a bucket with several neighbouring total lines: this is a true totals ladder.
+    score+=min(len(pairs),8)*0.25
+    # First-half/current-period totals generally sit in an earlier SG; full-game ladder is retained separately.
+    if period=="half":
+        score+=3 if bucket["sg"]==0 else 0
+    else:
+        score+=2 if bucket["sg"] is None else 0
+    return score
+def _pick(buckets,target,period,exclude=None):
+    ranked=sorted((( _candidate_score(b,target,period),b) for b in buckets if b is not exclude),key=lambda x:x[0],reverse=True)
+    return ranked[0][1] if ranked and ranked[0][0]>-900 else None
+def _yes_no_candidates(nodes):
+    # Keep BTTS conservative: only expose when payload itself carries Yes/No text.
+    yes=no=None
+    for n in nodes:
+        txt=(" ".join(n.get("context") or [])+" "+str(n.get("N") or "")).lower()
+        if "both teams" not in txt and "btts" not in txt:continue
+        if re.search(r"\byes\b",txt):yes=n
+        if re.search(r"\bno\b",txt):no=n
+    return yes,no
+def decode(game,current_goals,minute=0):
+    nodes=collect_nodes(game);buckets=_buckets(nodes);target=float(current_goals)+0.5
+    half=None;full=None
+    if int(minute or 0)<=45:half=_pick(buckets,target,"half")
+    full=_pick(buckets,target,"full",exclude=half)
+    y,n=_yes_no_candidates(nodes)
+    return {"count":len(nodes),"target":target,"minute":int(minute or 0),"half":half,"full":full,"btts_yes":y,"btts_no":n,"buckets":buckets}
 def format_markets(d):
-    lines=["🔬 <b>1xBET STRUCTURE MAP</b>","T9/T10 разбиты по SG → GE → G:"]
-    for b in (d.get("buckets") or [])[:14]:
-        main=b.get("main");ms=""
-        if main:ms=f" · баланс≈{main['line']} ({main['over']}/{main['under']})"
-        lines.append(f"• SG={b['sg']} GE={b['ge']} G={b['g']} ({b['count']}){ms}")
-        lines.append("  <code>"+"; ".join(b['lines'][:8])+"</code>")
-    lines.append("🧩 <b>ДРУГИЕ T-КОДЫ</b>")
-    for count,t,sample in (d.get("types") or [])[:14]:
-        if t in ("9","10"):continue
-        lines.append(f"• T={t} ×{count}: <code>{'; '.join(sample)[:300]}</code>")
-    lines.append("⚠️ shadow: пока только карта структуры, CORE не затронут")
+    target=d["target"];lines=[]
+    if d.get("minute",0)<=45:
+        lines.append("⏱ <b>ГОЛ В 1-М ТАЙМЕ</b>")
+        h=d.get("half")
+        lines.append(_fmt_pair(target,h["pairs"][target]) if h else f"Тотал {target}: рынок не найден")
+    lines.append("🏁 <b>ТОТАЛЫ МАТЧА</b>")
+    f=d.get("full")
+    if f:
+        pairs=f["pairs"]
+        for p in sorted(pairs):lines.append(_fmt_pair(p,pairs[p]))
+    else:lines.append("рынок общего тотала пока не определён")
+    lines.append("🤝 <b>ОБЕ ЗАБЬЮТ</b>")
+    y,n=d.get("btts_yes"),d.get("btts_no")
+    lines.append(f"ДА <b>{_odd(y)}</b> · НЕТ <b>{_odd(n)}</b>" if y or n else "рынок пока не расшифрован")
+    lines.append("⚠️ shadow: CORE не затронут")
     return lines
