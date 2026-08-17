@@ -7,6 +7,7 @@ from signal_journal import all_signals
 from report_now import _current_live_ids
 from live_engine import fetch_summary
 from daily_report import _score_from_summary
+from multi_engine import HT_HUNTER,LATE_RISK
 MOSCOW=ZoneInfo("Europe/Moscow")
 
 def _all_live_rows():
@@ -61,6 +62,17 @@ def _settled(entries,all_rows):
         if fh+fa<sh+sa:continue
         out.append((r,(fh+fa)>(sh+sa),f"{fh}:{fa}"))
     return out
+
+def _engine_items(all_rows,engine):
+    """Risk engines settle themselves in runtime; only confirmed +/- rows count here."""
+    out=[]
+    for r in all_rows:
+        if str(r.get("engine") or "").strip().lower()!=engine:continue
+        result=str(r.get("result") or "pending").strip().lower()
+        if result in {"+","win","won"}:out.append((r,True,str(r.get("final_score") or "✓")))
+        elif result in {"-","loss","lost"}:out.append((r,False,str(r.get("final_score") or "—")))
+    return out
+
 def _groups(items,keyfn):
     d=defaultdict(lambda:[0,0])
     for r,win,_ in items:k=keyfn(r);d[k][0]+=1;d[k][1]+=int(win)
@@ -74,39 +86,62 @@ def _fmt_groups(title,d,order=None):
 def _summary_line(label,items):
     n=len(items);w=sum(int(win) for _,win,_ in items);l=n-w
     return f"• {label}: <b>{n}</b> закрыто · ✅ {w} · ❌ {l} · <b>{round(w/n*100) if n else 0}%</b>"
-def build_analysis_text()->str:
-    all_rows=_all_live_rows();rows=_entries(all_rows);items=_settled(rows,all_rows);wins=sum(int(w) for _,w,_ in items);losses=len(items)-wins
-    lines=["🧠 <b>GOOL — АНАЛИЗ ЗА ВСЁ ВРЕМЯ</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","",f"Закрытых входов за всю историю: <b>{len(items)}</b> · ✅ {wins} · ❌ {losses}"]
-    if not items:return "\n".join(lines+["","Пока недостаточно закрытых входов для анализа."])
 
-    primary=[x for x in items if str(x[0].get("reason") or "signal")=="signal"]
-    reentry=[x for x in items if str(x[0].get("reason") or "signal")=="reentry"]
-    lines += ["","♻️ <b>Первичный vs повторный вход</b>",_summary_line("Первичные",primary),_summary_line("После гола",reentry)]
-
-    lines += [""]+_fmt_groups("⏱ По минуте входа",_groups(items,lambda r:_bucket_minute(r.get("minute"))),["1–20'","21–40'","41–60'","61–74'","75+'"]) 
-    lines += [""]+_fmt_groups("⭐ По MASTER-рейтингу",_groups(items,lambda r:_bucket_rating(_num(r,"master"))),["60–69","70–79","80–89","90+","нет данных"])
-    lines += [""]+_fmt_groups("⚽ По счёту/результативности на входе",_groups(items,lambda r:(lambda g:"0–1 гол" if g<=1 else "2–3 гола" if g<=3 else "4+ гола")(sum(map(int,str(r.get("score_at_signal","0:0")).split(":"))))),["0–1 гол","2–3 гола","4+ гола"])
-
-    if reentry:
-        lines += [""]+_fmt_groups("♻️ Повторные — по минуте",_groups(reentry,lambda r:_bucket_minute(r.get("minute"))),["1–20'","21–40'","41–60'","61–74'","75+'"]) 
-        lines += [""]+_fmt_groups("♻️ Повторные — по MASTER",_groups(reentry,lambda r:_bucket_rating(_num(r,"master"))),["60–69","70–79","80–89","90+","нет данных"])
-
-    candidates=[]
-    for label,d in [("минута",_groups(items,lambda r:_bucket_minute(r.get("minute")))),("MASTER",_groups(items,lambda r:_bucket_rating(_num(r,"master"))))]:
-        for k,(n,w) in d.items():
-            if n>=3 and k!="нет данных":candidates.append((w/n*100,n,label,k))
-    if reentry:
-        for label,d in [("повторный вход, минута",_groups(reentry,lambda r:_bucket_minute(r.get("minute")))),("повторный вход, MASTER",_groups(reentry,lambda r:_bucket_rating(_num(r,"master"))))]:
-            for k,(n,w) in d.items():
-                if n>=3 and k!="нет данных":candidates.append((w/n*100,n,label,k))
-    lines += ["","🔎 <b>Что проверить в первую очередь</b>"]
-    if candidates:
-        for rate,n,label,k in sorted(candidates)[:4]:lines.append(f"• {label} {k}: {round(rate)}% на {n} закрытых входах")
-    else:lines.append("• Пока выборка по группам слишком маленькая — пороги лучше не менять.")
+def _engine_section(title,items):
+    lines=["",title]
+    if not items:
+        return lines+["• Пока нет закрытых входов."]
+    n=len(items);w=sum(int(win) for _,win,_ in items);l=n-w
+    lines.append(f"Закрытых входов: <b>{n}</b> · ✅ {w} · ❌ {l} · <b>{round(w/n*100)}%</b>")
+    mins=_groups(items,lambda r:_bucket_minute(r.get("minute")))
+    lines += [""]+_fmt_groups("По минуте входа",mins,["1–20'","21–40'","41–60'","61–74'","75+'"]) 
+    risk=_groups(items,lambda r:_bucket_rating(_num(r,"risk_score","master")))
+    if risk:
+        lines += [""]+_fmt_groups("По рейтингу стратегии",risk,["60–69","70–79","80–89","90+","нет данных"])
+    losses=[x for x in items if not x[1]]
     if losses:
         lines += ["","❌ <b>Последние незашедшие:</b>"]
-        for r,_,score in [x for x in items if not x[1]][-8:]:
-            rating=_num(r,"master");rt=f" · MASTER {rating:.0f}" if rating is not None else "";tag="♻️ " if str(r.get("reason") or "signal")=="reentry" else ""
-            lines.append(f"• {tag}{r.get('home')} — {r.get('away')} | {r.get('minute')}' {r.get('score_at_signal')} → {score}{rt}")
-    lines += ["","<i>Анализ использует весь сохранённый LIVE-журнал. WIN берётся из подтверждённого LIVE-гола; финальный summary используется только когда runtime-подтверждения нет.</i>"]
+        for r,_,score in losses[-5:]:
+            rating=_num(r,"risk_score","master");rt=f" · SCORE {rating:.0f}" if rating is not None else ""
+            lines.append(f"• {r.get('home')} — {r.get('away')} | {r.get('minute')}' {r.get('score_at_signal')} → {score}{rt}")
+    return lines
+
+def build_analysis_text()->str:
+    all_rows=_all_live_rows();rows=_entries(all_rows);items=_settled(rows,all_rows);wins=sum(int(w) for _,w,_ in items);losses=len(items)-wins
+    lines=["🧠 <b>GOOL — АНАЛИЗ ЗА ВСЁ ВРЕМЯ</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🟡 <b>GOOL CORE</b>",f"Закрытых входов за всю историю: <b>{len(items)}</b> · ✅ {wins} · ❌ {losses}"]
+    if items:
+        primary=[x for x in items if str(x[0].get("reason") or "signal")=="signal"]
+        reentry=[x for x in items if str(x[0].get("reason") or "signal")=="reentry"]
+        lines += ["","♻️ <b>Первичный vs повторный вход</b>",_summary_line("Первичные",primary),_summary_line("После гола",reentry)]
+        lines += [""]+_fmt_groups("⏱ По минуте входа",_groups(items,lambda r:_bucket_minute(r.get("minute"))),["1–20'","21–40'","41–60'","61–74'","75+'"]) 
+        lines += [""]+_fmt_groups("⭐ По MASTER-рейтингу",_groups(items,lambda r:_bucket_rating(_num(r,"master"))),["60–69","70–79","80–89","90+","нет данных"])
+        lines += [""]+_fmt_groups("⚽ По счёту/результативности на входе",_groups(items,lambda r:(lambda g:"0–1 гол" if g<=1 else "2–3 гола" if g<=3 else "4+ гола")(sum(map(int,str(r.get("score_at_signal","0:0")).split(":"))))),["0–1 гол","2–3 гола","4+ гола"])
+        if reentry:
+            lines += [""]+_fmt_groups("♻️ Повторные — по минуте",_groups(reentry,lambda r:_bucket_minute(r.get("minute"))),["1–20'","21–40'","41–60'","61–74'","75+'"]) 
+            lines += [""]+_fmt_groups("♻️ Повторные — по MASTER",_groups(reentry,lambda r:_bucket_rating(_num(r,"master"))),["60–69","70–79","80–89","90+","нет данных"])
+        candidates=[]
+        for label,d in [("минута",_groups(items,lambda r:_bucket_minute(r.get("minute")))),("MASTER",_groups(items,lambda r:_bucket_rating(_num(r,"master"))))]:
+            for k,(n,w) in d.items():
+                if n>=3 and k!="нет данных":candidates.append((w/n*100,n,label,k))
+        if reentry:
+            for label,d in [("повторный вход, минута",_groups(reentry,lambda r:_bucket_minute(r.get("minute")))),("повторный вход, MASTER",_groups(reentry,lambda r:_bucket_rating(_num(r,"master"))))]:
+                for k,(n,w) in d.items():
+                    if n>=3 and k!="нет данных":candidates.append((w/n*100,n,label,k))
+        lines += ["","🔎 <b>Что проверить в первую очередь</b>"]
+        if candidates:
+            for rate,n,label,k in sorted(candidates)[:4]:lines.append(f"• {label} {k}: {round(rate)}% на {n} закрытых входах")
+        else:lines.append("• Пока выборка по группам слишком маленькая — пороги лучше не менять.")
+        if losses:
+            lines += ["","❌ <b>Последние незашедшие:</b>"]
+            for r,_,score in [x for x in items if not x[1]][-8:]:
+                rating=_num(r,"master");rt=f" · MASTER {rating:.0f}" if rating is not None else "";tag="♻️ " if str(r.get("reason") or "signal")=="reentry" else ""
+                lines.append(f"• {tag}{r.get('home')} — {r.get('away')} | {r.get('minute')}' {r.get('score_at_signal')} → {score}{rt}")
+    else:
+        lines += ["","Пока недостаточно закрытых CORE-входов для анализа."]
+
+    ht_items=_engine_items(all_rows,HT_HUNTER)
+    late_items=_engine_items(all_rows,LATE_RISK)
+    lines += _engine_section("🔵 <b>HT HUNTER · ПЕРВЫЙ ТАЙМ</b>",ht_items)
+    lines += _engine_section("🔴 <b>LATE RISK · ВТОРОЙ ТАЙМ</b>",late_items)
+    lines += ["","<i>CORE, HT HUNTER и LATE RISK считаются отдельно. CORE использует подтверждённый LIVE-гол/финальный summary; рискованные стратегии — только подтверждённый runtime result.</i>"]
     return "\n".join(lines)
