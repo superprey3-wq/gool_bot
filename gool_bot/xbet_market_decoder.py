@@ -3,8 +3,8 @@
 Confirmed:
 - Full match totals: root G=4, T9/T10.
 - BTTS: root G=22, T182/T183.
-- First-half totals: use the subgame whose period metadata says first half
-  (PN/NF), then its G=4 T9/T10 totals. Never infer 1H from price shape.
+- First-half totals: ONLY inside a structurally identified first-half subgame.
+  Within that subgame accept compact total families 9/10, 11/12, 13/14.
 """
 from __future__ import annotations
 import re
@@ -22,8 +22,6 @@ def _is_first_half_label(v):
 def _collect(obj,out=None,path="",period=None):
     if out is None:out=[]
     if isinstance(obj,dict):
-        # SG items in GetGameZip can carry PN/P/N period metadata. Preserve it
-        # for every nested selection so we identify the period structurally.
         local_period=period
         if re.search(r"/SG\[\d+\]$",path):
             labels=[]
@@ -31,8 +29,6 @@ def _collect(obj,out=None,path="",period=None):
                 if k in obj and isinstance(obj.get(k),str):labels.append(obj.get(k))
             p=obj.get("P")
             local_period={"labels":labels,"p":p,"first":any(_is_first_half_label(x) for x in labels)}
-            # Historical/compact schema: P=1 is the first-half subgame. Only
-            # accept this structural period id, never odds or SG array index.
             if not local_period["first"]:
                 try:local_period["first"]=int(p)==1
                 except:pass
@@ -67,10 +63,18 @@ def _full_totals(nodes):
     return _pair(root)
 
 def _first_half_target(nodes,target):
-    # Exact structural rule: first-half subgame + standard total market G=4.
-    half=[n for n in nodes if n.get("sg") is not None and (n.get("period") or {}).get("first") and str(n.get("G"))=="4" and n.get("T") in (9,10)]
-    pairs=_pair(half)
-    return pairs.get(target)
+    scoped=[n for n in nodes if n.get("sg") is not None and (n.get("period") or {}).get("first")]
+    candidates=[]
+    # We do not infer period from price shape. These families are accepted only
+    # after the node is already proven to belong to the first-half subgame.
+    for over_t,under_t in ((9,10),(11,12),(13,14)):
+        pairs=_pair([n for n in scoped if n.get("T") in (over_t,under_t)],over_t,under_t)
+        p=pairs.get(target)
+        if not p or not p.get("over") or not p.get("under"):continue
+        try:o=float(p["over"].get("C"));u=float(p["under"].get("C"))
+        except:continue
+        candidates.append((abs(o-u),p))
+    return min(candidates,key=lambda x:x[0])[1] if candidates else None
 
 def _btts(nodes):
     yes=no=None
