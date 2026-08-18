@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Хранитель Древних Тайн</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #0a0a0a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            touch-action: none;
+        }
+        
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        #gameCanvas {
+            border: 3px solid #4a4a6a;
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(100, 100, 200, 0.3);
+        }
+        
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #fff;
+            font-size: 16px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            z-index: 100;
+        }
+        
+        .stat {
+            margin: 5px 0;
+            padding: 5px 10px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 5px;
+            border: 1px solid #333;
+        }
+        
+        #minimap {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            border: 2px solid #4a4a6a;
+            border-radius: 5px;
+            background: rgba(0,0,0,0.7);
+        }
+        
+        #message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-size: 24px;
+            text-align: center;
+            text-shadow: 2px 2px 8px rgba(0,0,0,0.9);
+            z-index: 200;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        #startScreen, #gameOverScreen, #winScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            z-index: 300;
+        }
+        
+        #startScreen h1, #gameOverScreen h1, #winScreen h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: #ffd700;
+            text-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
+        }
+        
+        #startScreen p, #gameOverScreen p, #winScreen p {
+            font-size: 18px;
+            margin: 10px 0;
+            max-width: 600px;
+            text-align: center;
+            line-height: 1.6;
+        }
+        
+        button {
+            margin-top: 30px;
+            padding: 15px 40px;
+            font-size: 20px;
+            background: linear-gradient(45deg, #6a4a9c, #9c4a6a);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(106, 74, 156, 0.4);
+        }
+        
+        button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 20px rgba(106, 74, 156, 0.6);
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            z-index: 150;
+        }
+        
+        @media (max-width: 768px) {
+            #controls {
+                display: grid;
+                grid-template-columns: repeat(3, 60px);
+                grid-template-rows: repeat(2, 60px);
+                gap: 10px;
+            }
+            
+            .control-btn {
+                width: 60px;
+                height: 60px;
+                background: rgba(255,255,255,0.2);
+                border: 2px solid rgba(255,255,255,0.4);
+                border-radius: 50%;
+                color: #fff;
+                font-size: 24px;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                cursor: pointer;
+                user-select: none;
+            }
+            
+            .control-btn:active {
+                background: rgba(255,255,255,0.4);
+            }
+            
+            #btn-up { grid-column: 2; grid-row: 1; }
+            #btn-left { grid-column: 1; grid-row: 2; }
+            #btn-down { grid-column: 2; grid-row: 2; }
+            #btn-right { grid-column: 3; grid-row: 2; }
+            #btn-action { grid-column: 3; grid-row: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+        
+        <div id="ui">
+            <div class="stat">❤️ Здоровье: <span id="health">100</span></div>
+            <div class="stat">⚔️ Атака: <span id="attack">10</span></div>
+            <div class="stat">🛡️ Защита: <span id="defense">5</span></div>
+            <div class="stat">💰 Золото: <span id="gold">0</span></div>
+            <div class="stat">🏃 Уровень: <span id="level">1</span></div>
+            <div class="stat">🌍 Мир: <span id="world">Тёмный Лес</span></div>
+            <div class="stat">📦 Этаж: <span id="floor">1</span></div>
+        </div>
+        
+        <canvas id="minimap" width="150" height="150"></canvas>
+        
+        <div id="message"></div>
+        
+        <div id="startScreen">
+            <h1>🏰 Хранитель Древних Тайн</h1>
+            <p>Древнее зло пробудилось в глубинах забытых миров. Ты — последний хранитель, избранный чтобы остановить тьму.</p>
+            <p>Исследуй процедурно генерируемые миры, сражайся с монстрами, собирай сокровища и артефакты, становись сильнее!</p>
+            <p><strong>Управление:</strong> Стрелки или WASD для движения, Пробел для взаимодействия</p>
+            <button onclick="startGame()">Начать приключение</button>
+        </div>
+        
+        <div id="gameOverScreen" class="hidden">
+            <h1>💀 Игра Окончена</h1>
+            <p>Тьма поглотила тебя...</p>
+            <p>Достигнут этаж: <span id="finalFloor">1</span></p>
+            <p>Собрано золота: <span id="finalGold">0</span></p>
+            <button onclick="restartGame()">Попробовать снова</button>
+        </div>
+        
+        <div id="winScreen" class="hidden">
+            <h1>🎉 Победа!</h1>
+            <p>Ты победил древнее зло и восстановил баланс миров!</p>
+            <p>Поздравляем, настоящий Хранитель!</p>
+            <button onclick="restartGame()">Играть снова</button>
+        </div>
+        
+        <div id="controls">
+            <div class="control-btn" id="btn-action">⚔️</div>
+            <div class="control-btn" id="btn-up">⬆️</div>
+            <div class="control-btn" id="btn-left">⬅️</div>
+            <div class="control-btn" id="btn-down">⬇️</div>
+            <div class="control-btn" id="btn-right">➡️</div>
+        </div>
+    </div>
+
+    <script>
+        // === КОНФИГУРАЦИЯ ИГРЫ ===
+        const CONFIG = {
+            tileSize: 32,
+            mapWidth: 25,
+            mapHeight: 20,
+            fovRadius: 8,
+            worlds: [
+                { name: "Тёмный Лес", tile: "🌲", floor: 1, enemyChance: 0.3, itemChance: 0.15 },
+                { name: "Забытые Руины", tile: "🏛️", floor: 3, enemyChance: 0.4, itemChance: 0.2 },
+                { name: "Ледяные Пещеры", tile: "❄️", floor: 5, enemyChance: 0.45, itemChance: 0.25 },
+                { name: "Огненные Земли", tile: "🌋", floor: 7, enemyChance: 0.5, itemChance: 0.3 },
+                { name: "Измерение Тьмы", tile: "👁️", floor: 10, enemyChance: 0.6, itemChance: 0.35 }
+            ],
+            enemies: [
+                { name: "Крыса", symbol: "🐀", health: 15, attack: 3, defense: 1, exp: 5, minFloor: 1 },
+                { name: "Волк", symbol: "🐺", health: 25, attack: 6, defense: 2, exp: 10, minFloor: 2 },
+                { name: "Скелет", symbol: "💀", health: 35, attack: 8, defense: 3, exp: 15, minFloor: 3 },
+                { name: "Орк", symbol: "👹", health: 50, attack: 12, defense: 5, exp: 25, minFloor: 4 },
+                { name: "Призрак", symbol: "👻", health: 40, attack: 15, defense: 2, exp: 30, minFloor: 5 },
+                { name: "Дракончик", symbol: "🐉", health: 80, attack: 18, defense: 8, exp: 50, minFloor: 6 },
+                { name: "Демон", symbol: "😈", health: 100, attack: 22, defense: 10, exp: 75, minFloor: 8 },
+                { name: "Древнее Зло", symbol: "👁️", health: 200, attack: 30, defense: 15, exp: 200, minFloor: 10 }
+            ],
+            items: [
+                { name: "Зелье здоровья", symbol: "🧪", type: "potion", value: 25 },
+                { name: "Меч силы", symbol: "⚔️", type: "weapon", value: 5 },
+                { name: "Щит защиты", symbol: "🛡️", type: "armor", value: 3 },
+                { name: "Кольцо удачи", symbol: "💍", type: "ring", value: 10 },
+                { name: "Свиток опыта", symbol: "📜", type: "scroll", value: 50 },
+                { name: "Кристалл маны", symbol: "💎", type: "crystal", value: 100 }
+            ]
+        };
+
+        // === СОСТОЯНИЕ ИГРЫ ===
+        let gameState = {
+            player: null,
+            map: [],
+            enemies: [],
+            items: [],
+            stairs: null,
+            currentWorld: 0,
+            currentFloor: 1,
+            gameOver: false,
+            gameWon: false,
+            messageTimer: 0
+        };
+
+        // === КЛАССЫ ===
+        class Entity {
+            constructor(x, y, symbol, name) {
+                this.x = x;
+                this.y = y;
+                this.symbol = symbol;
+                this.name = name;
+            }
+        }
+
+        class Player extends Entity {
+            constructor(x, y) {
+                super(x, y, "🧙‍♂️", "Герой");
+                this.health = 100;
+                this.maxHealth = 100;
+                this.attack = 10;
+                this.defense = 5;
+                this.gold = 0;
+                this.level = 1;
+                this.exp = 0;
+                this.expToLevel = 100;
+            }
+
+            move(dx, dy) {
+                const newX = this.x + dx;
+                const newY = this.y + dy;
+
+                if (newX < 0 || newX >= CONFIG.mapWidth || newY < 0 || newY >= CONFIG.mapHeight) {
+                    return false;
+                }
+
+                if (gameState.map[newY][newX] === '#') {
+                    return false;
+                }
+
+                // Проверка на врагов
+                const enemy = gameState.enemies.find(e => e.x === newX && e.y === newY);
+                if (enemy) {
+                    this.attackEnemy(enemy);
+                    return true;
+                }
+
+                this.x = newX;
+                this.y = newY;
+
+                // Проверка на предметы
+                const itemIndex = gameState.items.findIndex(i => i.x === newX && i.y === newY);
+                if (itemIndex !== -1) {
+                    this.collectItem(gameState.items[itemIndex]);
+                    gameState.items.splice(itemIndex, 1);
+                }
+
+                // Проверка на лестницу
+                if (gameState.stairs && gameState.stairs.x === newX && gameState.stairs.y === newY) {
+                    nextFloor();
+                }
+
+                return true;
+            }
+
+            attackEnemy(enemy) {
+                const damage = Math.max(1, this.attack - enemy.defense + Math.floor(Math.random() * 5));
+                enemy.health -= damage;
+                showMessage(`Вы нанесли ${damage} урона ${enemy.name}!`);
+
+                if (enemy.health <= 0) {
+                    this.gainExp(enemy.exp);
+                    gameState.gold += Math.floor(Math.random() * 20) + 10;
+                    showMessage(`${enemy.name} повержен! +${enemy.exp} опыта`);
+                    gameState.enemies = gameState.enemies.filter(e => e !== enemy);
+                } else {
+                    // Контратака врага
+                    setTimeout(() => enemyAttack(enemy), 100);
+                }
+            }
+
+            gainExp(amount) {
+                this.exp += amount;
+                while (this.exp >= this.expToLevel) {
+                    this.exp -= this.expToLevel;
+                    this.level++;
+                    this.expToLevel = Math.floor(this.expToLevel * 1.5);
+                    this.maxHealth += 10;
+                    this.health = this.maxHealth;
+                    this.attack += 2;
+                    this.defense += 1;
+                    showMessage(`🎉 Уровень повышен! Теперь вы ${this.level} уровня!`);
+                }
+            }
+
+            collectItem(item) {
+                switch(item.type) {
+                    case "potion":
+                        this.health = Math.min(this.maxHealth, this.health + item.value);
+                        showMessage(`Вы выпили ${item.name}! +${item.value} здоровья`);
+                        break;
+                    case "weapon":
+                        this.attack += item.value;
+                        showMessage(`Вы взяли ${item.name}! +${item.value} к атаке`);
+                        break;
+                    case "armor":
+                        this.defense += item.value;
+                        showMessage(`Вы взяли ${item.name}! +${item.value} к защите`);
+                        break;
+                    case "ring":
+                        this.gold += item.value;
+                        showMessage(`Вы нашли ${item.name}! +${item.value} золота`);
+                        break;
+                    case "scroll":
+                        this.gainExp(item.value);
+                        showMessage(`Вы прочли ${item.name}! +${item.value} опыта`);
+                        break;
+                    case "crystal":
+                        this.gold += item.value;
+                        showMessage(`Вы нашли ${item.name}! +${item.value} золота`);
+                        break;
+                }
+            }
+
+            takeDamage(amount) {
+                const actualDamage = Math.max(1, amount - this.defense);
+                this.health -= actualDamage;
+                
+                if (this.health <= 0) {
+                    this.health = 0;
+                    endGame();
+                }
+            }
+        }
+
+        class Enemy extends Entity {
+            constructor(x, y, template) {
+                super(x, y, template.symbol, template.name);
+                this.health = template.health;
+                this.maxHealth = template.health;
+                this.attack = template.attack;
+                this.defense = template.defense;
+                this.exp = template.exp;
+            }
+        }
+
+        class Item extends Entity {
+            constructor(x, y, template) {
+                super(x, y, template.symbol, template.name);
+                this.type = template.type;
+                this.value = template.value;
+            }
+        }
+
+        // === ГЕНЕРАЦИЯ МИРА ===
+        function generateMap() {
+            const map = [];
+            
+            // Инициализация карты стенами
+            for (let y = 0; y < CONFIG.mapHeight; y++) {
+                map[y] = [];
+                for (let x = 0; x < CONFIG.mapWidth; x++) {
+                    map[y][x] = '#';
+                }
+            }
+
+            // Алгоритм комнат и коридоров
+            const rooms = [];
+            const maxRooms = 8;
+            const minRoomSize = 4;
+            const maxRoomSize = 8;
+
+            for (let i = 0; i < maxRooms; i++) {
+                const roomWidth = Math.floor(Math.random() * (maxRoomSize - minRoomSize + 1)) + minRoomSize;
+                const roomHeight = Math.floor(Math.random() * (maxRoomSize - minRoomSize + 1)) + minRoomSize;
+                const roomX = Math.floor(Math.random() * (CONFIG.mapWidth - roomWidth - 2)) + 1;
+                const roomY = Math.floor(Math.random() * (CONFIG.mapHeight - roomHeight - 2)) + 1;
+
+                const newRoom = {
+                    x: roomX,
+                    y: roomY,
+                    width: roomWidth,
+                    height: roomHeight,
+                    centerX: Math.floor(roomX + roomWidth / 2),
+                    centerY: Math.floor(roomY + roomHeight / 2)
+                };
+
+                // Проверка на пересечение с другими комнатами
+                let intersects = false;
+                for (const room of rooms) {
+                    if (roomX < room.x + room.width + 1 && roomX + roomWidth + 1 > room.x &&
+                        roomY < room.y + room.height + 1 && roomY + roomHeight + 1 > room.y) {
+                        intersects = true;
+                        break;
+                    }
+                }
+
+                if (!intersects) {
+                    // Создаём комнату
+                    for (let y = roomY; y < roomY + roomHeight; y++) {
+                        for (let x = roomX; x < roomX + roomWidth; x++) {
+                            map[y][x] = '.';
+                        }
+                    }
+
+                    // Соединяем с предыдущей комнатой
+                    if (rooms.length > 0) {
+                        const prevRoom = rooms[rooms.length - 1];
+                        
+                        // Горизонтальный коридор
+                        if (Math.random() > 0.5) {
+                            for (let x = Math.min(prevRoom.centerX, newRoom.centerX); 
+                                 x <= Math.max(prevRoom.centerX, newRoom.centerX); x++) {
+                                map[prevRoom.centerY][x] = '.';
+                            }
+                            // Вертикальный коридор
+                            for (let y = Math.min(prevRoom.centerY, newRoom.centerY); 
+                                 y <= Math.max(prevRoom.centerY, newRoom.centerY); y++) {
+                                map[y][newRoom.centerX] = '.';
+                            }
+                        } else {
+                            for (let y = Math.min(prevRoom.centerY, newRoom.centerY); 
+                                 y <= Math.max(prevRoom.centerY, newRoom.centerY); y++) {
+                                map[y][prevRoom.centerX] = '.';
+                            }
+                            for (let x = Math.min(prevRoom.centerX, newRoom.centerX); 
+                                 x <= Math.max(prevRoom.centerX, newRoom.centerX); x++) {
+                                map[newRoom.centerY][x] = '.';
+                            }
+                        }
+                    }
+
+                    rooms.push(newRoom);
+                }
+            }
+
+            // Размещение игрока в первой комнате
+            const startRoom = rooms[0];
+            gameState.player.x = startRoom.centerX;
+            gameState.player.y = startRoom.centerY;
+
+            // Размещение лестницы в последней комнате
+            const endRoom = rooms[rooms.length - 1];
+            gameState.stairs = { x: endRoom.centerX, y: endRoom.centerY };
+
+            // Размещение врагов и предметов
+            gameState.enemies = [];
+            gameState.items = [];
+
+            for (let y = 0; y < CONFIG.mapHeight; y++) {
+                for (let x = 0; x < CONFIG.mapWidth; x++) {
+                    if (map[y][x] === '.' && (x !== gameState.player.x || y !== gameState.player.y)) {
+                        // Враги
+                        if (Math.random() < getCurrentWorld().enemyChance) {
+                            const availableEnemies = CONFIG.enemies.filter(e => e.minFloor <= gameState.currentFloor);
+                            if (availableEnemies.length > 0) {
+                                const enemyTemplate = availableEnemies[Math.floor(Math.random() * availableEnemies.length)];
+                                gameState.enemies.push(new Enemy(x, y, enemyTemplate));
+                            }
+                        }
+                        
+                        // Предметы
+                        if (Math.random() < getCurrentWorld().itemChance) {
+                            const itemTemplate = CONFIG.items[Math.floor(Math.random() * CONFIG.items.length)];
+                            gameState.items.push(new Item(x, y, itemTemplate));
+                        }
+                    }
+                }
+            }
+
+            return map;
+        }
+
+        function getCurrentWorld() {
+            const worldIndex = Math.min(
+                CONFIG.worlds.length - 1,
+                CONFIG.worlds.findIndex(w => w.floor > gameState.currentFloor) - 1
+            );
+            return worldIndex >= 0 ? CONFIG.worlds[worldIndex] : CONFIG.worlds[0];
+        }
+
+        // === ИГРОВАЯ ЛОГИКА ===
+        function nextFloor() {
+            gameState.currentFloor++;
+            
+            if (gameState.currentFloor > 10) {
+                winGame();
+                return;
+            }
+
+            gameState.map = generateMap();
+            showMessage(`🌍 Переход на этаж ${gameState.currentFloor}!`);
+            
+            // Обновление мира
+            const world = getCurrentWorld();
+            document.getElementById('world').textContent = world.name;
+            document.getElementById('floor').textContent = gameState.currentFloor;
+        }
+
+        function enemyAttack(enemy) {
+            if (enemy.health <= 0) return;
+
+            const dx = gameState.player.x - enemy.x;
+            const dy = gameState.player.y - enemy.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            if (distance <= 1.5) {
+                const damage = Math.max(1, enemy.attack - gameState.player.defense + Math.floor(Math.random() * 3));
+                gameState.player.takeDamage(damage);
+                showMessage(`${enemy.name} наносит вам ${damage} урона!`);
+            } else if (distance < 8) {
+                // Простое движение к игроку
+                const moveX = enemy.x + Math.sign(dx);
+                const moveY = enemy.y + Math.sign(dy);
+                
+                if (gameState.map[moveY][moveX] !== '#' && 
+                    !gameState.enemies.some(e => e.x === moveX && e.y === moveY && e !== enemy)) {
+                    enemy.x = moveX;
+                    enemy.y = moveY;
+                }
+            }
+        }
+
+        function showMessage(text) {
+            const messageEl = document.getElementById('message');
+            messageEl.textContent = text;
+            messageEl.style.opacity = 1;
+            
+            clearTimeout(gameState.messageTimer);
+            gameState.messageTimer = setTimeout(() => {
+                messageEl.style.opacity = 0;
+            }, 2000);
+        }
+
+        // === ОТРИСОВКА ===
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const minimapCanvas = document.getElementById('minimap');
+        const minimapCtx = minimapCanvas.getContext('2d');
+
+        function resizeCanvas() {
+            const maxWidth = window.innerWidth - 40;
+            const maxHeight = window.innerHeight - 40;
+            
+            const targetWidth = CONFIG.mapWidth * CONFIG.tileSize;
+            const targetHeight = CONFIG.mapHeight * CONFIG.tileSize;
+            
+            const scale = Math.min(maxWidth / targetWidth, maxHeight / targetHeight, 1);
+            
+            canvas.width = targetWidth * scale;
+            canvas.height = targetHeight * scale;
+            
+            ctx.scale(scale, scale);
+        }
+
+        function draw() {
+            if (gameState.gameOver || gameState.gameWon) return;
+
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const player = gameState.player;
+            
+            // Отрисовка карты с FOV
+            for (let y = 0; y < CONFIG.mapHeight; y++) {
+                for (let x = 0; x < CONFIG.mapWidth; x++) {
+                    const dist = Math.sqrt((x - player.x) ** 2 + (y - player.y) ** 2);
+                    
+                    if (dist <= CONFIG.fovRadius) {
+                        const tile = gameState.map[y][x];
+                        const isVisible = dist <= CONFIG.fovRadius;
+                        
+                        if (tile === '#') {
+                            ctx.fillStyle = isVisible ? '#4a4a6a' : '#2a2a3a';
+                            ctx.fillRect(x * CONFIG.tileSize, y * CONFIG.tileSize, CONFIG.tileSize, CONFIG.tileSize);
+                        } else {
+                            ctx.fillStyle = isVisible ? '#2d2d44' : '#1a1a2e';
+                            ctx.fillRect(x * CONFIG.tileSize, y * CONFIG.tileSize, CONFIG.tileSize, CONFIG.tileSize);
+                            
+                            if (isVisible) {
+                                ctx.font = `${CONFIG.tileSize}px Arial`;
+                                ctx.textAlign = 'center';
+                                ctx.textBaseline = 'middle';
+                                
+                                // Лестница
+                                if (gameState.stairs && gameState.stairs.x === x && gameState.stairs.y === y) {
+                                    ctx.fillText('🚪', x * CONFIG.tileSize + CONFIG.tileSize/2, y * CONFIG.tileSize + CONFIG.tileSize/2);
+                                }
+                                
+                                // Предметы
+                                const item = gameState.items.find(i => i.x === x && i.y === y);
+                                if (item) {
+                                    ctx.fillText(item.symbol, x * CONFIG.tileSize + CONFIG.tileSize/2, y * CONFIG.tileSize + CONFIG.tileSize/2);
+                                }
+                                
+                                // Враги
+                                const enemy = gameState.enemies.find(e => e.x === x && e.y === y);
+                                if (enemy) {
+                                    ctx.fillText(enemy.symbol, x * CONFIG.tileSize + CONFIG.tileSize/2, y * CONFIG.tileSize + CONFIG.tileSize/2);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Отрисовка игрока
+            ctx.font = `${CONFIG.tileSize}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(player.symbol, player.x * CONFIG.tileSize + CONFIG.tileSize/2, player.y * CONFIG.tileSize + CONFIG.tileSize/2);
+
+            // Обновление UI
+            document.getElementById('health').textContent = `${player.health}/${player.maxHealth}`;
+            document.getElementById('attack').textContent = player.attack;
+            document.getElementById('defense').textContent = player.defense;
+            document.getElementById('gold').textContent = player.gold;
+            document.getElementById('level').textContent = player.level;
+
+            drawMinimap();
+        }
+
+        function drawMinimap() {
+            minimapCtx.fillStyle = 'rgba(0,0,0,0.7)';
+            minimapCtx.fillRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+
+            const scaleX = minimapCanvas.width / CONFIG.mapWidth;
+            const scaleY = minimapCanvas.height / CONFIG.mapHeight;
+            const scale = Math.min(scaleX, scaleY);
+
+            const player = gameState.player;
+
+            for (let y = 0; y < CONFIG.mapHeight; y++) {
+                for (let x = 0; x < CONFIG.mapWidth; x++) {
+                    const dist = Math.sqrt((x - player.x) ** 2 + (y - player.y) ** 2);
+                    
+                    if (dist <= CONFIG.fovRadius) {
+                        if (gameState.map[y][x] === '#') {
+                            minimapCtx.fillStyle = '#4a4a6a';
+                        } else {
+                            minimapCtx.fillStyle = '#2d2d44';
+                        }
+                        minimapCtx.fillRect(x * scale, y * scale, scale, scale);
+                    }
+                }
+            }
+
+            // Игрок на миникарте
+            minimapCtx.fillStyle = '#00ff00';
+            minimapCtx.fillRect(player.x * scale, player.y * scale, scale, scale);
+
+            // Лестница на миникарте
+            if (gameState.stairs) {
+                minimapCtx.fillStyle = '#ffff00';
+                minimapCtx.fillRect(gameState.stairs.x * scale, gameState.stairs.y * scale, scale, scale);
+            }
+        }
+
+        // === УПРАВЛЕНИЕ ИГРОЙ ===
+        function startGame() {
+            document.getElementById('startScreen').classList.add('hidden');
+            
+            gameState.player = new Player(0, 0);
+            gameState.currentFloor = 1;
+            gameState.currentWorld = 0;
+            gameState.gameOver = false;
+            gameState.gameWon = false;
+            
+            gameState.map = generateMap();
+            
+            const world = getCurrentWorld();
+            document.getElementById('world').textContent = world.name;
+            document.getElementById('floor').textContent = gameState.currentFloor;
+            
+            resizeCanvas();
+            gameLoop();
+        }
+
+        function restartGame() {
+            document.getElementById('gameOverScreen').classList.add('hidden');
+            document.getElementById('winScreen').classList.add('hidden');
+            startGame();
+        }
+
+        function endGame() {
+            gameState.gameOver = true;
+            document.getElementById('finalFloor').textContent = gameState.currentFloor;
+            document.getElementById('finalGold').textContent = gameState.player.gold;
+            document.getElementById('gameOverScreen').classList.remove('hidden');
+        }
+
+        function winGame() {
+            gameState.gameWon = true;
+            document.getElementById('winScreen').classList.remove('hidden');
+        }
+
+        function gameLoop() {
+            if (!gameState.gameOver && !gameState.gameWon) {
+                draw();
+                requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // === ОБРАБОТКА ВВОДА ===
+        document.addEventListener('keydown', (e) => {
+            if (gameState.gameOver || gameState.gameWon) return;
+
+            switch(e.key) {
+                case 'ArrowUp':
+                case 'w':
+                case 'W':
+                    gameState.player.move(0, -1);
+                    break;
+                case 'ArrowDown':
+                case 's':
+                case 'S':
+                    gameState.player.move(0, 1);
+                    break;
+                case 'ArrowLeft':
+                case 'a':
+                case 'A':
+                    gameState.player.move(-1, 0);
+                    break;
+                case 'ArrowRight':
+                case 'd':
+                case 'D':
+                    gameState.player.move(1, 0);
+                    break;
+                case ' ':
+                    // Взаимодействие (можно расширить)
+                    showMessage("Используйте стрелки для движения");
+                    break;
+            }
+            
+            e.preventDefault();
+        });
+
+        // Мобильное управление
+        document.getElementById('btn-up').addEventListener('click', () => gameState.player.move(0, -1));
+        document.getElementById('btn-down').addEventListener('click', () => gameState.player.move(0, 1));
+        document.getElementById('btn-left').addEventListener('click', () => gameState.player.move(-1, 0));
+        document.getElementById('btn-right').addEventListener('click', () => gameState.player.move(1, 0));
+        document.getElementById('btn-action').addEventListener('click', () => showMessage("Найдите лестницу 🚪 для перехода на следующий этаж!"));
+
+        window.addEventListener('resize', resizeCanvas);
+
+        // Начальная отрисовка
+        resizeCanvas();
+    </script>
+</body>
+</html>
