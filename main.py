@@ -24,8 +24,14 @@ import entry_sync_failopen_patch
 import core_result_card_patch
 import robust_goal_cooldown_patch
 import fast_core_runtime
+
+# Journal v4: next goal is evidence, not automatic bet settlement.
 import signal_journal_runtime_patch
+import live_quant_guard_patch
 import goal_reset_patch
+import core_primary_reconcile
+import clv_tracker
+
 import live_status_heartbeat
 import fast_goal_watch
 import multi_engine_runtime
@@ -43,6 +49,8 @@ async def run_live():
         score_sync_patch.reuse_once(live)
         await visual_feed_unified_bot.unified_bot.scan_live_once()
         await asyncio.to_thread(multi_engine_runtime.scan_engines,live)
+        await asyncio.to_thread(core_primary_reconcile.reconcile,live)
+        await asyncio.to_thread(clv_tracker.sample,live)
         logger.info("GOOL_CYCLE_DONE live=%d discovery=%.1fs total=%.1fs",len(live),discovery_s,time.monotonic()-cycle_started)
     except Exception:logger.exception("LIVE scan failed; runner will continue")
 
@@ -57,7 +65,7 @@ async def main():
     poller=asyncio.create_task(polling_loop(),name="telegram-command-poller")
     heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
     goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
-    logger.info("GOOL BOT LIVE-ONLY 24/7 started | ONE LIVE FEED -> CORE + HT + LATE | FAST GOAL WATCH 20s")
+    logger.info("GOOL BOT LIVE-ONLY 24/7 started | CORE + HT + LATE | JOURNAL v4 | CLV 60/120s")
     try:
         while True:
             started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
