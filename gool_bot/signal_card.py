@@ -49,7 +49,7 @@ def _badge(img,d,x,y,logo,name,won=False):
  else:
   t=_initials(name);f=_font(30,True);bb=d.textbbox((0,0),t,font=f);d.text((x-(bb[2]-bb[0])/2,y-(bb[3]-bb[1])/2),t,font=f,fill=TEXT)
 def _best(rs):
- rs=rs or [];return next((r for r in rs if r.get("best_bet")),None) or next((r for r in rs if r.get("full_match_best")),None) or next((r for r in rs if r.get("scope")=="FULL_TIME" and r.get("goal_step")==1),None)
+ rs=rs or [];return next((r for r in rs if r.get("best_concrete_bet")),None) or next((r for r in rs if r.get("best_bet")),None) or next((r for r in rs if r.get("full_match_best")),None) or next((r for r in rs if r.get("scope")=="FULL_TIME" and r.get("goal_step")==1),None)
 def _extra(rs,k):return next((r for r in (rs or []) if r.get("extra_market")==k),None)
 def _pair(stats,key):
  try:a,b=stats.get(key,(0,0));return float(a or 0),float(b or 0)
@@ -61,8 +61,14 @@ def _sources(r):
  return f"{r.get('source','LIVE')} {float(r.get('odd',0)):.2f}"
 def _status(r):
  if not r:return ""
- s=str(r.get("external_market_status") or r.get("market_consensus") or "")
+ s=str(r.get("external_market_status") or r.get("market_status") or r.get("market_consensus") or "")
  return {"STEAM":"🔥 STEAM","CONFIRMED":"✓ CONFIRMED","DISAGREE":"⚠ DISAGREE","CONFLICT":"⚠ CONFLICT","EARLY":"EARLY","SINGLE_SOURCE":"1 SOURCE"}.get(s,s)
+def _bet_label(r):
+ if not r:return "LIVE-кэф не найден"
+ if r.get("market_type")=="BTTS":return f"ОЗ — ДА @ {float(r['odd']):.2f}"
+ if r.get("market_type")=="FIRST_HALF_GOAL":return f"ТБ {float(r['line']):g} 1Т @ {float(r['odd']):.2f}"
+ if r.get("line") is not None:return f"ТБ {float(r['line']):g} @ {float(r['odd']):.2f}"
+ return f"LIVE @ {float(r['odd']):.2f}"
 def _box(d,xy,title,value,sub="",accent=TEXT):
  d.rounded_rectangle(xy,18,fill=PANEL,outline=LINE,width=2);x1,y1,x2,y2=xy;d.text((x1+18,y1+13),title,font=_font(16,True),fill=MUTED);d.text((x1+18,y1+43),value,font=_fit(d,value,x2-x1-36,26,True),fill=accent)
  if sub:d.text((x1+18,y2-25),sub,font=_fit(d,sub,x2-x1-36,14,False),fill=MUTED)
@@ -82,13 +88,15 @@ def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None
  if win:
   d.rounded_rectangle((70,520,1010,675),28,fill=(9,24,25),outline=GREEN,width=3);_center(d,"✓ ГОЛ ПОДТВЕРЖДЁН",555,_font(39,True),GREEN);_center(d,"Сигнал успешно отработал",615,_font(25),TEXT);footer=735
  else:
-  rs=recs or [];probs=probabilities or {};rating=int(round(float(master if master is not None else getattr(pressure,"score",0) or 0)));best=_best(rs);btts=_extra(rs,"BTTS_YES");fh=_extra(rs,"FIRST_HALF_OVER_05");d.rounded_rectangle((55,485,1025,620),24,fill=PANEL2,outline=LINE,width=2);d.text((90,510),"РЕЙТИНГ GOOL",font=_font(19,True),fill=MUTED);d.text((90,545),f"{rating}/100",font=_font(43,True),fill=GOLD);d.line((350,505,350,600),fill=LINE,width=2);d.text((390,510),"ОСНОВНОЙ РЫНОК",font=_font(19,True),fill=MUTED)
-  if best:d.text((390,544),f"ТБ {float(best['line']):g} @ {float(best['odd']):.2f}",font=_font(34,True),fill=TEXT);d.text((390,584),f"{_sources(best)}  {_status(best)}",font=_fit(d,f"{_sources(best)}  {_status(best)}",600,17,False),fill=GREEN)
+  rs=recs or [];probs=probabilities or {};rating=int(round(float(master if master is not None else getattr(pressure,"score",0) or 0)));best=_best(rs);btts=_extra(rs,"BTTS_YES");fh=_extra(rs,"FIRST_HALF_DYNAMIC");d.rounded_rectangle((55,485,1025,620),24,fill=PANEL2,outline=LINE,width=2);d.text((90,510),"РЕЙТИНГ GOOL",font=_font(19,True),fill=MUTED);d.text((90,545),f"{rating}/100",font=_font(43,True),fill=GOLD);d.line((350,505,350,600),fill=LINE,width=2);d.text((390,510),"⭐ ЛУЧШАЯ СТАВКА",font=_font(19,True),fill=GOLD)
+  if best:d.text((390,544),_bet_label(best),font=_fit(d,_bet_label(best),600,34,True),fill=TEXT);d.text((390,584),f"{_sources(best)}  {_status(best)}",font=_fit(d,f"{_sources(best)}  {_status(best)}",600,17,False),fill=GREEN)
   else:d.text((390,552),"LIVE-кэф не найден",font=_font(26,True),fill=MUTED)
   st=getattr(pressure,"stats",None) or getattr(pressure,"raw_stats",None) or {};xg=sum(_pair(st,"xg"));shots=sum(_pair(st,"shots"));sot=sum(_pair(st,"shots_on_target"));danger=sum(_pair(st,"dangerous_attacks"));_box(d,(55,645,285,750),"xG / xGoT",f"{xg:.2f}");_box(d,(300,645,530,750),"УДАРЫ",f"{shots:g}");_box(d,(545,645,775,750),"В СТВОР",f"{sot:g}");_box(d,(790,645,1025,750),"ОПАСНЫЕ АТАКИ",f"{danger:g}")
   d.text((65,785),"LIVE РЫНКИ • НЕЗАВИСИМОЕ ПОДТВЕРЖДЕНИЕ",font=_font(21,True),fill=GOLD);p1=int(probs.get("one_goal",0) or 0);one=next((r for r in rs if r.get("goal_step")==1),None);_box(d,(55,825,1025,925),"ЕЩЁ 1 ГОЛ",f"Модель {p1}%",f"{_sources(one)}  {_status(one)}",GREEN)
-  if int(getattr(match,"minute",0) or 0)<=45 and int(getattr(match,"home_score",0) or 0)+int(getattr(match,"away_score",0) or 0)==0:_box(d,(55,945,530,1055),"ГОЛ В 1-М ТАЙМЕ • ТБ0.5",_sources(fh),_status(fh),GREEN if fh else MUTED)
-  else:_box(d,(55,945,530,1055),"ГОЛ В 1-М ТАЙМЕ","РЫНОК ЗАКРЫТ","",MUTED)
+  if int(getattr(match,"minute",0) or 0)<=45 and not getattr(match,"is_halftime",False):
+   title=f"ГОЛ ДО ПЕРЕРЫВА • ТБ{float(fh['line']):g}" if fh and fh.get("line") is not None else "ГОЛ ДО ПЕРЕРЫВА"
+   _box(d,(55,945,530,1055),title,_sources(fh),_status(fh),GREEN if fh else MUTED)
+  else:_box(d,(55,945,530,1055),"ГОЛ ДО ПЕРЕРЫВА","РЫНОК ЗАКРЫТ","",MUTED)
   _box(d,(545,945,1025,1055),"ОБЕ ЗАБЬЮТ • ДА",_sources(btts),_status(btts),GREEN if btts else MUTED);d.rounded_rectangle((55,1080,1025,1265),24,fill=PANEL,outline=LINE,width=2);d.text((85,1105),"ПОЧЕМУ СИГНАЛ",font=_font(22,True),fill=GOLD);yy=1145
   for line in textwrap.wrap(_reason(match,pressure,rs,probs),width=70)[:3]:d.text((85,yy),line,font=_font(21),fill=TEXT);yy+=34
   d.text((85,1230),"Flashscore / LSApp / Bovada / Kambi • xG/xGoT enrichment",font=_font(16),fill=MUTED);footer=1325
