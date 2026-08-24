@@ -11,6 +11,7 @@ logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(messa
 # LIVE-only core pipeline.
 import visual_feed_unified_bot
 import live_only_recommendation_patch
+import red_card_stats_patch
 import live_candidate_patch
 import core_warmup_patch
 import halftime_hazard_patch
