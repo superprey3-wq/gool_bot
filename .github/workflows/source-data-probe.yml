@@ -1,0 +1,35 @@
+name: source-data-probe
+on:
+  push:
+    branches: [live-only-quant-foundation]
+    paths: ['.github/workflows/source-data-probe.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install requests curl_cffi
+      - name: Probe Flashscore SofaScore FotMob
+        run: |
+          python - <<'PY'
+          import requests,json
+          from curl_cffi import requests as creq
+          tests=[
+            ('Flashscore live','https://www.flashscore.com/x/feed/f_1_0_1_en_1'),
+            ('Flashscore mobile','https://www.flashscore.com/x/feed/f_1_0_1_en_1'),
+            ('SofaScore live','https://www.sofascore.com/api/v1/sport/football/events/live'),
+            ('SofaScore api','https://api.sofascore.com/api/v1/sport/football/events/live'),
+            ('FotMob matches','https://www.fotmob.com/api/data/matches?date=20260825'),
+          ]
+          H={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36','Accept':'*/*','Referer':'https://www.google.com/'}
+          for name,url in tests:
+            for mode in ('requests','chrome'):
+              try:
+                r=requests.get(url,headers=H,timeout=15) if mode=='requests' else creq.get(url,headers=H,timeout=15,impersonate='chrome')
+                ct=r.headers.get('content-type',''); text=r.text
+                print('\n###',name,mode,'HTTP',r.status_code,'CT',ct,'LEN',len(text))
+                print(text[:1200].replace('\n',' ') if 'json' not in ct else json.dumps(r.json(),ensure_ascii=False)[:1200])
+              except Exception as e: print('\n###',name,mode,'ERR',repr(e))
+          PY
