@@ -39,7 +39,6 @@ def _late_context(match,stats):
     xg=_pair(stats,"xg")[trailing];sot=_pair(stats,"shots_on_target")[trailing];inside=_pair(stats,"shots_inside_box")[trailing];touches=_pair(stats,"touches_box")[trailing];corners=_pair(stats,"corners")[trailing]
     chase=min(100.0,xg*22+sot*10+inside*3+touches*.8+corners*2)
     threshold=28.0 if diff==1 else 48.0
-    # A man advantage for the chasing team supports pressure; a red to the chasing team hurts it.
     red_delta=reds[leading]-reds[trailing]
     if red_delta>0:threshold=max(18.0,threshold-10.0)
     elif red_delta<0:threshold+=15.0
@@ -64,7 +63,8 @@ def _primary(engine,market):
     edge=market.get("value_edge")
     try:edge=float(edge)
     except (TypeError,ValueError):edge=round(conf-(100.0/odd),1)
-    return {"market":"TOTAL_OVER","scope":"FIRST_HALF" if engine==HT_HUNTER else "FULL_TIME","line":float(market["line"]),"odd":odd,"source":str(market.get("source") or "LIVE"),"bookmakers":int(market.get("bookmakers",0) or 0),"confidence":conf,"value_edge":edge}
+    mv=market.get("market_movement") or {}
+    return {"market":"TOTAL_OVER","scope":"FIRST_HALF" if engine==HT_HUNTER else "FULL_TIME","line":float(market["line"]),"odd":odd,"source":str(market.get("source") or "LIVE"),"bookmakers":int(market.get("bookmakers",0) or 0),"confidence":conf,"value_edge":edge,"market_status":str(market.get("market_status") or mv.get("status") or "EARLY"),"steam_score":float(market.get("steam_score",mv.get("steam_score",0)) or 0),"market_movement":mv}
 
 def _send_all(match,engine,score,d,odd,result=None):
     token=unified_bot.BOT_TOKEN;subs=get_subscribers()
@@ -89,7 +89,7 @@ def _record(match,engine,score,d,market):
     if not primary:return False
     ok,why=value_ok(primary,reason)
     if not ok:logger.info("ENGINE_VALUE_REJECT %s %s %s",engine,match.event_id,why);return False
-    return add_signal({"journal_version":4,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","risk_score":score,"trend_delta":d,"odd":primary["odd"],"primary":primary,"reason":reason,"result":"pending","stake_units":1.0,"next_goal_hit":False},_journal_key(engine,match.event_id))
+    return add_signal({"journal_version":4,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","risk_score":score,"trend_delta":d,"odd":primary["odd"],"primary":primary,"market_status":primary["market_status"],"steam_score":primary["steam_score"],"reason":reason,"result":"pending","stake_units":1.0,"next_goal_hit":False},_journal_key(engine,match.event_id))
 def _active_rows():return [r for r in all_signals() if r.get("engine") in {HT_HUNTER,LATE_RISK} and str(r.get("result") or "pending").strip().lower()=="pending"]
 
 def scan_engines(live):
