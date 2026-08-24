@@ -18,6 +18,8 @@ import phase_market_patch
 # Market-source patches must load after period/phase patches so their wrappers survive.
 import multi_source_odds_patch
 import btts_period_sources_patch
+# Rank only after every verified market source has appended its rows.
+import best_market_selector_patch
 import score_sync_patch
 import market_math_patch
 import gool_xg_consensus
