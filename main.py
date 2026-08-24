@@ -11,6 +11,7 @@ logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(messa
 # LIVE core + bounded historical/competition context.
 import visual_feed_unified_bot
 import live_only_recommendation_patch
+import odds_movement_patch
 import red_card_stats_patch
 import xg_proxy_patch
 import live_candidate_patch
@@ -70,7 +71,7 @@ async def main():
     poller=asyncio.create_task(polling_loop(),name="telegram-command-poller")
     heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
     goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
-    logger.info("GOOL BOT LIVE 24/7 | CORE + HT + LATE | H2H/VENUE/LEAGUE GATES | JOURNAL v4 | CLV")
+    logger.info("GOOL BOT LIVE 24/7 | CORE + HT + LATE | LEAGUE GATES | ODDS STEAM | JOURNAL v4 | CLV")
     try:
         while True:
             started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
