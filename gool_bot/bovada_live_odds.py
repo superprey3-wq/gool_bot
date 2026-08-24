@@ -1,4 +1,4 @@
-"""Live football total-goals odds from Bovada's public JSON feed."""
+"""Live football total-goals and BTTS odds from Bovada's public JSON feed."""
 from __future__ import annotations
 from difflib import SequenceMatcher
 import logging, re, time
@@ -69,7 +69,7 @@ def _over_prices(event:dict[str,Any],scope:str)->dict[float,list[float]]:
         for market in group.get("markets") or []:
             if not isinstance(market,dict) or str(market.get("status") or "O")!="O":continue
             ml=str(market.get("description") or "").lower()
-            if "total" not in ml or any(x in ml for x in ("corner","card","booking")):continue
+            if "total" not in ml or any(x in ml for x in ("corner","card","booking","asian")):continue
             for outcome in market.get("outcomes") or []:
                 if not isinstance(outcome,dict) or str(outcome.get("status") or "O")!="O":continue
                 sel=str(outcome.get("description") or ""); sl=sel.lower()
@@ -101,17 +101,42 @@ def get_goal_total_odds(home:str,away:str,home_score:int,away_score:int)->list[d
     return rows
 
 def get_first_half_total_odds(home:str,away:str,home_score:int,away_score:int)->list[dict[str,Any]]:
-    """Return exact +1 and +2 goal total lines for the remainder of the first half."""
     _refresh_if_score_changed(home,away,home_score,away_score)
     event=_find_event(home,away)
     if not event:return []
     goals=int(home_score or 0)+int(away_score or 0); targets=(goals+.5,goals+1.5); available=_over_prices(event,"FIRST_HALF"); rows=[]
     for idx,target in enumerate(targets,1):
         vals=available.get(float(target),[])
-        if vals:
-            rows.append({"scope":"FIRST_HALF","line":float(target),"odd":float(min(vals)),"bookmakers":1,"source":"Bovada","goal_step":idx,"event_id":event.get("id"),"event_name":event.get("description")})
+        if vals:rows.append({"scope":"FIRST_HALF","line":float(target),"odd":float(min(vals)),"bookmakers":1,"source":"Bovada","goal_step":idx,"event_id":event.get("id"),"event_name":event.get("description")})
     return rows
 
 def get_first_half_goal_odds(home:str,away:str,home_score:int,away_score:int)->dict[str,Any]|None:
     rows=get_first_half_total_odds(home,away,home_score,away_score)
     return rows[0] if rows else None
+
+def get_first_half_over05(home:str,away:str)->dict[str,Any]|None:
+    event=_find_event(home,away)
+    if not event:return None
+    vals=_over_prices(event,"FIRST_HALF").get(0.5,[])
+    if not vals:return None
+    return {"market_type":"FIRST_HALF_GOAL","scope":"FIRST_HALF","line":0.5,"odd":float(min(vals)),"selection":"OVER","source":"Bovada","event_id":event.get("id"),"event_name":event.get("description")}
+
+def get_btts_yes(home:str,away:str)->dict[str,Any]|None:
+    event=_find_event(home,away)
+    if not event:return None
+    best=None
+    for group in event.get("displayGroups") or []:
+        if not isinstance(group,dict):continue
+        for market in group.get("markets") or []:
+            if not isinstance(market,dict) or str(market.get("status") or "O")!="O":continue
+            ml=str(market.get("description") or "").strip().lower()
+            if ml!="both teams to score":continue
+            for outcome in market.get("outcomes") or []:
+                if not isinstance(outcome,dict) or str(outcome.get("status") or "O")!="O":continue
+                label=str(outcome.get("description") or "").strip().lower()
+                if label!="yes":continue
+                try:odd=float((outcome.get("price") or {}).get("decimal"))
+                except (TypeError,ValueError):continue
+                if odd>1.001:best=min(best,odd) if best else odd
+    if best is None:return None
+    return {"market_type":"BTTS","scope":"FULL_TIME","selection":"YES","odd":float(best),"source":"Bovada","event_id":event.get("id"),"event_name":event.get("description")}
