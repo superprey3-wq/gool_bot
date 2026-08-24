@@ -38,6 +38,7 @@ import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
 import multi_engine_runtime
+from league_signal_gate import filter_for_multi_engine
 import all_engine_xbet_patch
 import engine_result_reconcile_patch
 import xbet_probe_patch
@@ -51,10 +52,11 @@ async def run_live():
         discovery_s=time.monotonic()-cycle_started
         score_sync_patch.reuse_once(live)
         await visual_feed_unified_bot.unified_bot.scan_live_once()
-        await asyncio.to_thread(multi_engine_runtime.scan_engines,live)
+        engine_live=await asyncio.to_thread(filter_for_multi_engine,live)
+        await asyncio.to_thread(multi_engine_runtime.scan_engines,engine_live)
         await asyncio.to_thread(core_primary_reconcile.reconcile,live)
         await asyncio.to_thread(clv_tracker.sample,live)
-        logger.info("GOOL_CYCLE_DONE live=%d discovery=%.1fs total=%.1fs",len(live),discovery_s,time.monotonic()-cycle_started)
+        logger.info("GOOL_CYCLE_DONE live=%d engine_live=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),discovery_s,time.monotonic()-cycle_started)
     except Exception:logger.exception("LIVE scan failed; runner will continue")
 
 async def status_loop():
@@ -68,7 +70,7 @@ async def main():
     poller=asyncio.create_task(polling_loop(),name="telegram-command-poller")
     heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
     goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
-    logger.info("GOOL BOT LIVE 24/7 | CORE + HT + LATE | H2H/VENUE/LEAGUE CONTEXT | JOURNAL v4 | CLV")
+    logger.info("GOOL BOT LIVE 24/7 | CORE + HT + LATE | H2H/VENUE/LEAGUE GATES | JOURNAL v4 | CLV")
     try:
         while True:
             started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
