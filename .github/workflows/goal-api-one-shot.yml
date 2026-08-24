@@ -1,0 +1,104 @@
+name: goal-api-one-shot
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/goal-api-one-shot.yml']
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Probe and write summary
+        env:
+          GOAL_API_KEY: ${{ secrets.GOAL_API_KEY }}
+        run: |
+          python - <<'PY' > /tmp/goal_probe.txt
+          import os, json, urllib.request, urllib.error, re
+          key=os.environ.get('GOAL_API_KEY','')
+          print('GOAL API LIVE PROBE')
+          if not key:
+              print('ERROR: GOAL_API_KEY secret missing'); raise SystemExit(0)
+          base='https://api.goal-api.com/v1'; H={'Authorization':f'Bearer {key}','Accept':'application/json','User-Agent':'GOOL-probe/1.0'}
+          def get(path):
+              req=urllib.request.Request(base+path,headers=H)
+              try:
+                  with urllib.request.urlopen(req,timeout=20) as r:return r.status,json.loads(r.read().decode())
+              except urllib.error.HTTPError as e:return e.code,{'error_body':e.read().decode('utf-8','ignore')[:500]}
+              except Exception as e:return 0,{'error':repr(e)}
+          code,data=get('/fixtures/live'); print('LIVE_HTTP',code)
+          if code!=200:
+              print(json.dumps(data,ensure_ascii=False)); raise SystemExit(0)
+          rows=data.get('data') or []; print('LIVE_COUNT',len(rows))
+          for i,m in enumerate(rows[:20]):
+              fid=m.get('id') or m.get('fixtureId') or m.get('matchId')
+              home=(m.get('homeTeam') or {}).get('name') if isinstance(m.get('homeTeam'),dict) else m.get('homeTeamName') or m.get('home')
+              away=(m.get('awayTeam') or {}).get('name') if isinstance(m.get('awayTeam'),dict) else m.get('awayTeamName') or m.get('away')
+              league=(m.get('league') or {}).get('name') if isinstance(m.get('league'),dict) else m.get('leagueName') or m.get('competitionName')
+              minute=m.get('minute') or m.get('elapsed')
+              print(f'LIVE {i+1:02d}: id={fid} | {league} | {home} - {away} | min={minute}')
+          std={'0.5','1.5','2.0','2','2.5','3.0','3','3.5'}
+          stats_ok=0; odds_ok=0; totals_matches=0
+          for m in rows[:10]:
+              fid=m.get('id') or m.get('fixtureId') or m.get('matchId')
+              if not fid: continue
+              home=(m.get('homeTeam') or {}).get('name') if isinstance(m.get('homeTeam'),dict) else m.get('homeTeamName') or '?'
+              away=(m.get('awayTeam') or {}).get('name') if isinstance(m.get('awayTeam'),dict) else m.get('awayTeamName') or '?'
+              print(f'\nMATCH {fid}: {home} - {away}')
+              sc,stats=get(f'/fixtures/{fid}/statistics'); print('  STATS_HTTP',sc)
+              if sc==200:
+                  stats_ok+=1; blob=json.dumps(stats.get('data'),ensure_ascii=False)
+                  print('  STATS',blob[:1200])
+              oc,odds=get(f'/fixtures/{fid}/live-odds'); print('  ODDS_HTTP',oc)
+              if oc!=200: continue
+              odds_ok+=1; od=odds.get('data') or []
+              if isinstance(od,dict):
+                  candidates=[]
+                  for v in od.values():
+                      if isinstance(v,list): candidates.extend(v)
+                  if not candidates: candidates=[od]
+              elif isinstance(od,list): candidates=od
+              else: candidates=[]
+              found=[]
+              for row in candidates:
+                  if not isinstance(row,dict): continue
+                  book=row.get('bookmaker') or row.get('bookmakerName') or row.get('name') or 'unknown'
+                  ou=row.get('overUnder') or row.get('over_under') or row.get('totals') or {}
+                  if not isinstance(ou,dict): continue
+                  agg={}
+                  for k,v in ou.items():
+                      ks=str(k); mm=re.search(r'(\d+(?:\.\d+)?)',ks)
+                      if not mm: continue
+                      line=mm.group(1)
+                      if line not in std: continue
+                      side='OVER' if ks.lower().startswith('o') or 'over' in ks.lower() else 'UNDER' if ks.lower().startswith('u') or 'under' in ks.lower() else ks
+                      try:p=float(v)
+                      except:continue
+                      if p>1:agg.setdefault(line,{})[side]=p
+                  for line,sides in agg.items(): found.append([book,line,sides])
+              if found: totals_matches+=1
+              print('  STANDARD_TOTALS',json.dumps(found[:30],ensure_ascii=False))
+          print(f'\nSUMMARY stats_ok={stats_ok}/{min(10,len(rows))} odds_http200={odds_ok}/{min(10,len(rows))} matches_with_standard_totals={totals_matches}/{min(10,len(rows))}')
+          PY
+      - name: Comment PR 9
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          body=open('/tmp/goal_probe.txt',encoding='utf-8').read()
+          body='### One-shot GOAL API probe\n```text\n'+body[:60000]+'\n```'
+          open('/tmp/payload.json','w').write(json.dumps({'body':body}))
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/issues/9/comments \
+            -d @/tmp/payload.json
