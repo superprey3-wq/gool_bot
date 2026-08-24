@@ -1,0 +1,73 @@
+name: sofascore-live-probe
+
+on:
+  push:
+    branches: [live-only-quant-foundation]
+    paths: ['.github/workflows/sofascore-live-probe.yml']
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Probe SofaScore current live matches and odds
+        run: |
+          python - <<'PY'
+          import requests, json, re
+          from difflib import SequenceMatcher
+          roots=['https://www.sofascore.com/api/v1','https://api.sofascore.com/api/v1']
+          H={'Accept':'application/json','User-Agent':'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/137 Mobile Safari/537.36','Origin':'https://www.sofascore.com','Referer':'https://www.sofascore.com/','x-requested-with':'e06c91'}
+          targets=[('Cortulua','Atletico Nacional'),('Atlante','Toluca'),('Libertad','San Lorenzo'),('12 de Junio','Paraguari'),('Alianza Universidad','Tacna Heroica')]
+          def norm(s): return ' '.join(re.sub(r'[^a-z0-9]+',' ',str(s).lower()).split())
+          def sim(a,b): return SequenceMatcher(None,norm(a),norm(b)).ratio()
+          def get(root,path):
+            try:
+              r=requests.get(root.rstrip('/')+'/'+path.lstrip('/'),headers=H,timeout=12)
+              try:d=r.json()
+              except:d=None
+              return r.status_code,d
+            except Exception as e:return 0,{'error':str(e)}
+          for root in roots:
+            code,data=get(root,'sport/football/events/live')
+            print('ROOT',root,'LIVE_HTTP',code,'EVENTS',len(data.get('events',[])) if isinstance(data,dict) else 0)
+            if code!=200 or not isinstance(data,dict): continue
+            events=data.get('events') or []
+            for th,ta in targets:
+              best=None;bs=0
+              for e in events:
+                h=(e.get('homeTeam') or {}).get('name',''); a=(e.get('awayTeam') or {}).get('name','')
+                s=(sim(th,h)+sim(ta,a))/2
+                if s>bs:best=e;bs=s
+              if not best or bs<0.58:
+                print('TARGET',th,'-',ta,'NO_MATCH','best',round(bs,3)); continue
+              eid=best.get('id'); h=(best.get('homeTeam') or {}).get('name'); a=(best.get('awayTeam') or {}).get('name')
+              print('TARGET',th,'-',ta,'MATCHED',eid,h,'-',a,'score',round(bs,3))
+              for name,path in [('odds',f'event/{eid}/odds/1/all'),('stats',f'event/{eid}/statistics'),('shotmap',f'event/{eid}/shotmap'),('graph',f'event/{eid}/graph'),('incidents',f'event/{eid}/incidents')]:
+                c,d=get(root,path)
+                summary={'http':c}
+                if name=='odds' and isinstance(d,dict):
+                  mk=d.get('markets') or []; summary['markets']=len(mk) if isinstance(mk,list) else 0
+                  totals=[]; prices=[]
+                  for m in mk if isinstance(mk,list) else []:
+                    txt=json.dumps(m).lower()
+                    if any(x in txt for x in ['over','under','total']): totals.append(m)
+                    for key in ['choices','outcomes','selections']:
+                      for x in (m.get(key) or []) if isinstance(m,dict) else []:
+                        if isinstance(x,dict):
+                          v=x.get('decimalValue',x.get('decimalOdds',x.get('odds')))
+                          try:
+                            fv=float(v)
+                            if fv>1: prices.append((x.get('name') or x.get('choiceName'),fv))
+                          except: pass
+                  summary['totals']=len(totals); summary['prices']=prices[:8]
+                  if totals: summary['total_sample']=totals[0]
+                elif isinstance(d,dict):
+                  blob=json.dumps(d).lower(); summary['has_xg']=('expected goals' in blob or '"xg"' in blob or 'expectedgoals' in blob); summary['keys']=list(d)[:12]
+                print(name,json.dumps(summary,ensure_ascii=False)[:3500])
+            break
+          PY
