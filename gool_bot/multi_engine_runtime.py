@@ -4,7 +4,7 @@ import json,time,logging,requests
 from pathlib import Path
 import unified_bot
 from live_engine import fetch_stats,fetch_summary,parse_stats,parse_goal_timeline,calculate_goal_pressure,get_previous_values
-from prematch_scanner import _fetch_event_odds
+from live_odds import fetch_live_odds
 from signal_journal import add_signal,all_signals,update_signal
 from telegram_subscribers import get_subscribers
 from multi_engine import HT_HUNTER,LATE_RISK,delta,ht_hunter,late_risk,snapshot
@@ -12,7 +12,7 @@ from multi_engine_card import render_engine_card
 from robust_goal_cooldown_patch import active as persistent_goal_cooldown
 from goal_timing import context as timing_context
 logger=logging.getLogger("multi_engine_runtime")
-STATE_FILE=Path("multi_engine_state.json");GOAL_CONFIRM_SECONDS=35
+STATE_FILE=Path("multi_engine_state.json");GOAL_CONFIRM_SECONDS=35;MAX_MATCH_ENTRIES=2
 
 def _load():
     try:d=json.loads(STATE_FILE.read_text("utf-8"));return d if isinstance(d,dict) else {}
@@ -25,8 +25,10 @@ def _last_goal(goal_times):
         try:vals.append(int(str(x).split("'",1)[0].split("+",1)[0]))
         except:pass
     return max(vals) if vals else None
+
 def _market(match,pressure,engine):
-    try:recs=unified_bot._recommendations(_fetch_event_odds(match.event_id),match,pressure)
+    """Choose an auditable primary market from current LIVE odds only."""
+    try:recs=unified_bot._recommendations(fetch_live_odds(match.event_id),match,pressure)
     except Exception:return None
     scope="FIRST_HALF" if engine==HT_HUNTER else "FULL_TIME";goals=int(match.home_score)+int(match.away_score);rows=[]
     for r in recs:
@@ -34,6 +36,14 @@ def _market(match,pressure,engine):
         except:continue
         if r.get("scope")==scope and 1.15<=o<=5.0 and line>goals:rows.append(r)
     return min(rows,key=lambda r:abs(float(r.get("odd",0))-2.2)) if rows else None
+
+def _primary(engine,market):
+    if not market:return None
+    return {"market":"TOTAL_OVER","scope":"FIRST_HALF" if engine==HT_HUNTER else "FULL_TIME","line":float(market["line"]),"odd":float(market["odd"]),"source":"LIVE","bookmakers":int(market.get("bookmakers",0) or 0),"confidence":market.get("confidence"),"value_edge":market.get("value_edge")}
+
+def _event_entry_count(journal,eid):
+    return sum(1 for r in journal if r.get("kind")=="live" and str(r.get("event_id"))==str(eid) and str(r.get("reason") or "") in {"signal","reentry","ht_hunter","late_risk"})
+
 def _send_all(match,engine,score,d,odd,result=None):
     token=unified_bot.BOT_TOKEN;subs=get_subscribers()
     if not token or not subs:return False
@@ -50,9 +60,13 @@ def _send_all(match,engine,score,d,odd,result=None):
             ok+=int(r.ok)
         except requests.RequestException:pass
     logger.info("ENGINE_DELIVERED %s %s %d/%d",engine,result or "signal",ok,len(subs));return ok>0
+
 def _journal_key(engine,eid):return f"engine:{engine}:{eid}"
-def _record(match,engine,score,d,odd):
-    key=_journal_key(engine,match.event_id);return add_signal({"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","risk_score":score,"trend_delta":d,"odd":odd,"reason":"ht_hunter" if engine==HT_HUNTER else "late_risk","result":"pending"},key)
+def _record(match,engine,score,d,market):
+    primary=_primary(engine,market)
+    if not primary:return False
+    key=_journal_key(engine,match.event_id)
+    return add_signal({"journal_version":4,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","risk_score":score,"trend_delta":d,"odd":primary["odd"],"primary":primary,"reason":"ht_hunter" if engine==HT_HUNTER else "late_risk","result":"pending"},key)
 def _settle(engine,eid,result,match=None):
     fields={"result":"+" if result=="win" else "-","settled_ts":int(time.time())}
     if match:fields.update(final_score=f"{match.home_score}:{match.away_score}",goal_minute=int(match.minute))
@@ -60,8 +74,7 @@ def _settle(engine,eid,result,match=None):
 def _active_rows():return [r for r in all_signals() if r.get("engine") in {HT_HUNTER,LATE_RISK} and str(r.get("result") or "pending")=="pending"]
 
 def scan_engines(live):
-    state=_load();live_by={str(m.event_id):m for m in live};now=time.time()
-    counters={"live":len(live),"window":0,"stats":0,"baseline":0,"eligible":0,"duplicate":0,"market":0,"no_market":0,"sent":0}
+    state=_load();live_by={str(m.event_id):m for m in live};now=time.time();counters={"live":len(live),"window":0,"stats":0,"baseline":0,"eligible":0,"duplicate":0,"exposure":0,"market":0,"no_market":0,"sent":0}
     for row in _active_rows():
         eid=str(row.get("event_id"));engine=row.get("engine");m=live_by.get(eid);ek=f"active:{engine}:{eid}";st=state.setdefault(ek,{"ts":now})
         try:sh,sa=map(int,str(row.get("score_at_signal","0:0")).split(":"))
@@ -69,29 +82,24 @@ def scan_engines(live):
         if m and int(m.home_score)+int(m.away_score)>sh+sa:
             current=f"{m.home_score}:{m.away_score}"
             if st.get("goal_score")!=current:st.update(goal_score=current,goal_seen_ts=now,ts=now);continue
-            if now-float(st.get("goal_seen_ts",now))>=GOAL_CONFIRM_SECONDS:
-                _settle(engine,eid,"win",m);_send_all(m,engine,float(row.get("risk_score",0)),row.get("trend_delta") or {},row.get("odd"),"win");st.update(settled=True,ts=now)
+            if now-float(st.get("goal_seen_ts",now))>=GOAL_CONFIRM_SECONDS:_settle(engine,eid,"win",m);_send_all(m,engine,float(row.get("risk_score",0)),row.get("trend_delta") or {},row.get("odd"),"win");st.update(settled=True,ts=now)
             continue
         st.pop("goal_score",None);st.pop("goal_seen_ts",None);st["ts"]=now
-        if engine==HT_HUNTER and m and (getattr(m,"is_halftime",False) or int(m.minute)>45):
-            _settle(engine,eid,"loss",m);_send_all(m,engine,float(row.get("risk_score",0)),row.get("trend_delta") or {},row.get("odd"),"loss");st["settled"]=True
+        if engine==HT_HUNTER and m and (getattr(m,"is_halftime",False) or int(m.minute)>45):_settle(engine,eid,"loss",m);_send_all(m,engine,float(row.get("risk_score",0)),row.get("trend_delta") or {},row.get("odd"),"loss");st["settled"]=True
         elif not m and now-float(row.get("created_ts",0) or 0)>10*60:_settle(engine,eid,"loss",None);st["settled"]=True
     journal=all_signals()
     for m in live:
         minute=int(getattr(m,"minute",0) or 0)
         if not (25<=minute<=38 or 70<=minute<=85):continue
-        counters["window"]+=1
-        body=fetch_stats(m.event_id)
+        counters["window"]+=1;body=fetch_stats(m.event_id)
         if not body:continue
         stats=parse_stats(body)
         if not stats:continue
-        counters["stats"]+=1
-        key=f"trend:{m.event_id}";s=state.setdefault(key,{"ts":now,"snaps":[]});snaps=s.setdefault("snaps",[]);snap={"minute":minute,"stats":snapshot(stats)}
+        counters["stats"]+=1;key=f"trend:{m.event_id}";s=state.setdefault(key,{"ts":now,"snaps":[]});snaps=s.setdefault("snaps",[]);snap={"minute":minute,"stats":snapshot(stats)}
         if not snaps or int(snaps[-1].get("minute",-1))!=minute:snaps.append(snap)
         s["snaps"]=[x for x in snaps if minute-int(x.get("minute",minute))<=20][-24:];old=[x for x in s["snaps"] if int(x.get("minute",0))<=minute-10];s["ts"]=now
         if not old:continue
-        counters["baseline"]+=1
-        d=delta(stats,old[-1].get("stats"));goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
+        counters["baseline"]+=1;d=delta(stats,old[-1].get("stats"));goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
         if persistent_goal_cooldown(m.event_id,minute):last=minute
         prev=get_previous_values(m.event_id,minute,8);pressure=calculate_goal_pressure(m,stats,prev);engines=[]
         if 35<=minute<=38:
@@ -101,19 +109,10 @@ def scan_engines(live):
         for engine,dec,card_delta in engines:
             if not dec.eligible:continue
             counters["eligible"]+=1
-            if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):
-                counters["duplicate"]+=1;continue
+            if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):counters["duplicate"]+=1;continue
+            if _event_entry_count(journal,m.event_id)>=MAX_MATCH_ENTRIES:counters["exposure"]+=1;logger.info("ENGINE_EXPOSURE_CAP %s %s - %s",engine,m.home,m.away);continue
             market=_market(m,pressure,engine)
-            if market:
-                counters["market"]+=1
-                try:odd=float(market.get("odd",0) or 0)
-                except:odd=0.0
-            else:
-                counters["no_market"]+=1
-                odd=None
-                logger.info("ENGINE_NO_MARKET %s %s - %s minute=%d score=%.1f; sending signal anyway",engine,m.home,m.away,minute,dec.score)
-            if _record(m,engine,dec.score,card_delta,odd) and _send_all(m,engine,dec.score,card_delta,odd):
-                counters["sent"]+=1
-                logger.info("ENGINE_SIGNAL %s %s - %s minute=%d score=%.1f odd=%s timing=%s",engine,m.home,m.away,minute,dec.score,"N/A" if odd is None else f"{odd:.2f}",(card_delta.get("_timing") or {}).get("pct"));journal=all_signals()
-    _save(state)
-    logger.info("ENGINE_SCAN_DIAG live=%d window=%d stats=%d baseline=%d eligible=%d duplicate=%d market=%d no_market=%d sent=%d",counters["live"],counters["window"],counters["stats"],counters["baseline"],counters["eligible"],counters["duplicate"],counters["market"],counters["no_market"],counters["sent"])
+            if not market:counters["no_market"]+=1;logger.info("ENGINE_NO_LIVE_MARKET %s %s - %s minute=%d; signal suppressed for auditable ROI",engine,m.home,m.away,minute);continue
+            counters["market"]+=1;odd=float(market.get("odd",0) or 0)
+            if _record(m,engine,dec.score,card_delta,market) and _send_all(m,engine,dec.score,card_delta,odd):counters["sent"]+=1;logger.info("ENGINE_SIGNAL %s %s - %s minute=%d score=%.1f odd=%.2f",engine,m.home,m.away,minute,dec.score,odd);journal=all_signals()
+    _save(state);logger.info("ENGINE_SCAN_DIAG %s",counters)
