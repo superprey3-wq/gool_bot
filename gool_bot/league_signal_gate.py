@@ -1,8 +1,8 @@
 """League/competition gate for GOOL HT HUNTER and LATE RISK.
 
-A competition name alone never decides a bet. Same-competition evidence is
-shrunk to a type prior in league_profile; this module only hard-blocks cases
-where the relevant scoring window is poorly supported or demonstrably slow.
+A competition name alone never decides a bet. Recent same-competition form and
+persistent historical timing evidence feed league_profile. This gate hard-blocks
+cases where the relevant scoring window is poorly supported or demonstrably slow.
 """
 from __future__ import annotations
 import logging,re,time
@@ -31,18 +31,20 @@ def profile(match):
 
 
 def allow(match,engine):
-    p=profile(match);kind=str(p.get("kind") or "league");n=int(p.get("observed_n",0) or 0);rel=float(p.get("reliability",0) or 0)
+    p=profile(match);kind=str(p.get("kind") or "league")
+    recent_n=int(p.get("observed_n",0) or 0);timing_n=int(p.get("timing_matches",0) or 0);evidence=max(recent_n,timing_n)
+    rel=float(p.get("reliability",0) or 0)
     if engine==LATE_RISK:
-        mult=float(p.get("late_multiplier",1) or 1)
-        # With real same-competition evidence, a materially slow late profile is a hard veto.
-        if n>=6 and mult<0.94:return False,p,f"late profile too slow ({mult:.2f}, n={n})"
-        # Knockout / volatile formats need evidence before a late-goal strategy is trusted.
-        if kind in {"cup","playoff","qualifier"} and n<4:return False,p,f"{kind} late profile sparse (n={n})"
+        mult=float(p.get("late_multiplier",1) or 1);late_gpm=p.get("timing_late_gpm")
+        if evidence>=20 and mult<0.94:return False,p,f"late profile too slow ({mult:.2f}, n={evidence})"
+        if timing_n>=30 and late_gpm is not None and float(late_gpm)<0.42:return False,p,f"late goals/match too low ({float(late_gpm):.2f}, n={timing_n})"
+        if kind in {"cup","playoff","qualifier"} and evidence<8:return False,p,f"{kind} late profile sparse (n={evidence})"
         if kind in {"cup","playoff","qualifier"} and rel<0.55:return False,p,f"{kind} late reliability low ({rel:.2f})"
     elif engine==HT_HUNTER:
-        mult=float(p.get("first_half_multiplier",1) or 1)
-        if n>=6 and mult<0.94:return False,p,f"first-half profile too slow ({mult:.2f}, n={n})"
-        if kind in {"cup","playoff","qualifier"} and n<4:return False,p,f"{kind} first-half profile sparse (n={n})"
+        mult=float(p.get("first_half_multiplier",1) or 1);fh_gpm=p.get("timing_first_half_gpm")
+        if evidence>=20 and mult<0.94:return False,p,f"first-half profile too slow ({mult:.2f}, n={evidence})"
+        if timing_n>=30 and fh_gpm is not None and float(fh_gpm)<0.85:return False,p,f"first-half goals/match too low ({float(fh_gpm):.2f}, n={timing_n})"
+        if kind in {"cup","playoff","qualifier"} and evidence<8:return False,p,f"{kind} first-half profile sparse (n={evidence})"
     return True,p,"ok"
 
 
