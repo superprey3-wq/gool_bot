@@ -54,6 +54,10 @@ def _score(data):
     bonus=max(-6.0,min(6.0,form_bonus+league_bonus))
     return max(0.0,min(100.0,50.0+bonus*7.0)),bonus
 
+def _rescale_probability(pct,mult):
+    try:p=max(0.0,min(.999,float(pct)/100.0));m=max(.70,min(1.35,float(mult)));return round((1-(1-p)**m)*100,1)
+    except Exception:return pct
+
 def _evaluate(m,s,p,goals,market):
     qualifies,route,master,scores,hz,market=_orig(m,s,p,goals,market)
     data=_ctx(m);prior,bonus=_score(data)
@@ -61,6 +65,12 @@ def _evaluate(m,s,p,goals,market):
     scores["PREMATCH_CONTEXT"]=round(prior,1)
     scores["LEAGUE_CONTEXT"]=round(50.0+max(-35,min(35,(float(lp.get("goal_rate_multiplier",1))-1)*140)),1)
     original_master=float(master);master=max(0.0,min(100.0,original_master+bonus))
+    # Apply competition scoring tempo to actual goal hazard, not only to MASTER.
+    if hz:
+        phase_mult=float(lp.get("first_half_multiplier",1.0) if int(getattr(m,"minute",0) or 0)<=45 else lp.get("late_multiplier",1.0) if int(getattr(m,"minute",0) or 0)>=70 else lp.get("goal_rate_multiplier",1.0))
+        rel=float(lp.get("reliability",.5) or .5);effective=1.0+(phase_mult-1.0)*rel
+        hz=tuple(_rescale_probability(x,effective) for x in hz)
+        market["league_hazard_multiplier"]=round(effective,3)
     # Context can veto marginal setups; it cannot create a signal on its own.
     if bonus<=-4.0 and original_master<75:qualifies=False;route="REJECT_CONTEXT"
     market["context_bonus"]=round(bonus,2);market["context"]={k:v for k,v in data.items() if v is not None}
