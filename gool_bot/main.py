@@ -10,6 +10,7 @@ logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(messa
 import visual_feed_unified_bot
 import live_candidate_patch
 import candidate_enrichment_patch
+import scores365_enrichment_patch
 import core_warmup_patch
 import halftime_hazard_patch
 import period_market_patch
