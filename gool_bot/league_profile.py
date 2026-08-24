@@ -1,14 +1,17 @@
 """Competition-aware priors for GOOL LIVE.
 
-Profiles are deliberately data-driven where possible: recent same-competition
-matches are blended with a conservative competition-type prior.  Sparse leagues
-shrink toward the global baseline instead of receiving extreme hand-tuned scores.
+Recent same-competition results and a persistent historical timing store are
+blended with mild competition-type priors. Sparse leagues shrink toward the
+global baseline instead of receiving extreme hand-tuned scores.
 """
 from __future__ import annotations
 from dataclasses import dataclass,asdict
 import re
+from league_timing_store import profile as timing_profile
 
 GLOBAL_GOALS=2.65
+GLOBAL_FH_GPM=1.15
+GLOBAL_LATE_GPM=0.55
 
 @dataclass(frozen=True)
 class LeagueProfile:
@@ -21,6 +24,9 @@ class LeagueProfile:
     goal_rate_multiplier:float
     late_multiplier:float
     first_half_multiplier:float
+    timing_matches:int=0
+    timing_late_gpm:float|None=None
+    timing_first_half_gpm:float|None=None
 
 
 def _norm(s):return " ".join(re.sub(r"[^a-z0-9]+"," ",str(s or "").lower()).split())
@@ -35,7 +41,6 @@ def competition_kind(name:str)->str:
     if any(x in s for x in ("women","wsl","feminine","femenina")):return "women"
     return "league"
 
-# Priors are intentionally mild; observed same-competition results dominate as n grows.
 _KIND_PRIOR={
     "league":(2.65,1.00,1.00,1.00,1.00),
     "cup":(2.75,1.12,1.02,1.06,0.82),
@@ -49,15 +54,35 @@ _KIND_PRIOR={
 def build_profile(competition:str,same_comp_rows=None)->LeagueProfile:
     rows=list(same_comp_rows or [])
     kind=competition_kind(competition)
-    prior,vol,fh,late,base_rel=_KIND_PRIOR[kind]
+    prior,vol,fh_prior,late_prior,base_rel=_KIND_PRIOR[kind]
     totals=[float(getattr(r,"total",0) or 0) for r in rows if getattr(r,"total",None) is not None]
     n=len(totals);obs=(sum(totals)/n) if n else None
-    # Eight pseudo-observations prevent tiny samples from creating absurd league effects.
-    blended=(prior*8+(obs or prior)*n)/(8+n)
-    reliability=min(1.0,base_rel*(0.55+0.45*min(1.0,n/16.0)))
-    rate=max(.78,min(1.24,blended/GLOBAL_GOALS))
-    # High-scoring observed competitions get a modest late/first-half adjustment too.
+    historical=timing_profile(competition)
+    hn=int(historical.get("matches",0) or 0)
+    hist_gpm=historical.get("goals_per_match")
+    # Eight pseudo-observations protect small samples; historical timing data can dominate when broad.
+    numerator=prior*8+(obs or prior)*n
+    denominator=8+n
+    if hn and hist_gpm is not None:
+        hw=min(40,hn)
+        numerator+=float(hist_gpm)*hw;denominator+=hw
+    blended=numerator/denominator
+    evidence_n=n+min(hn,40)
+    reliability=min(1.0,base_rel*(0.50+0.50*min(1.0,evidence_n/24.0)))
+    rate=max(.76,min(1.26,blended/GLOBAL_GOALS))
     obs_factor=max(.90,min(1.12,rate))
-    return LeagueProfile(kind,n,round(obs,3) if obs is not None else None,round(blended,3),vol,round(reliability,3),round(rate,3),round(late*obs_factor,3),round(fh*obs_factor,3))
+    fh=fh_prior*obs_factor;late=late_prior*obs_factor
+    late_gpm=historical.get("late_goals_per_match")
+    fh_gpm=historical.get("first_half_goals_per_match")
+    # Once timing has real depth, use actual phase rates rather than inferring them from total scoring.
+    if hn>=20 and late_gpm is not None:
+        timing_rel=min(1.0,hn/80.0)
+        measured=max(.72,min(1.32,float(late_gpm)/GLOBAL_LATE_GPM))
+        late=late*(1-timing_rel)+measured*timing_rel
+    if hn>=20 and fh_gpm is not None:
+        timing_rel=min(1.0,hn/80.0)
+        measured=max(.75,min(1.28,float(fh_gpm)/GLOBAL_FH_GPM))
+        fh=fh*(1-timing_rel)+measured*timing_rel
+    return LeagueProfile(kind,n,round(obs,3) if obs is not None else None,round(blended,3),vol,round(reliability,3),round(rate,3),round(late,3),round(fh,3),hn,round(float(late_gpm),3) if late_gpm is not None else None,round(float(fh_gpm),3) if fh_gpm is not None else None)
 
 def to_dict(p:LeagueProfile)->dict:return asdict(p)
