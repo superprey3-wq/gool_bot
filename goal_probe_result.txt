@@ -1,59 +1,15 @@
-GOAL API LIVE PROBE
-LIVE_HTTP 200
-LIVE_COUNT 9
-LIVE 01: id=cmsp4mwn6u5mmpn06fz02kr0j | Serie B | Sport Recife - América Mineiro | min=None
-LIVE 02: id=cmsp4mwmuu5mkpn06r5kv7ghb | Serie B | Athletic Club MG - Novorizontino | min=None
-LIVE 03: id=cmsp4ltentzdhpn06409nd5s5 | Primera B | Patriotas Boyacá - Atlético FC | min=None
-LIVE 04: id=cmsp4mwm2u5mgpn06hzk3pfvl | Liga Profesional Argentina | Tigre - Central Córdoba SdE | min=None
-LIVE 05: id=cmsp4mwmbu5mipn06v1abqh0q | Primera B | Orsomarso - Real Cundinamarca | min=None
-LIVE 06: id=cmsp4mfzeu3axpn06hdzbmrof | Primera B | Leones FC - Real Cartagena | min=None
-LIVE 07: id=cmsp4mwlzu5mepn0684rbwkbl | Liga MX Femenil | Atlante W - Toluca W | min=None
-LIVE 08: id=cmswtvlc292nzqc085ginm356 | Division Intermedia | 12 de Junio VH - Paraguari AC | min=None
-LIVE 09: id=cmswh0mds5pvaqc08efzjox05 | Division Profesional | Libertad - Sportivo San Lorenzo | min=None
+GOAL API ODDS ENTITLEMENT PROBE
+LIVE 200 count 9
+BOOKMAKERS_HTTP 200 {"success": true, "count": 20, "data": [{"bookmaker": "Marathon", "odds": 9956}, {"bookmaker": "1xBet", "odds": 9916}, {"bookmaker": "Dafabet", "odds": 9441}, {"bookmaker": "bet365", "odds": 9427}, {"bookmaker": "Pncl", "odds": 9348}, {"bookmaker": "Betano", "odds": 9253}, {"bookmaker": "WilliamHill", "odds": 9227}, {"bookmaker": "Betfair", "odds": 9138}, {"bookmaker": "BetVictor", "odds": 8426}, {"bookmaker": "10Bet", "odds": 8317}, {"bookmaker": "Unibet", "odds": 7897}, {"bookmaker": "Superbet", "odds": 7584}, {"bookmaker": "Sbo", "odds": 5644}, {"bookmaker": "888Sport", "odds": 2775}, {"bookmaker": "188bet", "odds": 2}, {"bookmaker": "bwin", "odds": 1}, {"bookmaker": "Betcris", "odds": 1}, {"bookmaker": "Sportingbet", "odds": 1}, {"bookmaker": "Tipico", "odds": 1}, {"bookmaker": "Betway", "odds": 1}]}
 
-MATCH cmsp4mwn6u5mmpn06fz02kr0j: Sport Recife - América Mineiro
-  STATS_HTTP 200
-  STATS {"match": {"fullTime": [{"type": "Corners", "home": "0", "away": "0"}, {"type": "Throw In", "home": "0", "away": "0"}, {"type": "Free Kick", "home": "0", "away": "0"}, {"type": "Goal Kick", "home": "0", "away": "0"}, {"type": "Penalty", "home": "0", "away": "0"}, {"type": "Substitution", "home": "0", "away": "0"}, {"type": "Attacks", "home": "3", "away": "0"}, {"type": "Dangerous Attacks", "home": "0", "away": "0"}, {"type": "On Target", "home": "0", "away": "0"}, {"type": "Off Target", "home": "0", "away": "0"}, {"type": "Ball Possession", "home": "0%", "away": "0%"}], "firstHalf": [], "secondHalf": []}, "players": {"home": [], "away": []}, "hasStatistics": true}
-  ODDS_HTTP 403
+MATCH cmsp4mwmuu5mkpn06r5kv7ghb Athletic Club MG - Novorizontino
+PREMATCH_ODDS_HTTP 403 {"error_body": "{\"success\":false,\"error\":\"Feature not available in your plan\",\"code\":\"PLAN_CAPABILITY_DENIED\",\"capability\":\"canAccessOdds\",\"upgrade\":\"Please upgrade your plan to access this feature\"}"}
+LIVE_ODDS_HTTP 403 {"error_body": "{\"success\":false,\"error\":\"Feature not available in your plan\",\"code\":\"PLAN_CAPABILITY_DENIED\",\"capability\":\"canAccessOdds\",\"upgrade\":\"Please upgrade your plan to access this feature\"}"}
 
-MATCH cmsp4mwmuu5mkpn06r5kv7ghb: Athletic Club MG - Novorizontino
-  STATS_HTTP 200
-  STATS {"match": {"fullTime": [{"type": "Corners", "home": "0", "away": "0"}, {"type": "Throw In", "home": "0", "away": "0"}, {"type": "Free Kick", "home": "0", "away": "0"}, {"type": "Goal Kick", "home": "0", "away": "0"}, {"type": "Penalty", "home": "0", "away": "0"}, {"type": "Substitution", "home": "0", "away": "0"}, {"type": "Attacks", "home": "1", "away": "0"}, {"type": "Dangerous Attacks", "home": "2", "away": "1"}, {"type": "On Target", "home": "0", "away": "1"}, {"type": "Off Target", "home": "0", "away": "0"}, {"type": "Ball Possession", "home": "50%", "away": "50%"}], "firstHalf": [], "secondHalf": []}, "players": {"home": [], "away": []}, "hasStatistics": true}
-  ODDS_HTTP 403
+MATCH cmsp4mwn6u5mmpn06fz02kr0j Sport Recife - América Mineiro
+PREMATCH_ODDS_HTTP 403 {"error_body": "{\"success\":false,\"error\":\"Feature not available in your plan\",\"code\":\"PLAN_CAPABILITY_DENIED\",\"capability\":\"canAccessOdds\",\"upgrade\":\"Please upgrade your plan to access this feature\"}"}
+LIVE_ODDS_HTTP 403 {"error_body": "{\"success\":false,\"error\":\"Feature not available in your plan\",\"code\":\"PLAN_CAPABILITY_DENIED\",\"capability\":\"canAccessOdds\",\"upgrade\":\"Please upgrade your plan to access this feature\"}"}
 
-MATCH cmsp4ltentzdhpn06409nd5s5: Patriotas Boyacá - Atlético FC
-  STATS_HTTP 200
-  STATS {"match": {"fullTime": [], "firstHalf": [], "secondHalf": []}, "players": {"home": [], "away": []}, "hasStatistics": false}
-  ODDS_HTTP 403
-
-MATCH cmsp4mwm2u5mgpn06hzk3pfvl: Tigre - Central Córdoba SdE
-  STATS_HTTP 200
-  STATS {"match": {"fullTime": [{"type": "Corners", "home": "1", "away": "0"}, {"type": "Throw In", "home": "0", "away": "0"}, {"type": "Free Kick", "home": "0", "away": "0"}, {"type": "Goal Kick", "home": "0", "away": "0"}, {"type": "Penalty", "home": "0", "away": "0"}, {"type": "Substitution", "home": "0", "away": "0"}, {"type": "Attacks", "home": "6", "away": "5"}, {"type": "Dangerous Attacks", "home": "2", "away": "0"}, {"type": "On Target", "home": "0", "away": "0"}, {"type": "Off Target", "home": "0", "away": "0"}, {"type": "Ball Possession", "home": "78%", "away": "22%"}, {"type": "Shots Total", "home": "0", "away": "0"}, {"type": "Shots On Goal", "home": "0", "away": "0"}, {"type": "Shots Off Goal", "home": "0", "away": "0"}, {"type": "Shots Blocked", "home": "0", "away": "0"}, {"type": "Shots Inside Box", "home": "0", "away": "0"}, {"type": "Shots Outside Box", "home": "0", "away": "0"}, {"type": "Fouls", "home": "0", "away": "0"}, {"type": "Corners", "home": "1", "away": "0"}, {"type": "Ball Possession", "home": "78%", "away": "22%"}, {"type": "Passes Total", "home": "13", "away": "4"}, {"type": "Passes Accurate", "home": "6", "away": "1"}], "firstHalf": [], "secondHalf": []}, "p
-  ODDS_HTTP 403
-
-MATCH cmsp4mwmbu5mipn06v1abqh0q: Orsomarso - Real Cundinamarca
-  STATS_HTTP 200
-  STATS {"match": {"fullTime": [{"type": "Corners", "home": "0", "away": "0"}, {"type": "Throw In", "home": "0", "away": "0"}, {"type": "Free Kick", "home": "0", "away": "0"}, {"type": "Goal Kick", "home": "0", "away": "0"}, {"type": "Penalty", "home": "0", "away": "0"}, {"type": "Substitution", "home": "0", "away": "0"}, {"type": "Attacks", "home": "1", "away": "2"}, {"type": "Dangerous Attacks", "home": "4", "away": "1"}, {"type": "On Target", "home": "0", "away": "0"}, {"type": "Off Target", "home": "1", "away": "0"}, {"type": "Ball Possession", "home": "19%", "away": "81%"}], "firstHalf": [], "secondHalf": []}, "players": {"home": [], "away": []}, "hasStatistics": true}
-  ODDS_HTTP 403
-
-MATCH cmsp4mfzeu3axpn06hdzbmrof: Leones FC - Real Cartagena
-  STATS_HTTP 200
-  STATS {"match": {"fullTime": [{"type": "Corners", "home": "0", "away": "0"}, {"type": "Throw In", "home": "0", "away": "0"}, {"type": "Free Kick", "home": "0", "away": "0"}, {"type": "Goal Kick", "home": "0", "away": "0"}, {"type": "Penalty", "home": "0", "away": "0"}, {"type": "Substitution", "home": "0", "away": "0"}, {"type": "Attacks", "home": "2", "away": "4"}, {"type": "Dangerous Attacks", "home": "1", "away": "2"}, {"type": "On Target", "home": "0", "away": "0"}, {"type": "Off Target", "home": "0", "away": "0"}, {"type": "Ball Possession", "home": "24%", "away": "76%"}], "firstHalf": [], "secondHalf": []}, "players": {"home": [], "away": []}, "hasStatistics": true}
-  ODDS_HTTP 403
-
-MATCH cmsp4mwlzu5mepn0684rbwkbl: Atlante W - Toluca W
-  STATS_HTTP 200
-  STATS {"match": {"fullTime": [{"type": "Corners", "home": "1", "away": "0"}, {"type": "Throw In", "home": "0", "away": "0"}, {"type": "Free Kick", "home": "0", "away": "0"}, {"type": "Goal Kick", "home": "0", "away": "0"}, {"type": "Penalty", "home": "0", "away": "0"}, {"type": "Substitution", "home": "0", "away": "0"}, {"type": "Attacks", "home": "12", "away": "17"}, {"type": "Dangerous Attacks", "home": "8", "away": "12"}, {"type": "On Target", "home": "0", "away": "0"}, {"type": "Off Target", "home": "1", "away": "0"}, {"type": "Ball Possession", "home": "41%", "away": "59%"}], "firstHalf": [], "secondHalf": []}, "players": {"home": [], "away": []}, "hasStatistics": true}
-  ODDS_HTTP 403
-
-MATCH cmswtvlc292nzqc085ginm356: 12 de Junio VH - Paraguari AC
-  STATS_HTTP 200
-  STATS {"match": {"fullTime": [{"type": "Corners", "home": "2", "away": "3"}, {"type": "Throw In", "home": "0", "away": "0"}, {"type": "Free Kick", "home": "0", "away": "0"}, {"type": "Goal Kick", "home": "0", "away": "0"}, {"type": "Penalty", "home": "0", "away": "0"}, {"type": "Substitution", "home": "0", "away": "0"}, {"type": "Attacks", "home": "43", "away": "27"}, {"type": "Dangerous Attacks", "home": "20", "away": "14"}, {"type": "On Target", "home": "2", "away": "2"}, {"type": "Off Target", "home": "1", "away": "2"}, {"type": "Ball Possession", "home": "67%", "away": "33%"}], "firstHalf": [], "secondHalf": []}, "players": {"home": [], "away": []}, "hasStatistics": true}
-  ODDS_HTTP 403
-
-MATCH cmswh0mds5pvaqc08efzjox05: Libertad - Sportivo San Lorenzo
-  STATS_HTTP 200
-  STATS {"match": {"fullTime": [{"type": "Corners", "home": "0", "away": "1"}, {"type": "Throw In", "home": "0", "away": "0"}, {"type": "Free Kick", "home": "0", "away": "0"}, {"type": "Goal Kick", "home": "0", "away": "0"}, {"type": "Penalty", "home": "0", "away": "0"}, {"type": "Substitution", "home": "0", "away": "0"}, {"type": "Attacks", "home": "60", "away": "27"}, {"type": "Dangerous Attacks", "home": "27", "away": "14"}, {"type": "On Target", "home": "3", "away": "0"}, {"type": "Off Target", "home": "2", "away": "2"}, {"type": "Ball Possession", "home": "50%", "away": "50%"}], "firstHalf": [], "secondHalf": []}, "players": {"home": [], "away": []}, "hasStatistics": true}
-  ODDS_HTTP 403
-
-SUMMARY stats_ok=9/9 odds_http200=0/9 matches_with_standard_totals=0/9
+MATCH cmsp4ltentzdhpn06409nd5s5 Patriotas Boyacá - Atlético FC
+PREMATCH_ODDS_HTTP 403 {"error_body": "{\"success\":false,\"error\":\"Feature not available in your plan\",\"code\":\"PLAN_CAPABILITY_DENIED\",\"capability\":\"canAccessOdds\",\"upgrade\":\"Please upgrade your plan to access this feature\"}"}
+LIVE_ODDS_HTTP 403 {"error_body": "{\"success\":false,\"error\":\"Feature not available in your plan\",\"code\":\"PLAN_CAPABILITY_DENIED\",\"capability\":\"canAccessOdds\",\"upgrade\":\"Please upgrade your plan to access this feature\"}"}
