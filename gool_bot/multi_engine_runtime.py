@@ -27,6 +27,25 @@ def _last_goal(goal_times):
         except:pass
     return max(vals) if vals else None
 
+def _pair(stats,key):
+    try:a,b=stats.get(key,(0,0));return float(a or 0),float(b or 0)
+    except:return 0.0,0.0
+
+def _late_context(match,stats):
+    """Require a plausible chasing scenario; red cards modify, never create, a setup."""
+    diff=abs(int(match.home_score)-int(match.away_score));reds=_pair(stats,"red_cards")
+    if diff==0:return True,{"state":"draw","score_diff":0,"red_cards":reds,"chase":None}
+    trailing=0 if int(match.home_score)<int(match.away_score) else 1;leading=1-trailing
+    xg=_pair(stats,"xg")[trailing];sot=_pair(stats,"shots_on_target")[trailing];inside=_pair(stats,"shots_inside_box")[trailing];touches=_pair(stats,"touches_box")[trailing];corners=_pair(stats,"corners")[trailing]
+    chase=min(100.0,xg*22+sot*10+inside*3+touches*.8+corners*2)
+    threshold=28.0 if diff==1 else 48.0
+    # A man advantage for the chasing team supports pressure; a red to the chasing team hurts it.
+    red_delta=reds[leading]-reds[trailing]
+    if red_delta>0:threshold=max(18.0,threshold-10.0)
+    elif red_delta<0:threshold+=15.0
+    ok=chase>=threshold
+    return ok,{"state":"one_goal" if diff==1 else "two_plus","score_diff":diff,"trailing_side":"home" if trailing==0 else "away","chase":round(chase,1),"threshold":round(threshold,1),"red_cards":reds}
+
 def _market(match,pressure,engine):
     try:recs=unified_bot._recommendations(fetch_live_odds(match.event_id),match,pressure)
     except Exception:return None
@@ -40,7 +59,12 @@ def _market(match,pressure,engine):
 
 def _primary(engine,market):
     if not market:return None
-    return {"market":"TOTAL_OVER","scope":"FIRST_HALF" if engine==HT_HUNTER else "FULL_TIME","line":float(market["line"]),"odd":float(market["odd"]),"source":str(market.get("source") or "LIVE"),"bookmakers":int(market.get("bookmakers",0) or 0),"confidence":market.get("confidence"),"value_edge":market.get("value_edge")}
+    try:odd=float(market["odd"]);conf=float(market.get("confidence"))
+    except (KeyError,TypeError,ValueError):return None
+    edge=market.get("value_edge")
+    try:edge=float(edge)
+    except (TypeError,ValueError):edge=round(conf-(100.0/odd),1)
+    return {"market":"TOTAL_OVER","scope":"FIRST_HALF" if engine==HT_HUNTER else "FULL_TIME","line":float(market["line"]),"odd":odd,"source":str(market.get("source") or "LIVE"),"bookmakers":int(market.get("bookmakers",0) or 0),"confidence":conf,"value_edge":edge}
 
 def _send_all(match,engine,score,d,odd,result=None):
     token=unified_bot.BOT_TOKEN;subs=get_subscribers()
@@ -69,7 +93,7 @@ def _record(match,engine,score,d,market):
 def _active_rows():return [r for r in all_signals() if r.get("engine") in {HT_HUNTER,LATE_RISK} and str(r.get("result") or "pending").strip().lower()=="pending"]
 
 def scan_engines(live):
-    state=_load();live_by={str(m.event_id):m for m in live};now=time.time();counters={"live":len(live),"window":0,"stats":0,"baseline":0,"eligible":0,"duplicate":0,"exposure":0,"market":0,"value_reject":0,"no_market":0,"sent":0}
+    state=_load();live_by={str(m.event_id):m for m in live};now=time.time();counters={"live":len(live),"window":0,"stats":0,"baseline":0,"eligible":0,"scenario_reject":0,"duplicate":0,"exposure":0,"market":0,"value_reject":0,"no_market":0,"sent":0}
     for row in _active_rows():
         eid=str(row.get("event_id"));m=live_by.get(eid);engine=row.get("engine");ek=f"active:{engine}:{eid}";st=state.setdefault(ek,{"ts":now})
         try:sh,sa=map(int,str(row.get("score_at_signal","0:0")).split(":"))
@@ -103,6 +127,9 @@ def scan_engines(live):
         for engine,dec,card_delta in engines:
             if not dec.eligible:continue
             counters["eligible"]+=1
+            if engine==LATE_RISK:
+                scenario_ok,ctx=_late_context(m,stats);card_delta["_game_state"]=ctx
+                if not scenario_ok:counters["scenario_reject"]+=1;logger.info("LATE_SCENARIO_REJECT %s %s",m.event_id,ctx);continue
             if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):counters["duplicate"]+=1;continue
             allowed,why=can_open(journal,m.event_id)
             if not allowed:counters["exposure"]+=1;logger.info("ENGINE_EXPOSURE_REJECT %s %s %s",engine,m.event_id,why);continue
