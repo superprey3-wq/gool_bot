@@ -2,7 +2,8 @@
 
 Keeps only a few recent points for active O/U markets. No raw history archive is
 kept on the 512 MB runtime server. Recommendations are annotated with market
-movement so Telegram can show whether a GOOL signal is confirmed by price action.
+movement so Telegram/journal can show whether GOOL is early, confirmed, steam,
+or in conflict with price action.
 """
 from __future__ import annotations
 import json,logging,os,time
@@ -21,7 +22,6 @@ def _load():
     try:
         d=json.loads(STATE.read_text("utf-8"));return d if isinstance(d,dict) else {}
     except Exception:return {}
-
 def _save(d):
     now=time.time();rows=[]
     for k,v in d.items():
@@ -36,7 +36,6 @@ def _movement(points):
     if len(points)<2:return {"direction":"flat","drop_pct":0.0,"seconds":0,"steam":False,"strength":0}
     first=points[0];last=points[-1];old=float(first[1]);new=float(last[1]);secs=max(1,int(float(last[0])-float(first[0])))
     if old<=1 or new<=1:return {"direction":"flat","drop_pct":0.0,"seconds":secs,"steam":False,"strength":0}
-    # For OVER, falling decimal odds = market moving toward more goal probability.
     drop=(old-new)/old*100.0
     implied_move=(1.0/new-1.0/old)*100.0
     strength=0
@@ -59,6 +58,26 @@ def fetch_live_odds(event_id):
             item["movement"]=_movement(obj["p"])
     _save(state);return rows
 
+def _consensus(moves):
+    books=len(moves);toward=[m for m in moves if m.get("direction")=="toward"];against=[m for m in moves if m.get("direction")=="against"]
+    strong_toward=[m for m in toward if int(m.get("strength",0))>=2];strong_against=[m for m in against if abs(float(m.get("drop_pct",0)))>=4.0]
+    toward_ratio=len(toward)/books if books else 0.0;against_ratio=len(against)/books if books else 0.0
+    avg_imp=sum(float(m.get("implied_move_pp",0) or 0) for m in moves)/books if books else 0.0
+    score=0.0
+    score+=min(45.0,toward_ratio*45.0)
+    score+=min(30.0,max(0.0,avg_imp)*10.0)
+    score+=min(20.0,len(strong_toward)*7.0)
+    if books>=3 and toward_ratio>=0.67:score+=10.0
+    score-=min(45.0,against_ratio*45.0)
+    score=max(0.0,min(100.0,score))
+    if books>=3 and len(strong_toward)>=2 and toward_ratio>=0.67:status="STEAM"
+    elif books>=2 and toward_ratio>against_ratio and score>=35:status="CONFIRMED"
+    elif books>=2 and against_ratio>=0.60 and strong_against:status="CONFLICT"
+    elif books and against_ratio>toward_ratio:status="CONFLICT"
+    else:status="EARLY"
+    strongest=max(moves,key=lambda m:(int(m.get("strength",0)),float(m.get("implied_move_pp",0) or 0)),default={})
+    return {"status":status,"steam_score":round(score,1),"books":books,"toward":len(toward),"against":len(against),"toward_ratio":round(toward_ratio,3),"against_ratio":round(against_ratio,3),"avg_implied_move_pp":round(avg_imp,2),"strong_toward":len(strong_toward),"best":strongest}
+
 def _collect(entries,match,pressure,scope):
     rows=_orig_collect(entries,match,pressure,scope)
     for row in rows:
@@ -69,26 +88,25 @@ def _collect(entries,match,pressure,scope):
                 try:il=float((item.get("handicap") or {}).get("value"))
                 except Exception:continue
                 if il==line and str(item.get("selection") or "").upper()=="OVER" and item.get("movement"):moves.append(item["movement"])
-        toward=[m for m in moves if m.get("direction")=="toward"]
-        against=[m for m in moves if m.get("direction")=="against"]
-        strongest=max(moves,key=lambda m:int(m.get("strength",0)),default={})
-        row["market_movement"]={"books":len(moves),"toward":len(toward),"against":len(against),"steam":any(bool(m.get("steam")) for m in moves),"strength":max([int(m.get("strength",0)) for m in moves] or [0]),"best":strongest}
+        row["market_movement"]=_consensus(moves)
+        row["market_status"]=row["market_movement"]["status"]
+        row["steam_score"]=row["market_movement"]["steam_score"]
     return rows
 
 def _format_bets(recs):
     if not recs:return "Сейчас подходящего рынка тоталов нет."
     groups=[];labels={"FIRST_HALF":"🕐 <b>ДО КОНЦА 1-ГО ТАЙМА</b>","SECOND_HALF":"🕑 <b>2-Й ТАЙМ</b>","FULL_TIME":"⚽ <b>ДО КОНЦА МАТЧА</b>"}
+    icons={"STEAM":"🔥","CONFIRMED":"✅","EARLY":"🟡","CONFLICT":"⚠️"}
     for scope in ("FIRST_HALF","SECOND_HALF","FULL_TIME"):
         rs=[r for r in recs if r.get("scope")==scope]
         if not rs:continue
         lines=[labels[scope]]
         for r in rs:
-            books=f" · {r.get('bookmakers')} БК" if r.get("bookmakers") else "";mv=r.get("market_movement") or {}
-            if mv.get("steam"):
-                best=mv.get("best") or {};move=f" · 🔥 ПРОГРУЗ {best.get('from','?')}→{best.get('to','?')} ({best.get('drop_pct',0):+.1f}%)"
-            elif int(mv.get("toward",0))>int(mv.get("against",0)) and mv.get("books",0):move=" · 📈 рынок движется к OVER"
-            elif int(mv.get("against",0))>int(mv.get("toward",0)) and mv.get("books",0):move=" · ⚠️ рынок против OVER"
-            else:move=""
+            books=f" · {r.get('bookmakers')} БК" if r.get("bookmakers") else "";mv=r.get("market_movement") or {};status=str(mv.get("status") or "EARLY");icon=icons.get(status,"🟡")
+            best=mv.get("best") or {};detail=""
+            if best.get("from") is not None and best.get("to") is not None:
+                detail=f" {best.get('from')}→{best.get('to')} ({best.get('drop_pct',0):+.1f}%)"
+            move=f" · {icon} {status} {float(mv.get('steam_score',0) or 0):.0f}/100{detail}"
             lines.append(f"ТБ {float(r['line']):g} — кэф <b>{float(r['odd']):.2f}</b> | вероятность модели <b>{r.get('confidence')}%</b>{books}{move}")
         groups.append("\n".join(lines))
     return "\n\n".join(groups)
