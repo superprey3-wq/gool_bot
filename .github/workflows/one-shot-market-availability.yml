@@ -1,0 +1,117 @@
+name: one-shot-market-availability
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/one-shot-market-availability.yml']
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests -q
+      - name: Probe current football markets
+        run: |
+          python - <<'PY' > market_availability_probe.txt
+          import requests,re,json
+          H={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36','Accept':'application/json,text/plain,*/*'}
+          def req(url,params=None):
+              try:
+                  r=requests.get(url,params=params,headers=H,timeout=20)
+                  print('HTTP',r.status_code,r.url,'LEN',len(r.content))
+                  return r.json() if r.status_code==200 else None
+              except Exception as e:
+                  print('ERR',type(e).__name__,e); return None
+          def standard(x):
+              try:return abs(float(x)*2-round(float(x)*2))<1e-9
+              except:return False
+          print('=== BOVADA ===')
+          b=req('https://www.bovada.lv/services/sports/event/v2/events/A/description/soccer',{'lang':'en','liveOnly':'true'})
+          events=[]
+          def walk(o):
+              if isinstance(o,dict):
+                  if isinstance(o.get('displayGroups'),list) and o.get('description'):events.append(o)
+                  for v in o.values():walk(v)
+              elif isinstance(o,list):
+                  for v in o:walk(v)
+          walk(b)
+          print('LIVE_EVENTS',len(events))
+          for e in events[:20]:
+              out={'FT_TOTAL':[],'1H_TOTAL':[],'BTTS':[],'HOME_TT':[],'AWAY_TT':[],'NEXT_GOAL':[]}
+              for dg in e.get('displayGroups') or []:
+                  gl=str(dg.get('description') or '')
+                  for m in dg.get('markets') or []:
+                      md=str(m.get('description') or ''); ml=md.lower()
+                      if str(m.get('status') or 'O')!='O':continue
+                      for o in m.get('outcomes') or []:
+                          if str(o.get('status') or 'O')!='O':continue
+                          label=str(o.get('description') or ''); ll=label.lower(); p=o.get('price') or {}; dec=p.get('decimal'); line=p.get('handicap')
+                          text=(gl+' '+md+' '+label).lower()
+                          if dec in (None,''):continue
+                          try:dec=float(dec)
+                          except:continue
+                          if dec<=1.001:continue
+                          if ('both teams to score' in ml or 'both teams score' in ml) and ll=='yes':out['BTTS'].append((dec,md,label))
+                          if 'next goal' in ml or 'next team to score' in ml:out['NEXT_GOAL'].append((dec,md,label))
+                          if 'total' in ml and 'asian' not in ml and not any(x in text for x in ('corner','card','booking','shot')) and line is not None:
+                              try:ln=float(line)
+                              except:continue
+                              if not standard(ln):continue
+                              is1=any(x in text for x in ('1st half','first half','l1h'))
+                              if ' team total ' in (' '+ml+' ') or 'home team total' in ml or 'away team total' in ml or 'total goals by' in ml:
+                                  # best effort side detection from market name
+                                  if any(x in ml for x in ('home','team 1')):out['HOME_TT'].append((ln,dec,md,label))
+                                  elif any(x in ml for x in ('away','team 2')):out['AWAY_TT'].append((ln,dec,md,label))
+                                  else:
+                                      # preserve unnamed team-total candidates for inspection
+                                      out['HOME_TT'].append((ln,dec,md,label))
+                              elif is1:out['1H_TOTAL'].append((ln,dec,md,label))
+                              else:out['FT_TOTAL'].append((ln,dec,md,label))
+              if any(out.values()):print('EVENT',e.get('id'),e.get('description'),json.dumps(out,ensure_ascii=False)[:3500])
+          print('\n=== KAMBI ===')
+          base='https://eu-offering-api.kambicdn.com/offering/v2018/rsiusnj'
+          kd=req(base+'/listView/football/all/all/all/matches.json',{'lang':'en_US','market':'US'})
+          live=[]
+          for w in (kd or {}).get('events') or []:
+              ev=w.get('event') or w; st=str(ev.get('state') or '').upper()
+              if ev.get('homeName') and ev.get('awayName') and st not in ('','NOT_STARTED','ENDED','FINISHED','CANCELLED'):live.append(ev)
+          print('LIVE_EVENTS',len(live))
+          for ev in live[:15]:
+              eid=ev.get('id'); data=req(base+f'/betoffer/event/{eid}.json',{'lang':'en_US','market':'US','includeParticipants':'true'}) or {}
+              out={'FT_TOTAL':[],'1H_TOTAL':[],'BTTS':[],'HOME_TT':[],'AWAY_TT':[],'NEXT_GOAL':[]}
+              home=str(ev.get('homeName') or '').lower();away=str(ev.get('awayName') or '').lower()
+              for bo in data.get('betOffers') or []:
+                  tn=str((bo.get('betOfferType') or {}).get('name') or ''); cr=str((bo.get('criterion') or {}).get('label') or ''); key=(tn+' '+cr).lower()
+                  for o in bo.get('outcomes') or []:
+                      if o.get('status')!='OPEN':continue
+                      lab=str(o.get('label') or ''); typ=str(o.get('type') or '')
+                      try:odd=float(o.get('odds'))/1000
+                      except:continue
+                      if odd<=1.001:continue
+                      if 'both teams to score' in key and '1st half' not in key and 'first half' not in key and (lab.lower()=='yes' or typ in ('OT_YES','YES')):out['BTTS'].append((odd,tn,cr,lab))
+                      if 'next goal' in key or 'next team to score' in key:out['NEXT_GOAL'].append((odd,tn,cr,lab))
+                      if any(x in key for x in ('over/under','total goals')) and not any(x in key for x in ('asian','corner','card','shot','booking')) and ('over' in lab.lower() or typ=='OT_OVER'):
+                          try:ln=float(o.get('line'))/1000
+                          except:continue
+                          if not standard(ln):continue
+                          is1=('1st half' in key or 'first half' in key)
+                          if ' by ' in key:
+                              if home and home in key:out['HOME_TT'].append((ln,odd,tn,cr,lab))
+                              elif away and away in key:out['AWAY_TT'].append((ln,odd,tn,cr,lab))
+                              else:out['HOME_TT'].append((ln,odd,tn,cr,lab))
+                          elif is1:out['1H_TOTAL'].append((ln,odd,tn,cr,lab))
+                          else:out['FT_TOTAL'].append((ln,odd,tn,cr,lab))
+              print('EVENT',eid,ev.get('homeName'),'-',ev.get('awayName'),json.dumps(out,ensure_ascii=False)[:5000])
+          PY
+      - name: Commit result
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add market_availability_probe.txt
+          git commit -m 'Store LIVE market availability probe' || exit 0
+          git push
