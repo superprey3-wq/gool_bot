@@ -8,15 +8,15 @@ os.environ.setdefault("LIVE_SIGNAL_THRESHOLD","75");os.environ.setdefault("LIVE_
 LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
 
-# LIVE-only core pipeline. External AI shadow reviewers are intentionally excluded.
+# LIVE-only core pipeline.
 import visual_feed_unified_bot
+import live_only_recommendation_patch
 import live_candidate_patch
 import core_warmup_patch
 import halftime_hazard_patch
 import period_market_patch
 import phase_market_patch
 import score_sync_patch
-import market_math_patch
 import gool_xg_consensus
 import telegram_signal_filter_patch
 import telegram_image_signal_patch
