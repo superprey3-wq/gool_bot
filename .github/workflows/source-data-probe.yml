@@ -18,7 +18,6 @@ jobs:
           from curl_cffi import requests as creq
           tests=[
             ('Flashscore live','https://www.flashscore.com/x/feed/f_1_0_1_en_1'),
-            ('Flashscore mobile','https://www.flashscore.com/x/feed/f_1_0_1_en_1'),
             ('SofaScore live','https://www.sofascore.com/api/v1/sport/football/events/live'),
             ('SofaScore api','https://api.sofascore.com/api/v1/sport/football/events/live'),
             ('FotMob matches','https://www.fotmob.com/api/data/matches?date=20260825'),
@@ -30,6 +29,15 @@ jobs:
                 r=requests.get(url,headers=H,timeout=15) if mode=='requests' else creq.get(url,headers=H,timeout=15,impersonate='chrome')
                 ct=r.headers.get('content-type',''); text=r.text
                 print('\n###',name,mode,'HTTP',r.status_code,'CT',ct,'LEN',len(text))
-                print(text[:1200].replace('\n',' ') if 'json' not in ct else json.dumps(r.json(),ensure_ascii=False)[:1200])
+                if 'json' in ct:
+                  data=r.json();
+                  print('TOP_KEYS', list(data)[:20] if isinstance(data,dict) else type(data).__name__)
+                  if isinstance(data,dict):
+                    for k in ('events','leagues','matches','allMatches'):
+                      v=data.get(k)
+                      if isinstance(v,list): print(k,'COUNT',len(v))
+                  print(json.dumps(data,ensure_ascii=False)[:3000])
+                else:
+                  print(text[:1800].replace('\n',' '))
               except Exception as e: print('\n###',name,mode,'ERR',repr(e))
           PY
