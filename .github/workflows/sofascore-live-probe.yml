@@ -1,0 +1,52 @@
+name: sofascore-live-probe
+
+on:
+  push:
+    branches: [live-only-quant-foundation]
+    paths: ['.github/workflows/sofascore-live-probe.yml']
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests curl_cffi
+      - name: Probe Flashscore FotMob SofaScore data
+        run: |
+          python - <<'PY'
+          import json,re
+          import requests
+          from curl_cffi import requests as creq
+          urls=[
+            ('Flashscore','https://www.flashscore.com/x/feed/f_1_0_1_en_1'),
+            ('FotMob','https://www.fotmob.com/api/data/matches?date=20260825'),
+            ('Sofa-www','https://www.sofascore.com/api/v1/sport/football/events/live'),
+            ('Sofa-api','https://api.sofascore.com/api/v1/sport/football/events/live'),
+          ]
+          H={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36','Accept':'*/*','Referer':'https://www.google.com/'}
+          def summarize(data):
+            if not isinstance(data,dict): return {'type':type(data).__name__}
+            out={'keys':list(data)[:20]}
+            for k in ('events','leagues','matches','allMatches'):
+              v=data.get(k)
+              if isinstance(v,list): out[k+'_count']=len(v)
+            blob=json.dumps(data,ensure_ascii=False).lower()
+            for needle in ('expected goals','xg','xgot','shotmap','momentum','possession','big chance','corner','red card','rating','lineup','odds'):
+              out[needle]=needle in blob
+            return out
+          for name,url in urls:
+            for mode in ('requests','chrome'):
+              try:
+                r=requests.get(url,headers=H,timeout=15) if mode=='requests' else creq.get(url,headers=H,timeout=15,impersonate='chrome')
+                ct=r.headers.get('content-type',''); text=r.text
+                print('\n###',name,mode,'HTTP',r.status_code,'CT',ct,'LEN',len(text))
+                if 'json' in ct:
+                  d=r.json(); print('SUMMARY',json.dumps(summarize(d),ensure_ascii=False)); print('SAMPLE',json.dumps(d,ensure_ascii=False)[:2500])
+                else:
+                  print('SAMPLE',text[:2000].replace('\n',' '))
+              except Exception as e: print('\n###',name,mode,'ERR',repr(e))
+          PY
