@@ -8,11 +8,13 @@ os.environ.setdefault("LIVE_SIGNAL_THRESHOLD","75");os.environ.setdefault("LIVE_
 LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
 
-# LIVE-only core pipeline.
+# LIVE core + bounded historical/competition context.
 import visual_feed_unified_bot
 import live_only_recommendation_patch
 import red_card_stats_patch
+import xg_proxy_patch
 import live_candidate_patch
+import context_adjustment_patch
 import core_warmup_patch
 import halftime_hazard_patch
 import period_market_patch
@@ -66,7 +68,7 @@ async def main():
     poller=asyncio.create_task(polling_loop(),name="telegram-command-poller")
     heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
     goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
-    logger.info("GOOL BOT LIVE-ONLY 24/7 started | CORE + HT + LATE | JOURNAL v4 | CLV 60/120s")
+    logger.info("GOOL BOT LIVE 24/7 | CORE + HT + LATE | H2H/VENUE/LEAGUE CONTEXT | JOURNAL v4 | CLV")
     try:
         while True:
             started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
