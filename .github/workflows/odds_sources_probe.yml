@@ -2,15 +2,6 @@ name: Odds Sources Probe
 
 on:
   workflow_dispatch:
-    inputs:
-      home:
-        description: Home team
-        required: false
-        default: Real Madrid
-      away:
-        description: Away team
-        required: false
-        default: Real Sociedad
   push:
     branches:
       - live-only-quant-foundation
@@ -28,55 +19,77 @@ jobs:
           python-version: '3.12'
       - name: Install probe dependencies
         run: pip install requests
-      - name: Audit exact live feed payload
-        env:
-          HOME_TEAM: ${{ github.event.inputs.home || 'Real Madrid' }}
-          AWAY_TEAM: ${{ github.event.inputs.away || 'Real Sociedad' }}
+      - name: Probe live and tomorrow pregame
         run: |
           python - <<'PY'
-          import os, requests, collections
-          home=(os.getenv('HOME_TEAM') or 'Real Madrid').strip().lower()
-          away=(os.getenv('AWAY_TEAM') or 'Real Sociedad').strip().lower()
+          import requests, datetime, json
           H={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Accept-Language':'en-US,en;q=0.9','Referer':'https://1xbet.fi/','Origin':'https://1xbet.fi'}
-          root='https://1xbet.fi/service-api/LiveFeed'
-          params={'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'}
-          r=requests.get(root+'/Get1x2_VZip',params=params,headers=H,timeout=20)
-          print('HTTP',r.status_code,'bytes',len(r.content)); r.raise_for_status()
-          data=r.json(); events=data.get('Value') or []
-          print('EVENTS',len(events))
-          print('TOP_LEVEL_KEYS', sorted(set().union(*(e.keys() for e in events))) if events else [])
-          stats=collections.Counter(); market_types=collections.Counter(); market_groups=collections.Counter(); periods=collections.Counter()
-          named=[]
-          for e in events:
-              sc=e.get('SC') or {}
-              periods[str(sc.get('CPS') or sc.get('CP') or '')]+=1
-              for block in sc.get('ST') or []:
-                  for s in (block.get('Value') or []):
-                      stats[s.get('N')]+=1
-              for x in (e.get('E') or []):
-                  market_types[str(x.get('T'))]+=1; market_groups[str(x.get('G'))]+=1
-              for a in (e.get('AE') or []):
-                  for x in (a.get('ME') or []):
-                      market_types[str(x.get('T'))]+=1; market_groups[str(x.get('G'))]+=1
-              text=' '.join(str(e.get(k,'')) for k in ['O1','O2','L','LE','N']).lower()
-              if home in text or away in text:
-                  named.append(e)
-          print('STAT_NAMES',sorted((k,v) for k,v in stats.items() if k))
-          print('PERIOD_VALUES',periods.most_common())
-          print('MARKET_TYPE_IDS',market_types.most_common())
-          print('MARKET_GROUP_IDS',market_groups.most_common())
-          print('TARGET_MATCHES',len(named))
-          for e in named[:5]:
-              print('TARGET_EVENT_CORE',{k:e.get(k) for k in ['I','O1','O2','L','LE','N','S','S1','S2','S3','DI','U','T','CO'] if k in e})
-              print('TARGET_SC',e.get('SC'))
-              print('TARGET_E',e.get('E'))
-              print('TARGET_AE',e.get('AE'))
-          # Explicit capability checks: only mark fields proven by payload labels/shape.
-          wanted_stats=['xG','Attacks','Dangerous attacks','Possession %','Shots on target','Shots off target','Yellow cards','Red card','Corner','Saves','Penalty','Substitutions','Key Passes','Passing Accuracy %','Crosses']
-          names=set(k for k in stats if k)
-          print('CAPABILITY_STATS',{x:(x in names) for x in wanted_stats})
-          print('HAS_LIVE_SCORE', any((e.get('SC') or {}).get('FS') for e in events))
-          print('HAS_PERIOD_SPLIT', any((e.get('SC') or {}).get('PS') for e in events))
-          print('HAS_MARKET_ODDS', any(e.get('E') or e.get('AE') for e in events))
-          print('HAS_TEAM_NAMES', any(e.get('O1') and e.get('O2') for e in events))
+          BASE='https://1xbet.fi/service-api'
+          common={'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'}
+          def get_json(url,params):
+              r=requests.get(url,params=params,headers=H,timeout=20,allow_redirects=True)
+              print('GET',url,'HTTP',r.status_code,'bytes',len(r.content),'type',r.headers.get('content-type'))
+              if r.status_code!=200:
+                  print(r.text[:500]); return None
+              try:return r.json()
+              except Exception:
+                  print(r.text[:500]); return None
+          def event_name(e): return f"{e.get('O1') or e.get('O1E')} — {e.get('O2') or e.get('O2E')}"
+          def event_time(e):
+              for k in ('S','STI','U'):
+                  v=e.get(k)
+                  if isinstance(v,(int,float)) and 1600000000 < v < 2100000000:
+                      return datetime.datetime.fromtimestamp(v,datetime.timezone.utc),k
+              return None,None
+          def summarize(label,e):
+              print('\n====',label,'====')
+              print('MATCH',event_name(e),'ID',e.get('I'),'LEAGUE',e.get('L') or e.get('LE'))
+              dt,k=event_time(e); print('TIME',dt.isoformat() if dt else None,'FIELD',k)
+              print('CORE',{k:e.get(k) for k in ('I','O1','O2','L','LE','S','U','T','CO','N') if k in e})
+              sc=e.get('SC') or {}; print('PERIOD',sc.get('CPS'), 'SCORE',sc.get('FS'),'PERIOD_SCORE',sc.get('PS'))
+              stats=[]
+              for b in sc.get('ST') or []:
+                  for s in b.get('Value') or []: stats.append((s.get('N'),s.get('S1'),s.get('S2')))
+              print('STATS',stats)
+              print('MAIN_MARKETS',e.get('E'))
+              print('ALT_MARKETS',e.get('AE'))
+          live=get_json(BASE+'/LiveFeed/Get1x2_VZip',common)
+          live_events=(live or {}).get('Value') or []
+          print('LIVE_COUNT',len(live_events))
+          if live_events:
+              live_pick=max(live_events,key=lambda e: len((e.get('SC') or {}).get('ST') or []))
+              summarize('LIVE LIST EVENT',live_pick)
+              gid=live_pick.get('I')
+              if gid:
+                  detail=get_json(BASE+'/LiveFeed/GetGameZip',{'id':gid,'lng':'en','cfview':0,'isSubGames':'true','GroupEvents':'true','allEventsGroupSubGames':'true','countevents':250,'grMode':2})
+                  val=(detail or {}).get('Value')
+                  if isinstance(val,dict): summarize('LIVE DETAIL',val)
+          # Try modern pregame LineFeed. Test both list methods used by the 1xBet family.
+          pre=None; used=None
+          for method in ('Get1x2_VZip','Get1x2_VLine'):
+              d=get_json(BASE+'/LineFeed/'+method,common)
+              vals=(d or {}).get('Value') or []
+              if vals:
+                  pre=vals; used=method; break
+          print('PREGAME_METHOD',used,'COUNT',len(pre or []))
+          if pre:
+              today=datetime.datetime.now(datetime.timezone.utc).date(); tomorrow=today+datetime.timedelta(days=1)
+              candidates=[]
+              for e in pre:
+                  dt,k=event_time(e)
+                  if dt and dt.date()==tomorrow: candidates.append(e)
+              if not candidates:
+                  # fallback: choose nearest future event so we can still validate payload shape
+                  now=datetime.datetime.now(datetime.timezone.utc)
+                  candidates=[e for e in pre if event_time(e)[0] and event_time(e)[0]>now]
+                  candidates.sort(key=lambda e:event_time(e)[0])
+              if candidates:
+                  pick=candidates[0]; summarize('PREGAME LIST EVENT',pick)
+                  gid=pick.get('I')
+                  if gid:
+                      detail=get_json(BASE+'/LineFeed/GetGameZip',{'id':gid,'lng':'en','cfview':0,'isSubGames':'true','GroupEvents':'true','allEventsGroupSubGames':'true','countevents':250,'grMode':2})
+                      val=(detail or {}).get('Value')
+                      if isinstance(val,dict): summarize('PREGAME DETAIL',val)
+              else:
+                  print('NO FUTURE EVENT FOUND')
           PY
