@@ -57,17 +57,19 @@ def _active_rows():return [r for r in all_signals() if r.get("engine") in {FIRST
 def _score_at_signal(row):
  try:a,b=map(int,str(row.get("score_at_signal","0:0")).split(":"));return a,b
  except:return 0,0
+def _result_delta(row):
+ d=dict(row.get("trend_delta") or {});p=row.get("primary") or {};d["_market"]={"line":p.get("line"),"odd":p.get("odd"),"market_status":p.get("market_status"),"source_prices":p.get("source_prices") or []};return d
 def _settle_active(live_by):
  for row in _active_rows():
   m=live_by.get(str(row.get("event_id")))
   if not m:continue
-  sh,sa=_score_at_signal(row);start=sh+sa;now_goals=int(m.home_score)+int(m.away_score);engine=row.get("engine");key=str(row.get("dedupe_key") or "")
+  sh,sa=_score_at_signal(row);start=sh+sa;now_goals=int(m.home_score)+int(m.away_score);engine=row.get("engine");key=str(row.get("dedupe_key") or "");d=_result_delta(row);odd=row.get("odd")
   if engine==FIRST_HALF_GOAL:
-   if now_goals>start:update_signal(key,result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),row.get("trend_delta") or {},row.get("odd"),"win")
-   elif bool(getattr(m,"is_halftime",False)) or int(getattr(m,"minute",0) or 0)>=46:update_signal(key,result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),row.get("trend_delta") or {},row.get("odd"),"loss")
+   if now_goals>start:update_signal(key,result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
+   elif bool(getattr(m,"is_halftime",False)) or int(getattr(m,"minute",0) or 0)>=46:update_signal(key,result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
   elif engine==SECOND_HALF_OVER15:
-   if now_goals-start>=2:update_signal(key,result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),row.get("trend_delta") or {},row.get("odd"),"win")
-   elif int(getattr(m,"minute",0) or 0)>=90:update_signal(key,result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),row.get("trend_delta") or {},row.get("odd"),"loss")
+   if now_goals-start>=2:update_signal(key,result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
+   elif int(getattr(m,"minute",0) or 0)>=90:update_signal(key,result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
 def _fh_market(m):return best_consensus(first_half_next_total(m.home,m.away,int(m.home_score)+int(m.away_score)))
 def _ht_market(m):return best_consensus(second_half_market(m.home,m.away))
 def scan_engines(live):
