@@ -101,10 +101,16 @@ def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None
  if win:
   d.rounded_rectangle((70,520,1010,720),28,fill=(8,25,24),outline=GREEN,width=3);_center(d,'✓ СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ',555,_fit(d,'✓ СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ',850,38,True),GREEN);_center(d,'Модель ожидала продолжение голевой активности',620,_font(23,True),TEXT);_center(d,'Результат относится к футбольному сигналу, без привязки к коэффициенту',670,_fit(d,'Результат относится к футбольному сигналу, без привязки к коэффициенту',850,19,False),MUTED);footer=795
  else:
-  probs=probabilities or {};rating=int(round(float(master if master is not None else getattr(pressure,'score',0) or 0)));ctx=_ctx(pressure);sc=ctx.get('strategies') or {};sources=_source_summary(ctx)
-  d.rounded_rectangle((55,480,1025,670),25,fill=PANEL2,outline=GOLD,width=2);d.text((85,505),'⚽ СИГНАЛ: ОЖИДАЕМ ГОЛ',font=_font(25,True),fill=GOLD);d.text((85,554),'Модель видит устойчивое продолжение голевой активности',font=_fit(d,'Модель видит устойчивое продолжение голевой активности',690,25,True),fill=TEXT);d.text((85,606),'Основано на статистике матча, форме/H2H и независимых источниках',font=_fit(d,'Основано на статистике матча, форме/H2H и независимых источниках',690,17,False),fill=MUTED);d.text((835,505),'GOOL',font=_font(16,True),fill=MUTED);d.text((825,540),f'{rating}/100',font=_font(39,True),fill=GOLD)
+  probs=probabilities or {};rating=int(round(float(master if master is not None else getattr(pressure,'score',0) or 0)));pgoal=int(probs.get('one_goal',0) or 0);ctx=_ctx(pressure);sc=ctx.get('strategies') or {};sources=_source_summary(ctx)
+  d.rounded_rectangle((55,480,1025,670),25,fill=PANEL2,outline=GOLD,width=2)
+  d.text((85,505),'⚽ СИГНАЛ: ОЖИДАЕМ ГОЛ',font=_font(25,True),fill=GOLD)
+  d.text((85,552),'Модель оценивает вероятность ещё одного гола',font=_fit(d,'Модель оценивает вероятность ещё одного гола',650,25,True),fill=TEXT)
+  d.text((85,607),f'GOOL SCORE {rating}/100 · аналитический рейтинг модели',font=_fit(d,f'GOOL SCORE {rating}/100 · аналитический рейтинг модели',650,17,False),fill=MUTED)
+  d.text((810,500),'P(ЕЩЁ ГОЛ)',font=_font(17,True),fill=MUTED)
+  prob_text=f'{pgoal}%'
+  pb=d.textbbox((0,0),prob_text,font=_font(52,True));d.text((910-(pb[2]-pb[0])/2,535),prob_text,font=_font(52,True),fill=GREEN)
   st=getattr(pressure,'stats',None) or getattr(pressure,'raw_stats',None) or {};xg=sum(_pair(st,'xg'));xgot=sum(_pair(st,'xgot'));shots=sum(_pair(st,'shots'));sot=sum(_pair(st,'shots_on_target'))
-  _box(d,(55,705,285,810),'xG / xGoT',f'{xg:.2f} / {xgot:.2f}');_box(d,(300,705,530,810),'УДАРЫ',f'{shots:g}');_box(d,(545,705,775,810),'В СТВОР',f'{sot:g}');_box(d,(790,705,1025,810),'P(ЕЩЁ ГОЛ)',f"{int(probs.get('one_goal',0) or 0)}%",accent=GREEN)
+  _box(d,(55,705,285,810),'xG / xGoT',f'{xg:.2f} / {xgot:.2f}');_box(d,(300,705,530,810),'УДАРЫ',f'{shots:g}');_box(d,(545,705,775,810),'В СТВОР',f'{sot:g}');_box(d,(790,705,1025,810),'GOOL SCORE',f'{rating}/100',sub='внутренний рейтинг',accent=GOLD)
   _box(d,(55,835,285,940),'LIVE PRESSURE',f"{_num(sc,'MOMENTUM',getattr(pressure,'score',0)):.0f}/100");_box(d,(300,835,530,940),'THREAT',f"{_num(sc,'THREAT'):.0f}/100");_box(d,(545,835,775,940),'HISTORY',f"{_num(sc,'HISTORY',ctx.get('history_score',0)):.0f}/100");_box(d,(790,835,1025,940),'ИСТОЧНИКИ',f'{len(sources)}',sub=' • '.join(sources[:3]))
   d.rounded_rectangle((55,970,1025,1198),24,fill=PANEL,outline=LINE,width=2);d.text((85,993),'ПОЧЕМУ GOOL ДАЛ СИГНАЛ',font=_font(22,True),fill=GOLD);yy=1035
   for reason in _reason(pressure,recs or [],probs):
