@@ -1,0 +1,61 @@
+name: Odds Sources Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      home:
+        description: Home team
+        required: false
+        default: Real Madrid
+      away:
+        description: Away team
+        required: false
+        default: Real Sociedad
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: live-only-quant-foundation
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install probe dependencies
+        run: pip install requests
+      - name: Probe odds sources
+        env:
+          HOME_TEAM: ${{ inputs.home }}
+          AWAY_TEAM: ${{ inputs.away }}
+          GOAL_API_KEY: ${{ secrets.GOAL_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, requests
+          home=os.getenv('HOME_TEAM','Real Madrid'); away=os.getenv('AWAY_TEAM','Real Sociedad')
+          print(f'TARGET: {home} — {away}')
+          H={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*'}
+          def get(label,url,params=None,headers=None):
+              try:
+                  r=requests.get(url,params=params,headers=headers or H,timeout=15)
+                  print(f'\n[{label}] HTTP {r.status_code} type={r.headers.get("content-type","")} bytes={len(r.content)}')
+                  txt=r.text[:1200].replace('\n',' ')
+                  print(txt)
+                  return r
+              except Exception as e:
+                  print(f'\n[{label}] ERROR {type(e).__name__}: {e}')
+          common={'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'}
+          for root in ('https://1xbet.com/LiveFeed','https://1xbet.fi/LiveFeed'):
+              get('1XBET '+root,root+'/Get1x2_VZip',common,{**H,'Referer':'https://1xbet.com/'})
+          for root in ('https://melbet.com/LiveFeed','https://melbet.org/LiveFeed'):
+              get('MELBET '+root,root+'/Get1x2_VZip',common,{**H,'Referer':'https://melbet.com/'})
+          key=os.getenv('GOAL_API_KEY','').strip()
+          if key:
+              gh={**H,'Authorization':f'Bearer {key}','X-API-Key':key}
+              for url in ('https://api.goal-api.com/v1/fixtures/date/2026-08-26','https://api.goal-api.com/v1/odds/bookmakers'):
+                  get('GOAL API',url,headers=gh)
+          else:
+              print('\n[GOAL API] SKIP: GOAL_API_KEY secret is not configured in GitHub Actions')
+          print('\nNOTE: Flashscore/LSApp is exercised by the repository PREMATCH lab/service; this workflow focuses on independent providers and raw reachability.')
+          PY
