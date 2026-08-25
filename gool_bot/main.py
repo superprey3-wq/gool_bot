@@ -51,6 +51,7 @@ import multi_source_aux_stats_patch
 import second_half_strategy_patch
 import card_explainability_patch
 import second_half_card_reason_patch
+import aux_result_minute_patch
 import release_build_patch
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop,BUILD_ID
