@@ -25,18 +25,17 @@ def _fresh(row):
  if not isinstance(row,dict):return False
  try:age=time.time()-float(row.get("quote_ts") or 0)
  except Exception:return False
- # A quote must be created by the current LIVE refresh and have a usable price.
  try:odd=float(row.get("odd") or 0)
  except Exception:return False
  return 0<=age<=MAX_QUOTE_AGE and odd>1.001
 
 def _strip_odds(rows):
- """Keep the analytical signal, but remove unverified/stale betting prices."""
+ """Remove unverified price only; preserve selected market for journal/settlement."""
  out=[]
  for r in rows or []:
   if not isinstance(r,dict):continue
   x=dict(r)
-  for k in ("odd","source","source_prices","source_count","source_spread_pct","market_consensus","market_status","external_market_status","value_edge","quote_ts","best_bet","best_concrete_bet"):
+  for k in ("odd","source","source_prices","source_count","source_spread_pct","market_consensus","market_status","external_market_status","value_edge","quote_ts"):
    x.pop(k,None)
   x["live_odds_status"]="UNAVAILABLE"
   out.append(x)
