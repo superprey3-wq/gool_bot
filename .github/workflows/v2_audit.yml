@@ -1,0 +1,38 @@
+name: GOOL v2 audit
+on:
+  push:
+    branches: [live-only-quant-foundation]
+    paths: ['.github/workflows/v2_audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Compile all Python
+        run: python -m compileall -q .
+      - name: Import audit
+        run: |
+          python - <<'PY'
+          import ast, pathlib, sys
+          root=pathlib.Path('.')
+          bad=[]
+          files=[]
+          for p in root.rglob('*.py'):
+            if any(x in p.parts for x in ('.git','.venv','venv','__pycache__')): continue
+            files.append(p)
+            try: ast.parse(p.read_text(encoding='utf-8'), filename=str(p))
+            except Exception as e: bad.append((str(p),repr(e)))
+          print('PY_FILES',len(files))
+          if bad:
+            print('PARSE_FAILURES')
+            for x in bad: print(*x)
+            raise SystemExit(1)
+          print('AST_OK')
+          PY
+      - name: V2 card markers
+        run: |
+          grep -RIn --include='*.py' -E 'GOOL (CORE )?2\.0|Гол в 1Т|ТБ1\.5 во 2Т' . || true
