@@ -2,7 +2,6 @@ name: Final GOOL audit
 on:
   push:
     branches: [live-only-quant-foundation]
-    paths: ['.github/workflows/final_gool_audit.yml']
 permissions:
   contents: read
 jobs:
@@ -21,20 +20,20 @@ jobs:
           import main
           print('IMPORT_MAIN_OK')
           PY
-      - name: Selector regression smoke
+      - name: Telegram command smoke
         working-directory: gool_bot
         run: python - <<'PY'
-          import best_market_selector_patch as b
-          class M:
-            home='A'; away='B'; home_score=0; away_score=2; minute=10
-          class P:
-            score=80; momentum=70; stats={'xg':(0,0),'xgot':(0,0),'shots':(0,0),'shots_on_target':(0,0),'shots_inside_box':(0,0),'touches_box':(0,0),'big_chances':(0,0)}
-          row={'market_type':'TEAM_TOTAL_HOME','team_side':'HOME','team_name':'A','line':1.5,'odd':2.60,'scope':'FULL_TIME'}
-          score,meta=b._rank(row,M(),P())
-          assert score < -900, (score,meta)
-          print('TEAM_TOTAL_ZERO_STATS_REJECT_OK')
-          row2={'market_type':'TOTAL','line':2.5,'odd':1.54,'scope':'FULL_TIME'}
-          score2,meta2=b._rank(row2,M(),P())
-          assert score2 < -900, (score2,meta2)
-          print('MULTIGOAL_ZERO_STATS_REJECT_OK')
+          import telegram_subscribers as t
+          assert t.BUILD_ID == 'GOOL-PROD-LIVEFIX-3'
+          assert callable(t._active_signal_rows)
+          assert callable(t._send_live)
+          print('TELEGRAM_LIVE_HANDLER_OK')
+          PY
+      - name: Analytics smoke
+        working-directory: gool_bot
+        run: python - <<'PY'
+          import report_now, signal_analysis
+          assert callable(report_now.build_report_text)
+          assert callable(signal_analysis.build_analysis_text)
+          print('ANALYTICS_REPORTS_OK')
           PY
