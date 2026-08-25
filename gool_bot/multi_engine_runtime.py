@@ -2,6 +2,7 @@
 
 FIRST_HALF_GOAL collects evidence from kickoff and may signal at 15'-25'.
 SECOND_HALF_OVER15 decides at half-time from the complete first-half sample.
+Odds are display-only and never gate an analytically eligible signal.
 """
 from __future__ import annotations
 import json,time,logging,requests
@@ -14,7 +15,7 @@ from multi_engine import FIRST_HALF_GOAL,SECOND_HALF_OVER15,delta,first_half_goa
 from multi_engine_card import render_engine_card
 from robust_goal_cooldown_patch import active as persistent_goal_cooldown
 from goal_timing import context as timing_context
-from risk_controller import can_open,value_ok
+from risk_controller import can_open
 from aux_strategy_markets import first_half_next_total,second_half_over15 as second_half_market,best_consensus
 logger=logging.getLogger("multi_engine_runtime");STATE_FILE=Path("multi_engine_state.json")
 def _load():
@@ -49,16 +50,18 @@ def _send_all(match,engine,score,d,odd,result=None):
 def _journal_key(engine,eid):return f"engine:{engine}:{eid}"
 def _record(match,engine,score,d,market):
  primary=_primary(engine,market,score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15"
- if not primary:return False
- ok,why=value_ok(primary,reason)
- if not ok:logger.info("ENGINE_VALUE_REJECT %s %s %s",engine,match.event_id,why);return False
- return add_signal({"journal_version":5,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"odd":primary["odd"],"primary":primary,"market_status":primary["market_status"],"reason":reason,"result":"pending","stake_units":1.0},_journal_key(engine,match.event_id))
+ row={"journal_version":6,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"reason":reason,"result":"pending","stake_units":1.0}
+ if primary:
+  row.update({"odd":primary["odd"],"primary":primary,"market_status":primary["market_status"]})
+ else:
+  row.update({"odd":None,"primary":None,"market_status":"NO_PRICE","odds_display_only":True})
+ return add_signal(row,_journal_key(engine,match.event_id))
 def _active_rows():return [r for r in all_signals() if r.get("engine") in {FIRST_HALF_GOAL,SECOND_HALF_OVER15} and str(r.get("result") or "pending").strip().lower()=="pending"]
 def _score_at_signal(row):
  try:a,b=map(int,str(row.get("score_at_signal","0:0")).split(":"));return a,b
  except:return 0,0
 def _result_delta(row):
- d=dict(row.get("trend_delta") or {});p=row.get("primary") or {};d["_market"]={"line":p.get("line"),"odd":p.get("odd"),"market_status":p.get("market_status"),"source_prices":p.get("source_prices") or []};return d
+ d=dict(row.get("trend_delta") or {});p=row.get("primary") or {};d["_market"]={"line":p.get("line"),"odd":p.get("odd"),"market_status":p.get("market_status") or "NO_PRICE","source_prices":p.get("source_prices") or []};return d
 def _settle_active(live_by):
  for row in _active_rows():
   m=live_by.get(str(row.get("event_id")))
@@ -73,7 +76,7 @@ def _settle_active(live_by):
 def _fh_market(m):return best_consensus(first_half_next_total(m.event_id,m.home,m.away,int(m.home_score)+int(m.away_score)))
 def _ht_market(m):return best_consensus(second_half_market(m.event_id,m.home,m.away))
 def scan_engines(live):
- state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();c={"live":len(live),"fh_seen":0,"fh_eligible":0,"ht_seen":0,"ht_eligible":0,"duplicate":0,"exposure":0,"market":0,"value_reject":0,"sent":0}
+ state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();c={"live":len(live),"fh_seen":0,"fh_eligible":0,"ht_seen":0,"ht_eligible":0,"duplicate":0,"exposure":0,"priced":0,"unpriced":0,"sent":0}
  for m in live:
   minute=int(getattr(m,"minute",0) or 0);is_ht=bool(getattr(m,"is_halftime",False))
   if 0<=minute<=25 and not is_ht:
@@ -104,9 +107,10 @@ def scan_engines(live):
   if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):c["duplicate"]+=1;continue
   allowed,why=can_open(journal,m.event_id)
   if not allowed:c["exposure"]+=1;logger.info("ENGINE_EXPOSURE_REJECT %s %s %s",engine,m.event_id,why);continue
-  if not market:logger.info("ENGINE_NO_FLASHSCORE_MARKET %s %s",engine,m.event_id);continue
-  primary=_primary(engine,market,dec.score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15";ok,why=value_ok(primary,reason)
-  if not ok:c["value_reject"]+=1;logger.info("ENGINE_VALUE_REJECT %s %s %s",engine,m.event_id,why);continue
-  c["market"]+=1;odd=float(market.get("odd",0) or 0);d["_market"]={"line":market.get("line"),"odd":market.get("odd"),"market_status":market.get("market_status"),"source_count":market.get("source_count"),"source_prices":market.get("source_prices") or []}
+  odd=float(market.get("odd",0) or 0) if market else None
+  if market:
+   c["priced"]+=1;d["_market"]={"line":market.get("line"),"odd":market.get("odd"),"market_status":market.get("market_status"),"source_count":market.get("source_count"),"source_prices":market.get("source_prices") or []}
+  else:
+   c["unpriced"]+=1;d["_market"]={"line":None,"odd":None,"market_status":"NO_PRICE","source_count":0,"source_prices":[]}
   if _record(m,engine,dec.score,d,market) and _send_all(m,engine,dec.score,d,odd):c["sent"]+=1;journal=all_signals()
  _save(state);logger.info("ENGINE_SCAN_DIAG %s",c)
