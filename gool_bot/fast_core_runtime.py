@@ -52,6 +52,12 @@ async def scan_live_once_fast():
   cheap=max(float(p.score),float(lc._dom(m,s)),float(lc._threat(s)),float(lc._under(m,s)))
   if cheap<CHEAP_PREFILTER:continue
   shortlisted+=1;goals=_candidate_summary(m);recs=[];market={"available":False};qualifies,route,master,sc,hz,market=lc._evaluate(m,s,p,goals,market);evaluated+=1;grade=lc._signal_grade(master)
+  analysis_context={"route":route,"strategies":dict(sc or {}),"hazards":hz,"external_validation":dict((market or {}).get("external_validation") or {}),"external_master_adjustment":(market or {}).get("external_master_adjustment")}
+  try:
+   hist_score,hist=lc._history(m);analysis_context["history_score"]=hist_score;analysis_context["history"]=hist
+  except Exception:pass
+  try:setattr(p,"analysis_context",analysis_context)
+  except Exception:pass
   logger.info("FAST_CORE_EVAL %d' %s — %s %d:%d cheap=%.0f master=%.0f grade=%s %s",m.minute,m.home,m.away,m.home_score,m.away_score,cheap,master,grade,"PASS" if qualifies else "REJECT")
   if not qualifies or grade not in {"ENTRY","STRONG"}:continue
   try:entries=unified_bot._fetch_event_odds(m.event_id);recs,market=lc._market(entries,m,p)
@@ -59,6 +65,6 @@ async def scan_live_once_fast():
   text=lc._format_strategy_signal(m,p,s,recs,goals,"signal",route,master,hz,market)
   if not lc._send(m,p,recs,text):continue
   unified_bot._record_live(m,p,s,recs,"signal")
-  state[f"TRACK:{m.event_id}"]={"tracked_since":time.time(),"ts":time.time(),"score":f"{m.home_score}:{m.away_score}","minute":m.minute,"pressure":p.score,"candidate_score":master,"grade":grade,"route":route,"strategies":sc,"hazards":hz,"market":market,"window":lc._window_id(m.minute),"post_goal_pending":False};sent+=1
+  state[f"TRACK:{m.event_id}"]={"tracked_since":time.time(),"ts":time.time(),"score":f"{m.home_score}:{m.away_score}","minute":m.minute,"pressure":p.score,"candidate_score":master,"grade":grade,"route":route,"strategies":sc,"hazards":hz,"market":market,"analysis_context":analysis_context,"window":lc._window_id(m.minute),"post_goal_pending":False};sent+=1
  unified_bot._save_sent(state);logger.info("FAST_CORE_DIAG live=%d timed=%d shortlisted=%d evaluated=%d sent=%d tracked=%d",len(live),len(pending),shortlisted,evaluated,sent,sum(1 for k in state if str(k).startswith("TRACK:")));return sent
 unified_bot.scan_live_once=scan_live_once_fast
