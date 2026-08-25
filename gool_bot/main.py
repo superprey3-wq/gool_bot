@@ -33,6 +33,7 @@ import telegram_signal_filter_patch
 import telegram_image_signal_patch
 import analytics_card_fallback_patch
 import live_card_quality_patch
+import multi_source_core_stats_patch
 import entry_sync_failopen_patch
 import live_quant_guard_patch
 import robust_goal_cooldown_patch
@@ -45,6 +46,7 @@ import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
 import multi_engine_runtime
+import multi_source_aux_stats_patch
 import card_explainability_patch
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop,BUILD_ID
