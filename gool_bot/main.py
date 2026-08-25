@@ -30,6 +30,7 @@ import telegram_signal_filter_patch
 import telegram_image_signal_patch
 import entry_sync_failopen_patch
 import live_quant_guard_patch
+import entry_market_refresh_patch
 import robust_goal_cooldown_patch
 import fast_core_runtime
 import signal_journal_runtime_patch
