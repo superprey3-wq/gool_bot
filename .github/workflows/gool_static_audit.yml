@@ -18,40 +18,30 @@ jobs:
         run: |
           python - <<'PY'
           import ast,pathlib
-          root=pathlib.Path('gool_bot')
-          mapping={}
+          root=pathlib.Path('gool_bot');mapping={}
           for p in root.rglob('*.py'):
-              rel=p.relative_to(root)
-              parts=list(rel.parts)
+              rel=p.relative_to(root);parts=list(rel.parts)
               if parts[-1]=='__init__.py':
                   name='.'.join(parts[:-1])
                   if name:mapping[name]=p
               else:
-                  name='.'.join(parts)[:-3]
-                  mapping[name]=p
+                  name='.'.join(parts)[:-3];mapping[name]=p
                   if len(parts)==1:mapping[p.stem]=p
-          mapping['main']=root/'main.py'
-          reachable=set();stack=['main']
+          mapping['main']=root/'main.py';reachable=set();stack=['main']
           while stack:
               name=stack.pop()
               if name in reachable:continue
               p=mapping.get(name)
               if not p or not p.exists():continue
-              reachable.add(name)
-              tree=ast.parse(p.read_text('utf-8'))
+              reachable.add(name);tree=ast.parse(p.read_text('utf-8'))
               for n in ast.walk(tree):
-                  candidates=[]
-                  if isinstance(n,ast.Import):candidates=[a.name for a in n.names]
-                  elif isinstance(n,ast.ImportFrom) and n.module:candidates=[n.module]
+                  candidates=[a.name for a in n.names] if isinstance(n,ast.Import) else [n.module] if isinstance(n,ast.ImportFrom) and n.module else []
                   for mod in candidates:
-                      choices=[mod,mod.split('.')[0]]
-                      for c in choices:
+                      for c in (mod,mod.split('.')[0]):
                           if c in mapping and c not in reachable:stack.append(c)
-          used_paths={mapping[n] for n in reachable if n in mapping}
-          all_paths=set(root.rglob('*.py'))
-          print('REACHABLE_FILES',len(used_paths))
-          print('UNREACHABLE_FILES')
-          for p in sorted(all_paths-used_paths):print(p.as_posix())
+          used={mapping[n] for n in reachable if n in mapping};allp=set(root.rglob('*.py'))
+          print('REACHABLE_FILES',len(used));print('UNREACHABLE_FILES')
+          for p in sorted(allp-used):print(p.as_posix())
           print('COMPILE_OK')
           PY
       - name: Install minimal production requirements
@@ -60,3 +50,5 @@ jobs:
         run: |
           cd gool_bot
           python -c "import main; print('IMPORT_OK')"
+      - name: Final marker
+        run: echo FINAL_AUDIT_OK
