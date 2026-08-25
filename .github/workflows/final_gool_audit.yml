@@ -10,30 +10,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
+        with:
+          python-version: '3.12'
       - run: pip install -q -r gool_bot/requirements.txt
       - name: Compile all
         run: python -m compileall -q gool_bot
       - name: Import production main
         working-directory: gool_bot
-        run: python - <<'PY'
-          import main
-          print('IMPORT_MAIN_OK')
-          PY
+        run: python -c "import main; print('IMPORT_MAIN_OK')"
       - name: Telegram command smoke
         working-directory: gool_bot
-        run: python - <<'PY'
-          import telegram_subscribers as t
-          assert t.BUILD_ID == 'GOOL-PROD-LIVEFIX-3'
-          assert callable(t._active_signal_rows)
-          assert callable(t._send_live)
-          print('TELEGRAM_LIVE_HANDLER_OK')
-          PY
+        run: python -c "import telegram_subscribers as t; assert t.BUILD_ID == 'GOOL-PROD-LIVEFIX-3'; assert callable(t._active_signal_rows); assert callable(t._send_live); print('TELEGRAM_LIVE_HANDLER_OK')"
       - name: Analytics smoke
         working-directory: gool_bot
-        run: python - <<'PY'
-          import report_now, signal_analysis
-          assert callable(report_now.build_report_text)
-          assert callable(signal_analysis.build_analysis_text)
-          print('ANALYTICS_REPORTS_OK')
-          PY
+        run: python -c "import report_now, signal_analysis; assert callable(report_now.build_report_text); assert callable(signal_analysis.build_analysis_text); print('ANALYTICS_REPORTS_OK')"
