@@ -1,16 +1,55 @@
-"""VAR-safe CORE goal confirmation for analytics-first signals.
+"""VAR-safe CORE goal confirmation against the exact journal entry score.
 
-A confirmed new goal closes the analytical signal as WIN. Signal quality is
-measured by the football event itself and never by bookmaker odds.
+A signal is a WIN only when the confirmed score has increased after *that
+specific entry*. TRACK state may be older than a newly-created entry and must
+never be used as the result baseline.
 """
 from __future__ import annotations
-import time,logging
+import copy,time,logging,threading
 from daily_report import _score_from_summary
 from live_engine import fetch_summary
 from telegram_subscribers import get_subscribers
 import telegram_image_signal_patch as tip
 
 logger=logging.getLogger("core_goal_signal")
+
+
+def _score(value):
+ try:
+  a,b=str(value or "0:0").split(":",1);return int(a),int(b)
+ except Exception:return 0,0
+
+
+def _advanced(current,before):
+ return int(current[0])>int(before[0]) or int(current[1])>int(before[1])
+
+
+def _schedule_goal_confirmation(match,pressure,recs,master):
+ event_id=str(getattr(match,"event_id","") or "")
+ row=tip._pending_row(event_id)
+ if not event_id or not row:return False
+ before=_score(row.get("score_at_signal"))
+ current=(int(getattr(match,"home_score",0) or 0),int(getattr(match,"away_score",0) or 0))
+ # Critical invariant: the current score itself must already be beyond the exact
+ # score saved for this pending entry. A stale TRACK score cannot trigger this.
+ if not _advanced(current,before):
+  logger.info("GOAL_CANDIDATE_REJECT_NO_POST_ENTRY_GOAL %s entry=%s current=%s",event_id,before,current)
+  return False
+ with tip._GOAL_LOCK:
+  existing=tip._GOAL_CANDIDATES.get(event_id)
+  if existing:
+   old_before=tuple(existing.get("before") or before)
+   # A newly-created journal entry replaces an obsolete candidate baseline.
+   if tuple(before)!=tuple(old_before):
+    tip._GOAL_CANDIDATES.pop(event_id,None)
+   else:
+    if sum(current)>sum(tuple(existing.get("after") or (0,0))):
+     existing["after"]=current;existing["match"]=copy.copy(match)
+    return True
+  tip._GOAL_CANDIDATES[event_id]={"before":before,"after":current,"match":copy.copy(match),"pressure":pressure,"recs":list(recs or []),"master":master,"ts":time.time(),"entry_key":str(row.get("dedupe_key") or "")}
+ threading.Thread(target=_confirm_goal_worker,args=(event_id,),daemon=True).start()
+ return True
+
 
 def _confirm_goal_worker(event_id):
  time.sleep(tip.GOAL_CONFIRM_MIN_SECONDS)
@@ -21,7 +60,12 @@ def _confirm_goal_worker(event_id):
   if not row:
    with tip._GOAL_LOCK:tip._GOAL_CANDIDATES.pop(event_id,None)
    return
-  target=tuple(candidate.get("after") or (0,0))
+  # Never allow an old candidate to settle a newer entry on the same event.
+  if candidate.get("entry_key") and str(row.get("dedupe_key") or "")!=str(candidate.get("entry_key")):
+   logger.info("GOAL_CANDIDATE_STALE_ENTRY %s old=%s new=%s",event_id,candidate.get("entry_key"),row.get("dedupe_key"))
+   with tip._GOAL_LOCK:tip._GOAL_CANDIDATES.pop(event_id,None)
+   return
+  before=_score(row.get("score_at_signal"))
   try:
    body=fetch_summary(event_id)
    if not body:raise RuntimeError("empty summary")
@@ -31,22 +75,28 @@ def _confirm_goal_worker(event_id):
    if attempt+1<tip.GOAL_CONFIRM_RETRIES:time.sleep(tip.GOAL_CONFIRM_RETRY_SECONDS);continue
    with tip._GOAL_LOCK:tip._GOAL_CANDIDATES.pop(event_id,None)
    return
-  if sum(current)<sum(target):
+  if not _advanced(current,before):
+   logger.info("GOAL_CONFIRM_REJECT_SAME_SCORE %s entry=%s confirmed=%s",event_id,before,current)
    with tip._GOAL_LOCK:tip._GOAL_CANDIDATES.pop(event_id,None)
    return
   minute=int(getattr(candidate.get("match"),"minute",0) or row.get("minute") or 0)
   try:
    from signal_journal_runtime_patch import mark_latest_entry_goal
-   mark_latest_entry_goal(event_id,final_score=f"{current[0]}:{current[1]}",goal_minute=minute)
-  except Exception:logger.exception("Could not mark analytical signal win %s",event_id)
+   if not mark_latest_entry_goal(event_id,final_score=f"{current[0]}:{current[1]}",goal_minute=minute):
+    raise RuntimeError("journal entry was not settled")
+  except Exception:
+   logger.exception("Could not mark analytical signal win %s",event_id)
+   with tip._GOAL_LOCK:tip._GOAL_CANDIDATES.pop(event_id,None)
+   return
   token=tip.unified_bot.BOT_TOKEN
   if token:
-   text=f"✅ <b>GOOL AI • СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ</b>\n\n⚽ <b>{row.get('home')} — {row.get('away')}</b>\n⏱ после сигнала · <b>{current[0]}:{current[1]}</b>\n<i>Прогноз модели по голевой активности подтверждён.</i>"
+   text=f"✅ <b>GOOL AI • СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ</b>\n\n⚽ <b>{row.get('home')} — {row.get('away')}</b>\n⏱ после сигнала · <b>{current[0]}:{current[1]}</b>\n<i>Счёт в момент входа: {before[0]}:{before[1]}. Новый гол после входа подтверждён.</i>"
    for cid in get_subscribers():tip._send_text_to_chat(token,cid,text)
   try:tip._close_confirmed_entry(event_id,current,minute)
   except Exception:pass
   with tip._GOAL_LOCK:tip._GOAL_CANDIDATES.pop(event_id,None)
   return
 
+tip._schedule_goal_confirmation=_schedule_goal_confirmation
 tip._confirm_goal_worker=_confirm_goal_worker
-logger.info("CORE goal confirmation is analytics-first and odds-independent")
+logger.info("CORE goal confirmation uses exact journal score_at_signal baseline")
