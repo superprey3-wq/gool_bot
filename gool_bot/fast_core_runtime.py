@@ -8,12 +8,12 @@ Goals:
 - keep the approved CORE scoring/evaluation and cards.
 """
 from __future__ import annotations
-import logging,time
+import logging,os,time
 from concurrent.futures import ThreadPoolExecutor,as_completed
 import live_candidate_patch as lc
 import unified_bot
 from live_engine import StatsSnapshot,calculate_goal_pressure,fetch_stats,fetch_summary,get_previous_values,parse_goal_timeline,parse_stats,save_snapshot
-logger=logging.getLogger("fast_core_runtime");MAX_STATS_WORKERS=12;CHEAP_PREFILTER=45.0
+logger=logging.getLogger("fast_core_runtime");MAX_STATS_WORKERS=12;CHEAP_PREFILTER=float(os.getenv("CORE_ANALYSIS_PREFILTER","38"))
 
 def _core_minute_ok(m):
  minute=int(getattr(m,"minute",0) or 0)
@@ -35,7 +35,7 @@ async def scan_live_once_fast():
  for key in list(state):
   if str(key).startswith("TRACK:") and str(key).split(":",1)[1] not in ids:state.pop(key,None)
  pending=[m for m in live if _core_minute_ok(m) and f"TRACK:{m.event_id}" not in state]
- logger.info("FAST_CORE cycle live=%d candidates_by_time=%d tracked=%d",len(live),len(pending),sum(1 for k in state if str(k).startswith("TRACK:")))
+ logger.info("FAST_CORE cycle live=%d candidates_by_time=%d tracked=%d prefilter=%.1f",len(live),len(pending),sum(1 for k in state if str(k).startswith("TRACK:")),CHEAP_PREFILTER)
  stats_by_id={}
  if pending:
   with ThreadPoolExecutor(max_workers=min(MAX_STATS_WORKERS,len(pending))) as pool:
