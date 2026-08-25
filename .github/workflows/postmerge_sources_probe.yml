@@ -1,0 +1,38 @@
+name: Postmerge live sources probe
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/postmerge_sources_probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: pip install -q -r requirements.txt
+      - name: Probe sources
+        working-directory: gool_bot
+        run: |
+          python - <<'PY'
+          import asyncio
+          import bovada_live_odds as b
+          import kambi_live_odds as k
+          from live_engine import discover_live_matches
+          ms=asyncio.run(discover_live_matches())
+          print('FLASHSCORE_LIVE',len(ms))
+          be=b._live_events(); print('BOVADA_LIVE',len(be))
+          ke=k._live_events(); print('KAMBI_LIVE',len(ke))
+          if ke:
+            e=ke[0];h=e.get('homeName');a=e.get('awayName')
+            rows=k.get_live_goal_totals(h,a)
+            print('KAMBI_MATCH',h,'vs',a,'TOTAL_ROWS',len(rows))
+            print('KAMBI_SAMPLE',rows[:5])
+          if be:
+            h,a=b._event_teams(be[0]);rows=b.get_all_full_time_over_odds(h,a)
+            print('BOVADA_MATCH',h,'vs',a,'TOTAL_ROWS',len(rows))
+            print('BOVADA_SAMPLE',rows[:5])
+          PY
