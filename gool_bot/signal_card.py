@@ -56,6 +56,7 @@ def _alternatives(rs,best):
   if str(r.get('scope') or '').upper()!='FULL_TIME':continue
   kind=str(r.get('market_type') or 'TOTAL').upper()
   if kind not in {'TOTAL','BTTS','TEAM_TOTAL_HOME','TEAM_TOTAL_AWAY'} and r.get('goal_step') is None:continue
+  if r.get('selector_reject'):continue
   rows.append(r)
  rows.sort(key=lambda r:float(r.get('selector_score',-999) or -999),reverse=True);return rows[:2]
 def _bet(r):
@@ -77,16 +78,16 @@ def _sources(r):
  try:return f"{r.get('source','LIVE')} {float(r.get('odd',0)):.2f}"
  except Exception:return str(r.get('source','LIVE'))
 def _movement(r):
- if not r:return 'MARKET —',MUTED
+ if not r:return 'РЫНОК —',MUTED
  st=str(r.get('movement_status') or r.get('external_market_status') or r.get('market_status') or r.get('market_consensus') or '').upper()
  if r.get('correlated_steam'):label='🔥 ПРОГРУЗ СВЯЗАННЫХ РЫНКОВ';col=GREEN
- elif st=='CONFIRMED_STEAM':label='🔥 CONFIRMED STEAM';col=GREEN
+ elif st=='CONFIRMED_STEAM':label='🔥 ПОДТВЕРЖДЁННЫЙ ПРОГРУЗ';col=GREEN
  elif st=='STEAM':label='🔥 ПРОГРУЗ';col=GREEN
  elif st=='REVERSAL':label='↩ РАЗВОРОТ РЫНКА';col=RED
  elif st in {'CONFLICT','DISAGREE'}:label='⚠ РЫНОК ПРОТИВ';col=RED
  elif st in {'CONFIRMED'}:label='✓ ПОДТВЕРЖДЕНО';col=GREEN
  elif st in {'SINGLE_SOURCE','EARLY'}:label='РАННИЙ РЫНОК';col=MUTED
- else:label='STABLE';col=MUTED
+ else:label='ЛИНИЯ СТАБИЛЬНА';col=MUTED
  try:
   drop=float(r.get('movement_drop_pct') or 0)
   if abs(drop)>=0.1:label+=f' • {drop:+.1f}%'
@@ -95,12 +96,32 @@ def _movement(r):
 def _box(d,xy,title,value,sub='',accent=TEXT):
  d.rounded_rectangle(xy,18,fill=PANEL,outline=LINE,width=2);x1,y1,x2,y2=xy;d.text((x1+18,y1+13),title,font=_font(15,True),fill=MUTED);d.text((x1+18,y1+42),value,font=_fit(d,value,x2-x1-36,25,True),fill=accent)
  if sub:d.text((x1+18,y2-24),sub,font=_fit(d,sub,x2-x1-36,13,False),fill=MUTED)
+def _market_probability(best,probs):
+ if best:
+  try:
+   v=float(best.get('selector_confidence'))
+   if v>0:return int(round(v))
+  except Exception:pass
+ return int((probs or {}).get('one_goal',0) or 0)
+def _probability_label(best):
+ if not best:return 'ВЕРОЯТНОСТЬ'
+ kind=str(best.get('market_type') or 'TOTAL').upper()
+ if kind in {'TEAM_TOTAL_HOME','TEAM_TOTAL_AWAY'}:
+  return 'P(ИТБ)'
+ if kind=='BTTS':return 'P(ОЗ)'
+ return 'P(СТАВКИ)'
 def _reason(p,rs,probs):
  st=getattr(p,'stats',None) or getattr(p,'raw_stats',None) or {};shots=sum(_pair(st,'shots'));sot=sum(_pair(st,'shots_on_target'));xg=sum(_pair(st,'xg'));a=[];best=_best(rs or [])
+ if best:
+  try:conf=float(best.get('selector_confidence') or 0);imp=float(best.get('selector_implied') or (100/float(best.get('odd'))));edge=float(best.get('selector_edge') if best.get('selector_edge') is not None else conf-imp)
+  except Exception:conf=imp=edge=0
+  if conf>0:a.append(f'Вероятность выбранного рынка {conf:.0f}%; edge {edge:+.1f} п.п.')
+  kind=str(best.get('market_type') or '').upper()
+  if kind in {'TEAM_TOTAL_HOME','TEAM_TOTAL_AWAY'}:
+   needed=int(best.get('team_goals_needed') or 1);ev=int(best.get('team_evidence') or 0);team=str(best.get('team_name') or 'команде');a.append(f'{team}: нужно ещё {needed} гол.; подтверждений атаки {ev}.')
  if best and best.get('correlated_steam'):a.append('Связанные рынки двигаются в сторону выбранной ставки.')
- if xg>=1.4:a.append('Качество созданных моментов высокое.')
- if sot>=5 or shots>=15:a.append('Темп подтверждается ударами и створами.')
- if int((probs or {}).get('one_goal',0) or 0)>=70:a.append(f"Модель: ещё гол {(probs or {}).get('one_goal')}%.")
+ if not a and xg>=1.4:a.append('Качество созданных моментов высокое.')
+ if not a and (sot>=5 or shots>=15):a.append('Темп подтверждается ударами и створами.')
  if any(int(r.get('source_count',1) or 1)>=2 for r in (rs or [])):a.append('Цена подтверждена несколькими LIVE-источниками.')
  return ' '.join(a[:3] or ['LIVE-модель, профиль лиги и рынок одновременно подтверждают выбранный вход.'])
 def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind='entry',master=None,probabilities=None)->bytes:
@@ -116,10 +137,13 @@ def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None
   probs=probabilities or {};rating=int(round(float(master if master is not None else getattr(pressure,'score',0) or 0)));alts=_alternatives(rs,best);mv,mvcol=_movement(best)
   d.rounded_rectangle((55,480,1025,675),25,fill=PANEL2,outline=GOLD,width=2);d.text((85,503),'⭐ ЛУЧШАЯ СТАВКА',font=_font(24,True),fill=GOLD);d.text((85,552),_bet(best),font=_fit(d,_bet(best),730,35,True),fill=TEXT);d.text((85,607),_sources(best),font=_fit(d,_sources(best),680,16,False),fill=MUTED);d.text((85,635),mv,font=_fit(d,mv,720,18,True),fill=mvcol);d.text((835,505),'GOOL',font=_font(16,True),fill=MUTED);d.text((825,538),f'{rating}/100',font=_font(39,True),fill=GOLD)
   d.text((65,700),'АЛЬТЕРНАТИВЫ',font=_font(18,True),fill=MUTED)
-  for i in range(2):
-   r=alts[i] if i<len(alts) else None;x1=55+i*490;x2=x1+475;sub,_c=_movement(r);_box(d,(x1,734,x2,832),f'№{i+2}',_bet(r) if r else '—',sub if r else '',GREEN if r else MUTED)
-  st=getattr(pressure,'stats',None) or getattr(pressure,'raw_stats',None) or {};xg=sum(_pair(st,'xg'));xgot=sum(_pair(st,'xgot'));shots=sum(_pair(st,'shots'));sot=sum(_pair(st,'shots_on_target'))
-  _box(d,(55,865,285,970),'xG / xGoT',f'{xg:.2f} / {xgot:.2f}');_box(d,(300,865,530,970),'УДАРЫ',f'{shots:g}');_box(d,(545,865,775,970),'В СТВОР',f'{sot:g}');_box(d,(790,865,1025,970),'ЕЩЁ ГОЛ',f"{int(probs.get('one_goal',0) or 0)}%",accent=GREEN)
+  if alts:
+   width=475 if len(alts)>1 else 970
+   for i,r in enumerate(alts):
+    x1=55+i*490;x2=x1+width if len(alts)==1 else x1+475;sub,_c=_movement(r);_box(d,(x1,734,x2,832),f'№{i+2}',_bet(r),sub,GREEN)
+  else:_box(d,(55,734,1025,832),'АЛЬТЕРНАТИВ НЕТ','ТОЛЬКО ОДИН РЫНОК ПРОШЁЛ ФИЛЬТР','',MUTED)
+  st=getattr(pressure,'stats',None) or getattr(pressure,'raw_stats',None) or {};xg=sum(_pair(st,'xg'));xgot=sum(_pair(st,'xgot'));shots=sum(_pair(st,'shots'));sot=sum(_pair(st,'shots_on_target'));mp=_market_probability(best,probs)
+  _box(d,(55,865,285,970),'xG / xGoT',f'{xg:.2f} / {xgot:.2f}');_box(d,(300,865,530,970),'УДАРЫ',f'{shots:g}');_box(d,(545,865,775,970),'В СТВОР',f'{sot:g}');_box(d,(790,865,1025,970),_probability_label(best),f'{mp}%',accent=GREEN)
   d.rounded_rectangle((55,1000,1025,1188),24,fill=PANEL,outline=LINE,width=2);d.text((85,1025),'ПОЧЕМУ ИМЕННО ЭТА СТАВКА',font=_font(21,True),fill=GOLD);yy=1065
   for line in textwrap.wrap(_reason(pressure,rs,probs),width=72)[:3]:d.text((85,yy),line,font=_font(20),fill=TEXT);yy+=31
   d.text((85,1152),'Flashscore • LSApp • Bovada • Kambi • xG/xGoT consensus • Market Movement',font=_font(14),fill=MUTED);footer=1260
