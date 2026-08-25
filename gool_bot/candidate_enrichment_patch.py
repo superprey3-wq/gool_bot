@@ -21,9 +21,6 @@ GOAL_BASE = "https://api.goal-api.com/v1"
 FOTMOB_BASES = ("https://www.fotmob.com/api/data", "https://www.fotmob.com/api")
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137 Safari/537.36"
 
-# Keep a reserve below the provider's 1000/day free limit. The enrichment floor
-# is deliberately lower than the entry threshold so GOAL/FotMob/365Scores can
-# inspect developing matches before they become actual signal candidates.
 GOAL_DAILY_SOFT_CAP = max(50, min(900, int(os.getenv("GOAL_DAILY_SOFT_CAP", "850"))))
 ENRICH_MIN_MASTER = float(os.getenv("ENRICH_MIN_MASTER", "50"))
 LIVE_LIST_TTL = 300
@@ -167,6 +164,31 @@ def _walk(obj):
         for v in obj: yield from _walk(v)
 
 
+def _num(v):
+    try:
+        if isinstance(v, str): v=v.replace('%','').strip()
+        return float(v)
+    except Exception:return None
+
+
+def _stat_pair(node):
+    """Extract home/away pair from the common FotMob stats node shapes."""
+    if not isinstance(node, dict): return None
+    candidates=[]
+    for key in ("stats","value","values"):
+        if key in node:candidates.append(node.get(key))
+    candidates.append(node)
+    for val in candidates:
+        if isinstance(val,(list,tuple)) and len(val)>=2:
+            a,b=_num(val[0]),_num(val[1])
+            if a is not None and b is not None:return (a,b)
+        if isinstance(val,dict):
+            for hk,ak in (("home","away"),("homeValue","awayValue"),("homeStat","awayStat")):
+                a,b=_num(val.get(hk)),_num(val.get(ak))
+                if a is not None and b is not None:return (a,b)
+    return None
+
+
 def _fotmob_features(m):
     hit, match_score=_fotmob_match(m)
     if not hit: return {"matched":False,"match_score":round(match_score,3)}
@@ -180,10 +202,14 @@ def _fotmob_features(m):
         xgs=[]; xgots=[]
         for s in shots:
             if not isinstance(s,dict):continue
-            for key,target in (("expectedGoals",xgs),("xG",xgs),("expectedGoalsOnTarget",xgots),("xGOT",xgots)):
-                try:
-                    if s.get(key) is not None: target.append(float(s[key]))
-                except Exception: pass
+            # Do not double count aliases: prefer one field from each family.
+            xv=s.get("expectedGoals", s.get("xG")); xot=s.get("expectedGoalsOnTarget", s.get("xGOT"))
+            try:
+                if xv is not None:xgs.append(float(xv))
+            except Exception:pass
+            try:
+                if xot is not None:xgots.append(float(xot))
+            except Exception:pass
         if xgs: feats["shot_xg_total"]=round(sum(xgs),3)
         if xgots: feats["shot_xgot_total"]=round(sum(xgots),3)
         feats["shotmap_n"]=len(shots)
@@ -192,14 +218,27 @@ def _fotmob_features(m):
     feats["has_lineup"]="lineup" in blob
     feats["has_ratings"]="rating" in blob
     for node in _walk(d):
-        title=str(node.get("title") or node.get("key") or node.get("name") or "").lower()
-        val=node.get("stats") if "stats" in node else node.get("value")
-        if "expected goals" in title or title in {"xg","expected_goals"}:
-            feats.setdefault("xg_node", val)
+        title=str(node.get("title") or node.get("key") or node.get("name") or "").lower().strip()
+        pair=_stat_pair(node)
+        if "expected goals on target" in title or title in {"xgot","expected_goals_on_target"}:
+            if pair:feats.setdefault("xgot_pair",pair)
+        elif "expected goals" in title or title in {"xg","expected_goals"}:
+            if pair:feats.setdefault("xg_pair",pair)
+            feats.setdefault("xg_node", node.get("stats") if "stats" in node else node.get("value"))
+        elif title in {"total shots","shots","shots total"} or "total shots" in title:
+            if pair:feats.setdefault("shots_pair",pair)
+        elif "shots on target" in title or "shots on goal" in title:
+            if pair:feats.setdefault("sot_pair",pair)
+        elif "shots inside" in title or "shots in box" in title:
+            if pair:feats.setdefault("inside_box_pair",pair)
         elif "touches in opposition box" in title or "touches in box" in title:
-            feats.setdefault("touches_box_node", val)
+            if pair:feats.setdefault("touches_box_pair",pair)
+            feats.setdefault("touches_box_node", node.get("stats") if "stats" in node else node.get("value"))
         elif "big chance" in title:
-            feats.setdefault("big_chances_node", val)
+            if pair:feats.setdefault("big_chances_pair",pair)
+            feats.setdefault("big_chances_node", node.get("stats") if "stats" in node else node.get("value"))
+        elif "corner" in title:
+            if pair:feats.setdefault("corners_pair",pair)
     return {"matched":True,"match_id":str(mid),"match_score":round(match_score,3),"features":feats}
 
 
@@ -220,10 +259,14 @@ def _external_adjustment(m):
         if pace>=120: score+=6
     if sot and sum(sot)>=4: score+=6
     ff=fot.get("features") or {}
-    if ff.get("shot_xg_total") is not None:
-        xg=float(ff["shot_xg_total"])
-        if xg>=1.5: score+=10; reasons.append(f"FotMob shot-xG {xg:.2f}")
-        elif xg<.35 and int(m.minute or 0)>=35: score-=7
+    xg_total=None
+    if ff.get("xg_pair"):
+        try:xg_total=sum(ff["xg_pair"])
+        except Exception:xg_total=None
+    if xg_total is None and ff.get("shot_xg_total") is not None:xg_total=float(ff["shot_xg_total"])
+    if xg_total is not None:
+        if xg_total>=1.5: score+=10; reasons.append(f"FotMob xG {xg_total:.2f}")
+        elif xg_total<.35 and int(m.minute or 0)>=35: score-=7
     if ff.get("has_momentum"): score+=2
     score=max(0.,min(100.,score))
     adj=round(max(-5.,min(5.,(score-50.)/7.5)),1)
