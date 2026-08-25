@@ -1,0 +1,47 @@
+name: GOOL static audit
+on:
+  push:
+    paths:
+      - '.github/workflows/gool_static_audit.yml'
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: live-only-quant-foundation
+      - name: Compile and import graph
+        run: |
+          python -m compileall -q main.py gool_bot
+          python - <<'PY'
+          import ast, pathlib
+          root=pathlib.Path('gool_bot')
+          files={p.stem:p for p in root.glob('*.py')}
+          files.update({f'{p.parent.name}.{p.stem}':p for p in root.glob('*/*.py')})
+          start=['main']
+          # Parse gool_bot/main.py as production root; imports are mostly top-level modules.
+          reachable=set(); stack=['main']; mapping={'main':root/'main.py'}
+          mapping.update({p.stem:p for p in root.glob('*.py')})
+          while stack:
+              name=stack.pop()
+              if name in reachable: continue
+              p=mapping.get(name)
+              if not p or not p.exists(): continue
+              reachable.add(name)
+              try: tree=ast.parse(p.read_text('utf-8'))
+              except Exception as e:
+                  print('PARSE_FAIL',p,e); continue
+              for n in ast.walk(tree):
+                  mods=[]
+                  if isinstance(n,ast.Import): mods=[a.name.split('.')[0] for a in n.names]
+                  elif isinstance(n,ast.ImportFrom) and n.module: mods=[n.module.split('.')[0]]
+                  for m in mods:
+                      if m in mapping and m not in reachable: stack.append(m)
+          allmods={p.stem for p in root.glob('*.py')}
+          print('REACHABLE',len(reachable))
+          print('REACHABLE_MODULES',','.join(sorted(reachable)))
+          print('UNREACHABLE_TOP',','.join(sorted(allmods-reachable)))
+          print('COMPILE_OK')
+          PY
