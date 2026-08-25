@@ -1,100 +1,30 @@
 name: one-shot-market-availability-v2
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/one-shot-market-availability-v2.yml']
+  workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install requests -q
-      - name: Probe current LIVE football markets
+      - run: pip install -r requirements.txt -q
+      - name: Verify source hierarchy imports
+        working-directory: gool_bot
         run: |
-          python - <<'PY' > market_availability_v2.txt
-          import requests,re
-          H={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36','Accept':'application/json,text/plain,*/*'}
-          def get(url,params=None):
-              try:
-                  r=requests.get(url,params=params,headers=H,timeout=20)
-                  print('HTTP',r.status_code,'URL',r.url,'LEN',len(r.content))
-                  if r.ok:return r.json()
-              except Exception as e:print('ERR',type(e).__name__,e)
-              return None
-          def std(line):
-              try:return abs(float(line)*2-round(float(line)*2))<1e-9
-              except:return False
-          print('=== BOVADA ===')
-          b=get('https://www.bovada.lv/services/sports/event/v2/events/A/description/soccer',{'lang':'en','liveOnly':'true'})
-          events=[]
-          def walk(o):
-              if isinstance(o,dict):
-                  if isinstance(o.get('displayGroups'),list) and o.get('description'):events.append(o)
-                  for v in o.values():walk(v)
-              elif isinstance(o,list):
-                  for v in o:walk(v)
-          walk(b);print('LIVE_EVENTS',len(events))
-          for e in events[:12]:
-              ft=[];fh=[];btts=[];team=[]
-              for dg in e.get('displayGroups') or []:
-                  for m in dg.get('markets') or []:
-                      md=str(m.get('description') or '');ml=md.lower();gd=str(dg.get('description') or '').lower()
-                      for o in m.get('outcomes') or []:
-                          od=str(o.get('description') or '');ol=od.lower();p=o.get('price') or {};dec=p.get('decimal');line=p.get('handicap')
-                          if not dec:continue
-                          text=' '.join((gd,ml,ol))
-                          if ml=='both teams to score' and ol=='yes':btts.append((dec,md,od))
-                          if 'total' in ml and 'asian' not in ml and not any(x in text for x in ('corner','card','booking','shot')) and ol.startswith('over'):
-                              if line is None or not std(line):continue
-                              isfh=any(x in text for x in ('1st half','first half','l1h'))
-                              isteam=('team' in ml or ' by ' in ml or 'team total' in ml)
-                              row=(line,dec,md,od)
-                              if isteam:team.append(row)
-                              elif isfh:fh.append(row)
-                              else:ft.append(row)
-              if ft or fh or btts or team:print('EVENT',e.get('id'),e.get('description'),'FT',ft[:8],'FH',fh[:8],'BTTS',btts[:4],'TEAM',team[:8])
-          print('\n=== KAMBI ===')
-          base='https://eu-offering-api.kambicdn.com/offering/v2018/rsiusnj'
-          kd=get(base+'/listView/football/all/all/all/matches.json',{'lang':'en_US','market':'US'})
-          live=[]
-          for w in (kd or {}).get('events') or []:
-              e=w.get('event') or w;st=str(e.get('state') or '').upper()
-              if e.get('homeName') and e.get('awayName') and st not in ('','NOT_STARTED','ENDED','FINISHED','CANCELLED'):live.append(e)
-          print('LIVE_EVENTS',len(live))
-          for e in live[:12]:
-              off=get(base+f"/betoffer/event/{e.get('id')}.json",{'lang':'en_US','market':'US','includeParticipants':'true'})
-              ft=[];fh=[];btts=[];team=[]
-              for bo in (off or {}).get('betOffers') or []:
-                  tn=str((bo.get('betOfferType') or {}).get('name') or '');cr=str((bo.get('criterion') or {}).get('label') or '');key=(tn+' '+cr).lower()
-                  for o in bo.get('outcomes') or []:
-                      if o.get('status')!='OPEN':continue
-                      lab=str(o.get('label') or '');ll=lab.lower();typ=str(o.get('type') or '')
-                      try:odd=float(o.get('odds'))/1000
-                      except:continue
-                      if 'both teams to score' in key and '1st half' not in key and 'first half' not in key and (ll=='yes' or typ in ('OT_YES','YES')):btts.append((odd,tn,cr,lab))
-                      if any(x in key for x in ('over/under','total goals')) and ('over' in ll or typ=='OT_OVER'):
-                          if any(x in key for x in ('asian','corner','card','shot','booking')):continue
-                          try:line=float(o.get('line'))/1000
-                          except:continue
-                          if not std(line):continue
-                          row=(line,odd,tn,cr,lab)
-                          isfh=('1st half' in key or 'first half' in key)
-                          isteam=(' by ' in key or 'team total' in key)
-                          if isteam:team.append(row)
-                          elif isfh:fh.append(row)
-                          else:ft.append(row)
-              if ft or fh or btts or team:print('EVENT',e.get('id'),e.get('homeName'),'-',e.get('awayName'),'FT',ft[:8],'FH',fh[:8],'BTTS',btts[:4],'TEAM',team[:10])
+          python - <<'PY'
+          import live_odds
+          import kambi_live_odds
+          import sportsgameodds_provider
+          import aux_strategy_markets
+          import period_market_patch
+          import multi_source_odds_patch
+          print('PRIMARY=Flashscore/LSApp')
+          print('CONFIRMATION=Kambi/BetRivers, SportsGameOdds(optional)')
+          print('BOVADA=disabled')
+          print('Source hierarchy imports OK')
           PY
-      - name: Commit result
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add market_availability_v2.txt
-          git commit -m 'Store LIVE market availability probe v2' || exit 0
-          git push
