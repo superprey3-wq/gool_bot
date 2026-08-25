@@ -17,6 +17,7 @@ import period_market_patch
 import phase_market_patch
 import multi_source_odds_patch
 import btts_period_sources_patch
+import team_total_sources_patch
 import best_market_selector_patch
 import score_sync_patch
 import market_math_patch
