@@ -28,53 +28,55 @@ jobs:
           python-version: '3.12'
       - name: Install probe dependencies
         run: pip install requests
-      - name: Probe odds sources
+      - name: Audit exact live feed payload
         env:
           HOME_TEAM: ${{ github.event.inputs.home || 'Real Madrid' }}
           AWAY_TEAM: ${{ github.event.inputs.away || 'Real Sociedad' }}
-          GOAL_API_KEY: ${{ secrets.GOAL_API_KEY }}
         run: |
           python - <<'PY'
-          import os, requests
-          home=(os.getenv('HOME_TEAM') or 'Real Madrid').strip()
-          away=(os.getenv('AWAY_TEAM') or 'Real Sociedad').strip()
-          print(f'TARGET: {home} — {away}')
-          H={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Accept-Language':'en-US,en;q=0.9'}
-          def get(label,url,params=None,headers=None):
-              try:
-                  r=requests.get(url,params=params,headers=headers or H,timeout=15,allow_redirects=True)
-                  print(f'\n[{label}] HTTP {r.status_code} type={r.headers.get("content-type","")} bytes={len(r.content)}')
-                  print(r.text[:1800].replace('\n',' '))
-                  return r
-              except Exception as e:
-                  print(f'\n[{label}] ERROR {type(e).__name__}: {e}')
-                  return None
-
-          param_sets=[
-              {'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'},
-              {'sports':1,'count':1000,'lng':'en','mode':4,'country':137,'gr':285,'virtualSports':'true','noFilterBlockEvent':'true','getEmpty':'true'},
-          ]
-          roots=[
-              ('1XBET service','https://1xbet.com/service-api/LiveFeed','https://1xbet.com'),
-              ('1XBET FI service','https://1xbet.fi/service-api/LiveFeed','https://1xbet.fi'),
-              ('MELBET service','https://melbet.com/service-api/LiveFeed','https://melbet.com'),
-              ('1XBET legacy','https://1xbet.com/LiveFeed','https://1xbet.com'),
-              ('1XBET FI legacy','https://1xbet.fi/LiveFeed','https://1xbet.fi'),
-              ('MELBET legacy','https://melbet.com/LiveFeed','https://melbet.com'),
-              ('MELBET ORG legacy','https://melbet.org/LiveFeed','https://melbet.org'),
-          ]
-          for label,root,origin in roots:
-              for i,params in enumerate(param_sets,1):
-                  get(f'{label} p{i}',root+'/Get1x2_VZip',params,{**H,'Referer':origin+'/','Origin':origin})
-
-          key=(os.getenv('GOAL_API_KEY') or '').strip()
-          if key:
-              gh={**H,'Authorization':f'Bearer {key}','X-API-Key':key}
-              for url in (
-                  'https://api.goal-api.com/v1/fixtures/date/2026-08-26',
-                  'https://api.goal-api.com/v1/odds/bookmakers',
-              ):
-                  get('GOAL API',url,headers=gh)
-          else:
-              print('\n[GOAL API] SKIP: GOAL_API_KEY secret is not configured in GitHub Actions')
+          import os, requests, collections
+          home=(os.getenv('HOME_TEAM') or 'Real Madrid').strip().lower()
+          away=(os.getenv('AWAY_TEAM') or 'Real Sociedad').strip().lower()
+          H={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Accept-Language':'en-US,en;q=0.9','Referer':'https://1xbet.fi/','Origin':'https://1xbet.fi'}
+          root='https://1xbet.fi/service-api/LiveFeed'
+          params={'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'}
+          r=requests.get(root+'/Get1x2_VZip',params=params,headers=H,timeout=20)
+          print('HTTP',r.status_code,'bytes',len(r.content)); r.raise_for_status()
+          data=r.json(); events=data.get('Value') or []
+          print('EVENTS',len(events))
+          print('TOP_LEVEL_KEYS', sorted(set().union(*(e.keys() for e in events))) if events else [])
+          stats=collections.Counter(); market_types=collections.Counter(); market_groups=collections.Counter(); periods=collections.Counter()
+          named=[]
+          for e in events:
+              sc=e.get('SC') or {}
+              periods[str(sc.get('CPS') or sc.get('CP') or '')]+=1
+              for block in sc.get('ST') or []:
+                  for s in (block.get('Value') or []):
+                      stats[s.get('N')]+=1
+              for x in (e.get('E') or []):
+                  market_types[str(x.get('T'))]+=1; market_groups[str(x.get('G'))]+=1
+              for a in (e.get('AE') or []):
+                  for x in (a.get('ME') or []):
+                      market_types[str(x.get('T'))]+=1; market_groups[str(x.get('G'))]+=1
+              text=' '.join(str(e.get(k,'')) for k in ['O1','O2','L','LE','N']).lower()
+              if home in text or away in text:
+                  named.append(e)
+          print('STAT_NAMES',sorted((k,v) for k,v in stats.items() if k))
+          print('PERIOD_VALUES',periods.most_common())
+          print('MARKET_TYPE_IDS',market_types.most_common())
+          print('MARKET_GROUP_IDS',market_groups.most_common())
+          print('TARGET_MATCHES',len(named))
+          for e in named[:5]:
+              print('TARGET_EVENT_CORE',{k:e.get(k) for k in ['I','O1','O2','L','LE','N','S','S1','S2','S3','DI','U','T','CO'] if k in e})
+              print('TARGET_SC',e.get('SC'))
+              print('TARGET_E',e.get('E'))
+              print('TARGET_AE',e.get('AE'))
+          # Explicit capability checks: only mark fields proven by payload labels/shape.
+          wanted_stats=['xG','Attacks','Dangerous attacks','Possession %','Shots on target','Shots off target','Yellow cards','Red card','Corner','Saves','Penalty','Substitutions','Key Passes','Passing Accuracy %','Crosses']
+          names=set(k for k in stats if k)
+          print('CAPABILITY_STATS',{x:(x in names) for x in wanted_stats})
+          print('HAS_LIVE_SCORE', any((e.get('SC') or {}).get('FS') for e in events))
+          print('HAS_PERIOD_SPLIT', any((e.get('SC') or {}).get('PS') for e in events))
+          print('HAS_MARKET_ODDS', any(e.get('E') or e.get('AE') for e in events))
+          print('HAS_TEAM_NAMES', any(e.get('O1') and e.get('O2') for e in events))
           PY
