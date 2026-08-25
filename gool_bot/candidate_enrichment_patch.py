@@ -21,9 +21,11 @@ GOAL_BASE = "https://api.goal-api.com/v1"
 FOTMOB_BASES = ("https://www.fotmob.com/api/data", "https://www.fotmob.com/api")
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137 Safari/537.36"
 
-# Keep a reserve below the provider's 1000/day free limit.
+# Keep a reserve below the provider's 1000/day free limit. The enrichment floor
+# is deliberately lower than the entry threshold so GOAL/FotMob/365Scores can
+# inspect developing matches before they become actual signal candidates.
 GOAL_DAILY_SOFT_CAP = max(50, min(900, int(os.getenv("GOAL_DAILY_SOFT_CAP", "850"))))
-ENRICH_MIN_MASTER = float(os.getenv("ENRICH_MIN_MASTER", "58"))
+ENRICH_MIN_MASTER = float(os.getenv("ENRICH_MIN_MASTER", "50"))
 LIVE_LIST_TTL = 300
 DETAIL_TTL = 150
 
@@ -189,7 +191,6 @@ def _fotmob_features(m):
     feats["has_momentum"]="momentum" in blob
     feats["has_lineup"]="lineup" in blob
     feats["has_ratings"]="rating" in blob
-    # Pull aggregate values by common labels without depending on one FotMob schema revision.
     for node in _walk(d):
         title=str(node.get("title") or node.get("key") or node.get("name") or "").lower()
         val=node.get("stats") if "stats" in node else node.get("value")
@@ -225,7 +226,6 @@ def _external_adjustment(m):
         elif xg<.35 and int(m.minute or 0)>=35: score-=7
     if ff.get("has_momentum"): score+=2
     score=max(0.,min(100.,score))
-    # Maximum +-5 master points; external data cannot manufacture a candidate.
     adj=round(max(-5.,min(5.,(score-50.)/7.5)),1)
     return adj, score, {"goal_api":goal,"fotmob":fot,"reasons":reasons,"goal_requests_today":_goal_counter["n"]}
 
@@ -244,7 +244,6 @@ def _evaluate_enriched(m,s,p,goals,market):
         market["external_validation"]=ext
         market["external_master_adjustment"]=adj
         new_master=round(max(0.,min(100.,float(master)+adj)),1)
-        # External sources may veto a borderline signal but never create one from REJECT.
         if qualifies and ext_score<=30 and new_master<live_candidate_patch.ENTRY_MIN_SCORE+4:
             qualifies=False; route="EXTERNAL_CONFLICT"
         master=new_master
@@ -257,4 +256,4 @@ def _evaluate_enriched(m,s,p,goals,market):
 
 
 live_candidate_patch._evaluate=_evaluate_enriched
-logger.info("Candidate enrichment patch active | GOAL cap=%d/day | min master=%.1f | FotMob candidate-only",GOAL_DAILY_SOFT_CAP,ENRICH_MIN_MASTER)
+logger.info("Candidate enrichment patch active | GOAL cap=%d/day | analysis min master=%.1f | GOAL+FotMob+365Scores",GOAL_DAILY_SOFT_CAP,ENRICH_MIN_MASTER)

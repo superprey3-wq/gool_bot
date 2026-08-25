@@ -1,11 +1,24 @@
 """Telegram subscriber registry and command polling."""
 from __future__ import annotations
-import asyncio,json,logging,os
+import asyncio,json,logging,os,re
 from pathlib import Path
 from typing import Iterable
 import requests
 logger=logging.getLogger("telegram_subscribers")
-SUBSCRIBERS_FILE=Path(os.getenv("TELEGRAM_SUBSCRIBERS_FILE",str(Path(__file__).with_name("telegram_subscribers.json"))))
+LEGACY_SUBSCRIBERS_FILE=Path(__file__).with_name("telegram_subscribers.json")
+def _default_subscribers_file():
+    explicit=os.getenv("TELEGRAM_SUBSCRIBERS_FILE","").strip()
+    if explicit:return Path(explicit)
+    runtime=os.getenv("RUNTIME_DATA_DIR","").strip()
+    if runtime:return Path(runtime)/"telegram_subscribers.json"
+    data=Path("/data")
+    if data.exists() and os.access(str(data),os.W_OK):return data/"telegram_subscribers.json"
+    db=os.getenv("DATABASE_PATH","").strip()
+    if db:
+        p=Path(db)
+        if p.is_absolute():return p.parent/"telegram_subscribers.json"
+    return LEGACY_SUBSCRIBERS_FILE
+SUBSCRIBERS_FILE=_default_subscribers_file()
 def _token():
     token=os.getenv("TELEGRAM_BOT_TOKEN","").strip()
     if token and ":" not in token:
@@ -13,17 +26,27 @@ def _token():
         if bot_id.isdigit():token=f"{bot_id}:{token}"
     return token
 def _owner_chat_id():return os.getenv("TELEGRAM_CHAT_ID","").strip()
-def _read_saved():
-    if not SUBSCRIBERS_FILE.exists():return set()
+def _extra_chat_ids():
+    raw=os.getenv("TELEGRAM_EXTRA_CHAT_IDS","")
+    return {x for x in re.split(r"[\s,;]+",raw.strip()) if x}
+def _read_file(path):
+    if not path.exists():return set()
     try:
-        data=json.loads(SUBSCRIBERS_FILE.read_text(encoding="utf-8"));return {str(x).strip() for x in data if str(x).strip()} if isinstance(data,list) else set()
-    except Exception as exc:logger.warning("Could not read Telegram subscribers: %s",exc);return set()
+        data=json.loads(path.read_text(encoding="utf-8"));return {str(x).strip() for x in data if str(x).strip()} if isinstance(data,list) else set()
+    except Exception as exc:logger.warning("Could not read Telegram subscribers from %s: %s",path,exc);return set()
+def _read_saved():
+    saved=_read_file(SUBSCRIBERS_FILE)
+    if SUBSCRIBERS_FILE!=LEGACY_SUBSCRIBERS_FILE:
+        legacy=_read_file(LEGACY_SUBSCRIBERS_FILE)
+        if legacy-saved:
+            saved|=legacy;_write_saved(saved);logger.info("Migrated %d Telegram subscriber(s) from legacy storage",len(legacy))
+    return saved
 def _write_saved(chat_ids:Iterable[str]):
     values=sorted({str(x).strip() for x in chat_ids if str(x).strip()})
     try:SUBSCRIBERS_FILE.parent.mkdir(parents=True,exist_ok=True);SUBSCRIBERS_FILE.write_text(json.dumps(values,ensure_ascii=False,indent=2),encoding="utf-8")
-    except Exception as exc:logger.error("Could not save Telegram subscribers: %s",exc)
+    except Exception as exc:logger.error("Could not save Telegram subscribers to %s: %s",SUBSCRIBERS_FILE,exc)
 def get_subscribers():
-    s=_read_saved();owner=_owner_chat_id()
+    s=_read_saved()|_extra_chat_ids();owner=_owner_chat_id()
     if owner:s.add(owner)
     return sorted(s)
 def subscribe(chat_id):
@@ -65,17 +88,12 @@ def _send_journal(chat_id):
         logger.warning("Telegram journal export failed: HTTP %s %s",r.status_code,r.text[:300])
     except (OSError,requests.RequestException) as exc:logger.exception("Telegram journal export failed: %s",exc)
     _send_reply(chat_id,"⚠️ Не удалось отправить журнал. Ошибка записана в лог.")
-
 def _open_track_ids():
-    """Our own runtime truth: TRACK exists until the entry is confirmed/closed."""
     try:
         import unified_bot
         state=unified_bot._load_sent()
         return {str(k).split(":",1)[1] for k,v in state.items() if str(k).startswith("TRACK:") and isinstance(v,dict)}
-    except Exception as exc:
-        logger.exception("Could not read GOOL open tracks: %s",exc)
-        return set()
-
+    except Exception as exc:logger.exception("Could not read GOOL open tracks: %s",exc);return set()
 def _active_signal_rows():
     from report_now import _today_rows,_live_signal_rows,_is_pending_entry
     open_ids=_open_track_ids();latest={}
@@ -106,8 +124,7 @@ def _live_text(rows):
     if len(rows)>20:lines.append(f"\n…и ещё {len(rows)-20}")
     return "\n".join(lines)
 def _send_live(chat_id):
-    try:
-        rows=_active_signal_rows();_post_message(chat_id,_live_text(rows),_active_signal_buttons(rows));logger.info("Telegram GOOL open-signal list sent to: %s",chat_id)
+    try:rows=_active_signal_rows();_post_message(chat_id,_live_text(rows),_active_signal_buttons(rows));logger.info("Telegram GOOL open-signal list sent to: %s",chat_id)
     except Exception as exc:logger.exception("Telegram in-game failed: %s",exc);_post_message(chat_id,"⚠️ Не удалось прочитать список незакрытых сигналов.")
 def _send_report(chat_id):
     _send_reply(chat_id,"📊 Собираю текущий отчёт…")
@@ -118,16 +135,18 @@ def _send_report(chat_id):
 def _handle_message(message:dict):
     chat=message.get("chat") or {};chat_id=chat.get("id")
     if chat_id is None:return
-    text=str(message.get("text") or "").strip();command=text.split(maxsplit=1)[0].lower()
+    text=str(message.get("text") or "").strip();command=text.split(maxsplit=1)[0].lower() if text else ""
     if "@" in command:command=command.split("@",1)[0]
+    # Any interaction except explicit /stop repairs a lost dynamic subscription after deploy.
+    if command!="/stop":subscribe(chat_id)
     if command in {"/start","/menu"}:
-        subscribe(chat_id);name=str((message.get("from") or {}).get("first_name") or "").strip();greeting=f", {name}" if name else ""
-        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> показывает наши незакрытые входы — те, где подтверждённого гола ещё нет.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
-        logger.info("Telegram subscriber activated/menu opened: %s",chat_id)
+        name=str((message.get("from") or {}).get("first_name") or "").strip();greeting=f", {name}" if name else ""
+        _send_reply(chat_id,"✅ <b>GOOL AI подключён</b>"+greeting+"!\n\nLIVE-сигналы будут приходить сюда. Кнопка <b>🟢 В игре</b> показывает наши незакрытые входы.\n\n/stop — отключить рассылку\n/status — подписка\n/report — отчёт\n/analysis — анализ")
+        logger.info("Telegram subscriber activated/menu opened: %s storage=%s total=%d",chat_id,SUBSCRIBERS_FILE,len(get_subscribers()))
     elif command=="/stop":
         if str(chat_id)==_owner_chat_id():_send_reply(chat_id,"👑 Основной чат владельца всегда остаётся активным.");return
         unsubscribe(chat_id);_send_reply(chat_id,"🔕 Рассылка GOOL AI отключена. Вернуть её можно командой /start.");logger.info("Telegram subscriber deactivated: %s",chat_id)
-    elif command=="/status":_send_reply(chat_id,"✅ Подписка активна." if str(chat_id) in set(get_subscribers()) else "🔕 Подписка отключена. Отправь /start.")
+    elif command=="/status":_send_reply(chat_id,f"✅ Подписка активна. Получателей сейчас: <b>{len(get_subscribers())}</b>." if str(chat_id) in set(get_subscribers()) else "🔕 Подписка отключена. Отправь /start.")
     elif command=="/journal":_send_journal(chat_id)
     elif command=="/live" or text.casefold() in {"🟢 в игре","в игре"}:_send_live(chat_id)
     elif command=="/report" or text.casefold()=="📊 отчёт":_send_report(chat_id)
@@ -145,12 +164,12 @@ def _answer_callback(callback_id,text=None):
 def _handle_callback(query:dict):
     cid=query.get("id");data=str(query.get("data") or "");msg=query.get("message") or {};chat=(msg.get("chat") or {});chat_id=chat.get("id")
     if not cid or chat_id is None or not data.startswith("show:"):return
+    subscribe(chat_id)
     event_id=data.split(":",1)[1]
     from signal_card_archive import get_entry_card
     card=get_entry_card(event_id)
-    if not card:
-        _answer_callback(cid,"Карточка была отправлена до обновления бота");_send_reply(chat_id,"ℹ️ Эту старую карточку бот ещё не успел сохранить. Новые сигналы уже будут доступны из «🟢 В игре».");return
-    token=_token();payload={"chat_id":str(chat_id),"photo":card.get("file_id"),"caption":card.get("caption") or "🔥 GOOL AI • МОЖНО ЗАХОДИТЬ"}
+    if not card:_answer_callback(cid,"Карточка была отправлена до обновления бота");_send_reply(chat_id,"ℹ️ Эту старую карточку бот ещё не успел сохранить. Новые сигналы уже будут доступны из «🟢 В игре».");return
+    token=_token();payload={"chat_id":str(chat_id),"photo":card.get("file_id"),"caption":card.get("caption") or "🎯 GOOL AI • АНАЛИТИЧЕСКИЙ СИГНАЛ"}
     try:
         r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",json=payload,timeout=20)
         if r.ok:_answer_callback(cid,"Открываю сигнал")
@@ -176,7 +195,7 @@ def _poll_once(offset):
     except Exception as exc:logger.exception("Unexpected Telegram polling error: %s",exc)
     return offset
 async def polling_loop():
-    offset=None;logger.info("Telegram command polling started")
+    offset=None;logger.info("Telegram command polling started | subscribers=%s storage=%s",len(get_subscribers()),SUBSCRIBERS_FILE)
     while True:
         try:offset=await asyncio.to_thread(_poll_once,offset)
         except Exception as exc:logger.exception("Telegram polling iteration crashed; restarting: %s",exc)
