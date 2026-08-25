@@ -74,7 +74,6 @@ def scan_engines(live):
  state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();c={"live":len(live),"fh_seen":0,"fh_eligible":0,"ht_seen":0,"ht_eligible":0,"duplicate":0,"exposure":0,"market":0,"value_reject":0,"sent":0}
  for m in live:
   minute=int(getattr(m,"minute",0) or 0);is_ht=bool(getattr(m,"is_halftime",False))
-  # Collect the whole first half from kickoff. Signal is still forbidden before 15'.
   if 0<=minute<=25 and not is_ht:
    c["fh_seen"]+=1;body=fetch_stats(m.event_id)
    if not body:continue
@@ -82,7 +81,6 @@ def scan_engines(live):
    if not stats:continue
    key=f"fhtrend:{m.event_id}";s=state.setdefault(key,{"ts":now,"snaps":[]});snaps=s.setdefault("snaps",[]);snap={"minute":minute,"stats":snapshot(stats)}
    if not snaps or int(snaps[-1].get("minute",-1))!=minute:snaps.append(snap)
-   # 30 compact snapshots max: enough for kickoff baseline on a 512 MB VPS.
    s["snaps"]=snaps[-30:];s["ts"]=now
    if minute<15:continue
    baseline=s["snaps"][0].get("stats") if s["snaps"] else {};d=delta(stats,baseline);goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
@@ -107,6 +105,6 @@ def scan_engines(live):
   if not market:logger.info("ENGINE_NO_MARKET %s %s",engine,m.event_id);continue
   primary=_primary(engine,market,dec.score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15";ok,why=value_ok(primary,reason)
   if not ok:c["value_reject"]+=1;logger.info("ENGINE_VALUE_REJECT %s %s %s",engine,m.event_id,why);continue
-  c["market"]+=1;odd=float(market.get("odd",0) or 0)
+  c["market"]+=1;odd=float(market.get("odd",0) or 0);d["_market"]={"line":market.get("line"),"odd":market.get("odd"),"market_status":market.get("market_status"),"source_count":market.get("source_count"),"source_prices":market.get("source_prices") or []}
   if _record(m,engine,dec.score,d,market) and _send_all(m,engine,dec.score,d,odd):c["sent"]+=1;journal=all_signals()
  _save(state);logger.info("ENGINE_SCAN_DIAG %s",c)
