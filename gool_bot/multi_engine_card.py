@@ -1,6 +1,6 @@
 from __future__ import annotations
 from io import BytesIO
-import re,requests,textwrap
+import math,re,requests,textwrap
 from PIL import Image,ImageDraw,ImageFont,ImageFilter
 from live_engine import _feed
 BLUE=(45,166,255);PURPLE=(190,75,255);WHITE=(247,249,252);MUTED=(157,171,193);GREEN=(83,220,116);RED=(244,64,64);BG=(4,9,17);PANEL=(10,18,31);LINE=(47,63,86)
@@ -57,6 +57,23 @@ def _header_text(engine):
  if engine=='first_half_goal':return PURPLE,'GOOL 2.0 • FIRST HALF GOAL','АНАЛИЗ ГОЛА ДО ПЕРЕРЫВА','1T'
  return BLUE,'GOOL 2.0 • SECOND HALF','АНАЛИЗ ДВУХ ГОЛОВ ПОСЛЕ ПЕРЕРЫВА','2T'
 def _signal_label(engine):return 'ОЖИДАЕМ ГОЛ ДО ПЕРЕРЫВА' if engine=='first_half_goal' else 'ОЖИДАЕМ 2+ ГОЛА ВО 2-М ТАЙМЕ'
+def _event_probability(match,engine,score):
+ """Event probability using the same GOOL hazard family as CORE cards.
+
+ score remains the internal strategy-strength score.  The displayed probability is
+ derived separately from expected-goal hazard and the event horizon, so we never
+ relabel a technical score as a probability.
+ """
+ m=max(0.0,min(100.0,float(score or 0)))
+ rate=(2.7/90.0)*(0.45+1.35*m/100.0)
+ if engine=='first_half_goal':
+  minute=max(0,int(getattr(match,'minute',0) or 0));remaining=max(0.0,47.0-minute);lam=max(0.0,min(4.0,rate*remaining));p=(1.0-math.exp(-lam))*100.0
+  return int(round(max(0.0,min(92.0,p))))
+ # 2+ goals in second half: evaluate a complete second-half horizon from HT.
+ horizon=49.0 if bool(getattr(match,'is_halftime',False)) else max(0.0,94.0-int(getattr(match,'minute',45) or 45))
+ lam=max(0.0,min(5.0,rate*horizon));p=(1.0-math.exp(-lam)*(1.0+lam))*100.0
+ return int(round(max(0.0,min(92.0,p))))
+def _prob_label(engine):return 'P(ГОЛ ДО ПЕРЕРЫВА)' if engine=='first_half_goal' else 'P(2+ ГОЛА ВО 2Т)'
 def _why(engine,score,delta,timing):
  xg=_num(delta,'xg');xgot=_num(delta,'xgot');shots=_num(delta,'shots');sot=_num(delta,'shots_on_target');bc=_num(delta,'big_chances');box=_num(delta,'shots_inside_box');parts=[]
  if xg>=1.2:parts.append(f'xG {xg:.2f} показывает качественные моменты')
@@ -76,13 +93,15 @@ def _why(engine,score,delta,timing):
 def render_engine_card(match,engine,score=0,delta=None,odd=None,result=None):
  delta=delta or {};timing=delta.get('_timing') or {};accent,title,subtitle,mode=_header_text(engine)
  if result is not None:return render_result_card(match,engine,result)
+ event_prob=_event_probability(match,engine,score)
  W,H=1200,1230;img=Image.new('RGBA',(W,H),BG+(255,));d=ImageDraw.Draw(img);panel(img,(24,20,W-24,H-22),accent,32,3);d=ImageDraw.Draw(img)
  d.text((55,40),title,font=F(38,True),fill=WHITE);d.text((57,88),subtitle,font=F(23,True),fill=accent);d.rounded_rectangle((900,43,1145,105),17,outline=accent,width=2);d.text((930,59),mode,font=fit(d,mode,190,21,True),fill=accent)
  hn,an=logos(getattr(match,'event_id',''));crest(img,dl(hn),195,292,accent);crest(img,dl(an),1005,292,accent);panel(img,(430,205,770,388),accent,28,2);d=ImageDraw.Draw(img);center(d,f'{match.home_score} : {match.away_score}',246,F(70,True),WHITE,W);center(d,'ПЕРЕРЫВ' if getattr(match,'is_halftime',False) else f"{match.minute}'",331,F(31,True),accent,W)
  for x,n in ((195,match.home),(1005,match.away)):
   f=fit(d,n,340,32);b=d.textbbox((0,0),n,font=f);d.text((x-(b[2]-b[0])/2,407),n,font=f,fill=WHITE)
  center(d,getattr(match,'league','') or 'LIVE FOOTBALL',458,F(21),MUTED,W)
- panel(img,(55,510,1145,700),accent,22,2);d=ImageDraw.Draw(img);d.text((90,538),'АНАЛИТИЧЕСКИЙ СИГНАЛ',font=F(20,True),fill=MUTED);label=_signal_label(engine);d.text((90,582),label,font=fit(d,label,690,33,True),fill=WHITE);d.text((90,638),'Коэффициенты не участвуют в решении',font=F(19,True),fill=MUTED);d.text((835,545),'GOOL',font=F(17,True),fill=MUTED);d.text((815,584),f'{int(round(score))}/100',font=F(46,True),fill=accent)
+ panel(img,(55,510,1145,700),accent,22,2);d=ImageDraw.Draw(img);d.text((90,538),'АНАЛИТИЧЕСКИЙ СИГНАЛ',font=F(20,True),fill=MUTED);label=_signal_label(engine);d.text((90,582),label,font=fit(d,label,650,33,True),fill=WHITE);d.text((90,638),'Коэффициенты не участвуют в решении',font=F(19,True),fill=MUTED)
+ d.text((790,530),_prob_label(engine),font=fit(d,_prob_label(engine),315,17,True),fill=MUTED);d.text((840,562),f'{event_prob}%',font=F(52,True),fill=GREEN);d.text((790,635),f'GOOL SCORE {int(round(score))}/100',font=F(16,True),fill=MUTED)
  labels=[('xG',_val(delta,'xg','float')),('xGoT',_val(delta,'xgot','float')),('УДАРЫ',_val(delta,'shots')),('В СТВОР',_val(delta,'shots_on_target')),('BIG CHANCES',_val(delta,'big_chances')),('В ШТРАФНОЙ',_val(delta,'shots_inside_box'))];y=742;gap=12;cw=(1090-gap*2)/3
  for i,(lab,val) in enumerate(labels):row=i//3;col=i%3;xa=55+col*(cw+gap);ya=y+row*98;_box(d,(xa,ya,xa+cw,ya+82),lab,val,WHITE)
  d.rounded_rectangle((55,955,1145,1158),22,fill=(9,18,31),outline=LINE,width=1);d.text((82,978),'ПОЧЕМУ GOOL ДАЛ СИГНАЛ',font=F(21,True),fill=accent);yy=1017
