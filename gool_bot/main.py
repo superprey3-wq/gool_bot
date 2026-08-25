@@ -45,6 +45,7 @@ import live_status_heartbeat
 import fast_goal_watch
 import multi_engine_runtime
 import live_button_patch
+import live_button_emergency_patch
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop
 import production_logging
