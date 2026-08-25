@@ -1,14 +1,19 @@
-"""Build on-demand snapshots of today's GOOL BOT signal journal."""
+"""Build auditable on-demand snapshots of today's GOOL 2.0 signal journal."""
 from __future__ import annotations
-import asyncio,time
+import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from live_engine import discover_live_matches, fetch_summary
-from daily_report import _score_from_summary
+from live_engine import discover_live_matches
+from market_settlement import settle_primary
+from multi_engine import FIRST_HALF_GOAL, SECOND_HALF_OVER15
 from signal_journal import all_signals
+
 MOSCOW=ZoneInfo("Europe/Moscow")
-HT_ENGINE="first_half"
-RISK_ENGINE="second_half"
+_PENDING={"","pending","wait","waiting"}
+_WIN={"+","win","won"}
+_LOSS={"-","loss","lost"}
+_PUSH={"push","void","return","возврат"}
+
 
 def _today_rows():
     today=datetime.now(MOSCOW).date().isoformat();rows=[]
@@ -18,97 +23,129 @@ def _today_rows():
         if created.date().isoformat()==today:rows.append(row)
     return rows
 
+
 def _live_signal_rows(rows):
-    return [r for r in rows if r.get("kind")=="live" and str(r.get("reason") or "signal") in {"signal","reentry"} and str(r.get("engine") or "core") not in {HT_ENGINE,RISK_ENGINE}]
+    aux={FIRST_HALF_GOAL,SECOND_HALF_OVER15}
+    return [r for r in rows if r.get("kind")=="live" and str(r.get("reason") or "signal") in {"signal","reentry"} and str(r.get("engine") or "core") not in aux]
+
 
 def _engine_rows(rows,engine):
     return [r for r in rows if r.get("kind")=="live" and str(r.get("engine") or "")==engine]
 
+
 def _is_pending_entry(row):
-    return str(row.get("result") or "pending").strip().lower() in {"","pending","wait","waiting"}
+    return str(row.get("result") or "pending").strip().lower() in _PENDING
+
 
 def _current_live_ids():
     try:matches=asyncio.run(discover_live_matches())
     except Exception:return None
     return {str(m.event_id) for m in matches}
 
-def _fallback_plausibly_running(row)->bool:
-    try:minute=max(0,int(row.get("minute") or 0));created=float(row.get("created_ts") or 0)
-    except Exception:return True
-    if created<=0:return True
-    return (time.time()-created)<max(12,100-minute)*60
 
 def build_live_signals_text()->str:
-    rows=[r for r in _live_signal_rows(_today_rows()) if _is_pending_entry(r)];live_ids=_current_live_ids()
+    rows=[r for r in _today_rows() if r.get("kind")=="live" and _is_pending_entry(r)];live_ids=_current_live_ids()
     if live_ids is None:return "⚠️ Не удалось получить LIVE-список Flashscore. Попробуй ещё раз через минуту."
-    active=[r for r in rows if str(r.get("event_id","")) in live_ids]
+    active=[r for r in rows if str(r.get("event_id","")) in live_ids and str(r.get("reason") or "") in {"signal","reentry",FIRST_HALF_GOAL,SECOND_HALF_OVER15}]
     latest={}
     for r in active:
-        eid=str(r.get("event_id",""));old=latest.get(eid)
-        if old is None or int(r.get("created_ts",0) or 0)>int(old.get("created_ts",0) or 0):latest[eid]=r
+        key=f"{r.get('engine') or 'core'}:{r.get('event_id')}";old=latest.get(key)
+        if old is None or int(r.get("created_ts",0) or 0)>int(old.get("created_ts",0) or 0):latest[key]=r
     active=sorted(latest.values(),key=lambda r:int(r.get("created_ts",0) or 0),reverse=True)
-    if not active:return "🟢 <b>В ИГРЕ</b>\n\nСейчас незакрытых LIVE-сигналов нет."
-    lines=[f"🟢 <b>В ИГРЕ — {len(active)}</b>","<i>Только сигналы, где матч ещё идёт и гол после входа ещё не подтверждён.</i>",""]
+    if not active:return "🟢 <b>В ИГРЕ</b>\n\nСейчас незакрытых LIVE-входов нет."
+    lines=[f"🟢 <b>В ИГРЕ — {len(active)}</b>","<i>Только реально открытые GOOL 2.0 позиции.</i>",""]
     for r in active[:20]:
         try:when=datetime.fromtimestamp(int(r.get("created_ts",0)),MOSCOW).strftime("%H:%M")
         except Exception:when="—"
-        lines.append(f"⏳ <b>{r.get('home')} — {r.get('away')}</b>\n↳ вход {r.get('minute')}' · {r.get('score_at_signal')} · {when}")
+        engine=str(r.get("engine") or "core")
+        label="CORE" if engine in {"","core"} else "1H GOAL" if engine==FIRST_HALF_GOAL else "2H O1.5"
+        lines.append(f"⏳ <b>{r.get('home')} — {r.get('away')}</b>\n↳ {label} · вход {r.get('minute')}' · {r.get('score_at_signal')} · {when}")
     if len(active)>20:lines.append(f"\n…и ещё {len(active)-20}")
     return "\n".join(lines)
 
-def _engine_section(title,rows):
-    wins=sum(str(r.get("result") or "").strip().lower() in {"+","win","won"} for r in rows)
-    losses=sum(str(r.get("result") or "").strip().lower() in {"-","loss","lost"} for r in rows)
-    pending=len(rows)-wins-losses;settled=wins+losses;rate=round(wins/settled*100) if settled else 0
-    odds=[]
-    for r in rows:
-        try:
-            o=float(r.get("odd") or 0)
-            if o>1:odds.append(o)
+
+def _row_pnl(row):
+    try:return float(row.get("pnl_units"))
+    except (TypeError,ValueError):pass
+    result=str(row.get("result") or "").strip().lower()
+    try:odd=float(row.get("odd") or (row.get("primary") or {}).get("odd") or 0)
+    except (TypeError,ValueError):odd=0.0
+    if result in _WIN and odd>1:return odd-1.0
+    if result in _LOSS:return -1.0
+    if result in _PUSH:return 0.0
+    return None
+
+
+def _core_state(row):
+    result=str(row.get("result") or "pending").strip().lower()
+    if result in _WIN:return "win",_row_pnl(row)
+    if result in _LOSS:return "loss",_row_pnl(row)
+    if result in _PUSH:return "push",0.0
+    final=row.get("final_score");primary=row.get("primary")
+    if final and isinstance(primary,dict):
+        settlement=settle_primary(primary,final)
+        if settlement:
+            r=str(settlement.get("result") or "").lower();p=float(settlement.get("pnl_units",0) or 0)
+            if r in _WIN:return "win",p
+            if r in _LOSS:return "loss",p
+            if r in _PUSH:return "push",p
+    return "pending",None
+
+
+def _aux_state(row):
+    result=str(row.get("result") or "pending").strip().lower()
+    if result in _WIN:return "win",_row_pnl(row)
+    if result in _LOSS:return "loss",_row_pnl(row)
+    if result in _PUSH:return "push",0.0
+    return "pending",None
+
+
+def _market_label(row):
+    p=row.get("primary") or {};kind=str(p.get("market_type") or p.get("market") or "").upper();line=p.get("line")
+    if kind=="BTTS":return "ОЗ — Да"
+    if kind=="TEAM_TOTAL_HOME":return f"ИТБ хозяев {line:g}" if isinstance(line,(int,float)) else "ИТБ хозяев"
+    if kind=="TEAM_TOTAL_AWAY":return f"ИТБ гостей {line:g}" if isinstance(line,(int,float)) else "ИТБ гостей"
+    if line is not None:
+        try:return f"ТБ {float(line):g}"
         except Exception:pass
-    lines=["",title,f"Сигналов: <b>{len(rows)}</b>",f"✅ Зашло: <b>{wins}</b>",f"❌ Не зашло: <b>{losses}</b>",f"⏳ В игре: <b>{pending}</b>"]
-    if settled:lines.append(f"🎯 Проходимость: <b>{rate}%</b>")
-    if odds:lines.append(f"💰 Средний LIVE-кэф: <b>{sum(odds)/len(odds):.2f}</b>")
-    if rows:
-        lines.append("<b>Последние сигналы:</b>")
-        for r in rows[-6:]:
-            rv=str(r.get("result") or "pending").lower();mark="✅" if rv in {"+","win","won"} else "❌" if rv in {"-","loss","lost"} else "⏳"
-            lines.append(f"{mark} {r.get('home')} — {r.get('away')} | {r.get('minute')}' {r.get('score_at_signal')}")
-    return "\n".join(lines)
+    return kind or "рынок"
+
+
+def _metrics(rows,state_fn):
+    states=[(r,*state_fn(r)) for r in rows];settled=[x for x in states if x[1]!="pending"]
+    wins=sum(x[1]=="win" for x in settled);losses=sum(x[1]=="loss" for x in settled);pushes=sum(x[1]=="push" for x in settled);pending=len(states)-len(settled)
+    pnl=sum(float(x[2] or 0) for x in settled);roi=(pnl/len(settled)*100) if settled else 0.0
+    odds=[]
+    for r,_,_ in settled:
+        try:o=float(r.get("odd") or (r.get("primary") or {}).get("odd") or 0)
+        except Exception:continue
+        if o>1:odds.append(o)
+    return {"states":states,"settled":len(settled),"wins":wins,"losses":losses,"pushes":pushes,"pending":pending,"pnl":pnl,"roi":roi,"avg_odd":sum(odds)/len(odds) if odds else None}
+
+
+def _summary_lines(title,rows,state_fn):
+    m=_metrics(rows,state_fn);lines=["",title,f"Входов: <b>{len(rows)}</b> · закрыто: <b>{m['settled']}</b> · ⏳ {m['pending']}",f"✅ {m['wins']} · ❌ {m['losses']} · ↩️ {m['pushes']}"]
+    if m["settled"]:
+        hit=round(m["wins"]/max(1,m["wins"]+m["losses"])*100) if m["wins"]+m["losses"] else 0
+        lines.append(f"🎯 Win rate без возвратов: <b>{hit}%</b>")
+        lines.append(f"📈 PnL: <b>{m['pnl']:+.2f}u</b> · ROI: <b>{m['roi']:+.1f}%</b>")
+    if m["avg_odd"]:lines.append(f"💰 Средний LIVE-кэф: <b>{m['avg_odd']:.2f}</b>")
+    return lines,m
+
 
 def build_report_text()->str:
-    rows=_today_rows();live_rows=_live_signal_rows(rows);ht_rows=_engine_rows(rows,HT_ENGINE);risk_rows=_engine_rows(rows,RISK_ENGINE);current_live_ids=_current_live_ids();summary_cache={}
-    def get_summary(event_id):
-        event_id=str(event_id or "")
-        if not event_id:return None
-        if event_id not in summary_cache:
-            try:summary_cache[event_id]=fetch_summary(event_id)
-            except Exception:summary_cache[event_id]=None
-        return summary_cache[event_id]
-    live_ok=live_bad=live_wait=0;live_details=[]
-    for row in live_rows:
-        event_id=str(row.get("event_id", ""));body=get_summary(event_id)
-        try:sh,sa=map(int,str(row.get("score_at_signal","0:0")).split(":"))
-        except Exception:sh=sa=0
-        is_live=(current_live_ids is not None and event_id in current_live_ids);feed_unknown=(current_live_ids is None)
-        if not body:live_wait+=1;mark="⏳";fh,fa=sh,sa
-        else:
-            try:fh,fa,_,_=_score_from_summary(body)
-            except Exception:live_wait+=1;mark="⏳";fh,fa=sh,sa
-            else:
-                if (fh+fa)<(sh+sa):live_wait+=1;mark="⏳"
-                elif (fh+fa)>(sh+sa):live_ok+=1;mark="✅"
-                elif is_live:live_wait+=1;mark="⏳"
-                elif feed_unknown and _fallback_plausibly_running(row):live_wait+=1;mark="⏳"
-                else:live_bad+=1;mark="❌"
-        reason=str(row.get("reason") or "signal");label="ПОВТОРНЫЙ ВХОД" if reason=="reentry" else "ВХОД"
-        live_details.append(f"{mark} {label} · {row.get('home')} — {row.get('away')} | {row.get('minute')}' {row.get('score_at_signal')} → {fh}:{fa}")
-    settled=live_ok+live_bad;live_rate=round(live_ok/settled*100) if settled else 0
-    initial=sum(1 for r in live_rows if str(r.get("reason") or "signal")=="signal");reentries=sum(1 for r in live_rows if str(r.get("reason") or "signal")=="reentry")
-    lines=["📊 <b>GOOL BOT — ОТЧЁТ НА СЕЙЧАС</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🟡 <b>ГЛАВНЫЕ СИГНАЛЫ · GOOL CORE</b>",f"Реальных входов: <b>{len(live_rows)}</b>",f"↳ Первичных: <b>{initial}</b> · повторных после гола: <b>{reentries}</b>",f"✅ Зашло: <b>{live_ok}</b>",f"❌ Не зашло: <b>{live_bad}</b>",f"⏳ В игре: <b>{live_wait}</b>"]
-    if settled:lines.append(f"🎯 Проходимость завершённых входов: <b>{live_rate}%</b>")
-    if live_details:lines += ["<b>Последние CORE-входы:</b>"]+live_details[-10:]
-    lines.append(_engine_section("🔵 <b>ПЕРВЫЙ ТАЙМ · HT HUNTER</b>",ht_rows))
-    lines.append(_engine_section("🔴 <b>ВТОРОЙ ТАЙМ · LATE RISK</b>",risk_rows))
+    rows=_today_rows();core_rows=_live_signal_rows(rows);fh_rows=_engine_rows(rows,FIRST_HALF_GOAL);sh_rows=_engine_rows(rows,SECOND_HALF_OVER15)
+    initial=sum(1 for r in core_rows if str(r.get("reason") or "signal")=="signal");reentries=sum(1 for r in core_rows if str(r.get("reason") or "signal")=="reentry")
+    lines=["📊 <b>GOOL 2.0 — ОТЧЁТ НА СЕЙЧАС</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🟡 <b>GOOL CORE · РЕАЛЬНЫЙ РЫНОК</b>",f"Первичных: <b>{initial}</b> · re-entry: <b>{reentries}</b>"]
+    core_lines,core_m=_summary_lines("",core_rows,_core_state);lines+=core_lines[1:]
+    if core_rows:
+        lines.append("<b>Последние CORE-входы:</b>")
+        for r,state,pnl in core_m["states"][-8:]:
+            mark="✅" if state=="win" else "❌" if state=="loss" else "↩️" if state=="push" else "⏳"
+            odd=(r.get("primary") or {}).get("odd") or r.get("odd");odd_txt=f" @{float(odd):.2f}" if odd else ""
+            lines.append(f"{mark} {r.get('home')} — {r.get('away')} | {r.get('minute')}' · {_market_label(r)}{odd_txt}"+(f" · {float(pnl):+.2f}u" if pnl is not None else ""))
+    fh_lines,_=_summary_lines("🔵 <b>1-Й ТАЙМ · ГОЛ 15–25'</b>",fh_rows,_aux_state);lines+=fh_lines
+    sh_lines,_=_summary_lines("🟣 <b>2-Й ТАЙМ · ТБ1.5 В ПЕРЕРЫВЕ</b>",sh_rows,_aux_state);lines+=sh_lines
     if not rows:lines += ["","Сегодня в журнале пока нет сигналов."]
+    lines += ["","<i>CORE считается по сохранённой конкретной ставке и PnL, а не по факту любого следующего гола.</i>"]
     return "\n".join(lines)
