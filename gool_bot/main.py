@@ -55,6 +55,7 @@ import card_explainability_patch
 import second_half_card_reason_patch
 import aux_result_minute_patch
 import release_build_patch
+import prematch_market_service
 from league_signal_gate import filter_for_multi_engine
 import telegram_subscribers
 import telegram_interactive_live_patch
@@ -77,11 +78,11 @@ async def status_loop():
   try:await asyncio.to_thread(live_status_heartbeat.send_heartbeat)
   except Exception:logger.exception("LIVE heartbeat failed; runner will continue")
 async def main():
- poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
- logger.info("GOOL LIVE | build=%s | analytics: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context | odds optional metadata only",BUILD_ID)
+ poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");prematch=asyncio.create_task(prematch_market_service.loop(),name="prematch-market-rolling")
+ logger.info("GOOL LIVE | build=%s | analytics: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context | rolling prematch market history active | odds context only",BUILD_ID)
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
  finally:
-  poller.cancel();heartbeat.cancel();goal_watch.cancel();await asyncio.gather(poller,heartbeat,goal_watch,return_exceptions=True)
+  poller.cancel();heartbeat.cancel();goal_watch.cancel();prematch.cancel();await asyncio.gather(poller,heartbeat,goal_watch,prematch,return_exceptions=True)
 if __name__=="__main__":asyncio.run(main())
