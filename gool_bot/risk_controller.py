@@ -5,7 +5,8 @@ controls *when* another signal may be opened on the same match:
 - maximum two entries across CORE + auxiliary engines;
 - only one still-open entry at a time;
 - no new entries after minute 75;
-- mandatory per-match cooldown between entries.
+- mandatory per-match cooldown between entries;
+- after a confirmed result, cooldown restarts from the confirmation timestamp.
 Odds/edge never participate in these gates.
 """
 from __future__ import annotations
@@ -25,6 +26,22 @@ def real_entries(rows:list[dict[str,Any]],event_id:str)->list[dict[str,Any]]:
     return [r for r in rows if r.get("kind")=="live" and str(r.get("event_id") or "")==eid and str(r.get("reason") or "") in REAL_REASONS]
 
 
+def _activity_ts(row:dict[str,Any])->int:
+    """Latest meaningful timestamp for cadence.
+
+    A fast goal must restart the waiting period; otherwise an entry opened long
+    before the goal could immediately allow another signal after settlement.
+    """
+    vals=[]
+    for key in ("created_ts","settled_ts","next_goal_confirmed_ts","result_ts","closed_ts"):
+        try:
+            v=int(float(row.get(key,0) or 0))
+            if v>0:vals.append(v)
+        except Exception:
+            pass
+    return max(vals) if vals else 0
+
+
 def can_open(rows:list[dict[str,Any]],event_id:str,current_minute:int|None=None,now_ts:float|None=None)->tuple[bool,str]:
     entries=real_entries(rows,event_id)
     if current_minute is not None and int(current_minute or 0)>MAX_NEW_SIGNAL_MINUTE:
@@ -35,8 +52,8 @@ def can_open(rows:list[dict[str,Any]],event_id:str,current_minute:int|None=None,
     if len(pending)>=MAX_OPEN_PER_MATCH:
         return False,f"open_exposure={len(pending)}"
     if entries:
-        latest=max(entries,key=lambda r:int(r.get("created_ts",0) or 0))
-        latest_ts=int(latest.get("created_ts",0) or 0)
+        latest=max(entries,key=_activity_ts)
+        latest_ts=_activity_ts(latest)
         now=float(now_ts if now_ts is not None else time.time())
         required=MATCH_ENTRY_COOLDOWN_MINUTES*60
         elapsed=max(0,now-latest_ts) if latest_ts else required
@@ -46,8 +63,6 @@ def can_open(rows:list[dict[str,Any]],event_id:str,current_minute:int|None=None,
         if current_minute is not None:
             try:last_minute=int(latest.get("minute") or 0)
             except Exception:last_minute=0
-            # A stale/restarted wall clock must not permit another signal in the
-            # exact same football minute. This is an additional sanity guard.
             if last_minute and int(current_minute or 0)<=last_minute:
                 return False,f"same_match_minute={int(current_minute or 0)}<=last={last_minute}"
     return True,"ok"
@@ -65,7 +80,6 @@ def auditable_primary(primary:dict[str,Any]|None)->bool:
         except (KeyError,TypeError,ValueError):return False
     return False
 
-# Kept only for backwards-compatible imports. Odds are display metadata and do
-# not control signal eligibility anywhere in the production runner.
+
 def required_edge(reason:str)->float:return 0.0
 def value_ok(primary:dict[str,Any]|None,reason:str)->tuple[bool,str]:return True,"odds_display_only"
