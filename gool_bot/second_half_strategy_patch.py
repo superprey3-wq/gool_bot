@@ -1,8 +1,9 @@
 """Make SECOND_HALF_OVER15 reachable without weakening match-level safeguards.
 
 Primary decision remains at half-time. If the runner misses the exact HT status,
-a stricter recovery decision is allowed only at 46-50'. All entries still pass
-the shared max-2 / one-open / cooldown / <=75' gate.
+a stricter recovery decision is allowed at 46-55'. The later 51-55' window is
+more selective because the cumulative snapshot already includes opening 2H play.
+All entries still pass the shared max-2 / one-open / cooldown / <=75' gate.
 """
 from __future__ import annotations
 
@@ -88,12 +89,20 @@ def _recovery_stats(match):
         return {}, {}
 
 
+def _recovery_thresholds(minute):
+    """Later entries need materially stronger evidence than 46-50'."""
+    minute = int(minute or 0)
+    if minute <= 50:
+        return 78.0, 5
+    return 82.0, 6
+
+
 def _scan_recovery(live):
     rows = all_signals()
     seen = eligible = sent = league_reject = cadence_reject = 0
     for m in live or []:
         minute = int(getattr(m, "minute", 0) or 0)
-        if bool(getattr(m, "is_halftime", False)) or not (46 <= minute <= 50):
+        if bool(getattr(m, "is_halftime", False)) or not (46 <= minute <= 55):
             continue
         if _has_engine_entry(rows, m.event_id):
             continue
@@ -109,14 +118,13 @@ def _scan_recovery(live):
             continue
         timing = timing_context(m, SECOND_HALF_OVER15)
         dec = _second_half_decision(stats, timing.get("bonus", 0))
-        # Recovery is deliberately stricter than an exact HT decision because
-        # the snapshot can contain the opening minutes of the second half.
         match_evidence = re.search(r"evidence=(\d+)/4", dec.reason)
         evidence = int(match_evidence.group(1)) if match_evidence else 0
-        if not dec.eligible or dec.score < 78 or evidence < 5:
+        min_score, min_evidence = _recovery_thresholds(minute)
+        if not dec.eligible or dec.score < min_score or evidence < min_evidence:
             logger.info(
-                "SECOND_HALF_RECOVERY_REJECT %s %d' score=%.1f evidence=%d/5",
-                m.event_id, minute, dec.score, evidence,
+                "SECOND_HALF_RECOVERY_REJECT %s %d' score=%.1f/%.1f evidence=%d/%d",
+                m.event_id, minute, dec.score, min_score, evidence, min_evidence,
             )
             continue
         eligible += 1
@@ -127,7 +135,7 @@ def _scan_recovery(live):
             continue
         d = mer.snapshot(stats)
         d["_timing"] = timing
-        d["_decision_reason"] = dec.reason + "; recovery=46-50"
+        d["_decision_reason"] = dec.reason + f"; recovery=46-55; gate={min_score:.0f}/{min_evidence}"
         d["_metric_sources"] = dict(provenance or {})
         market = mer._ht_market(m)
         odd = float(market.get("odd", 0) or 0) if market else None
@@ -145,7 +153,7 @@ def _scan_recovery(live):
             if mer._send_all(m, SECOND_HALF_OVER15, dec.score, d, odd):
                 sent += 1
     logger.info(
-        "SECOND_HALF_RECOVERY_DIAG seen=%d eligible=%d sent=%d league_reject=%d cadence_reject=%d",
+        "SECOND_HALF_RECOVERY_DIAG seen=%d eligible=%d sent=%d league_reject=%d cadence_reject=%d window=46-55",
         seen, eligible, sent, league_reject, cadence_reject,
     )
 
@@ -160,4 +168,4 @@ def scan_engines(live):
 
 
 mer.scan_engines = scan_engines
-logger.info("Second-half strategy patch active | HT primary + 46-50 strict recovery | diagnostic reasons enabled")
+logger.info("Second-half strategy patch active | HT primary + 46-55 recovery | 51-55 stricter | diagnostic reasons enabled")
