@@ -7,29 +7,21 @@ if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
 os.environ.setdefault("LIVE_SIGNAL_THRESHOLD","75");os.environ.setdefault("LIVE_COOLDOWN_MINUTES","12")
 LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
-
-# Base LIVE feed. Proxy xG must patch parse_stats before candidate modules import it.
 import visual_feed_unified_bot
 import xg_proxy_patch
 import live_only_recommendation_patch
 import live_candidate_patch
-
-# Candidate-only external data + bounded pre-match/H2H/league/red-card context.
 import candidate_enrichment_patch
 import scores365_enrichment_patch
 import context_adjustment_patch
 import core_warmup_patch
 import halftime_hazard_patch
-
-# Verified markets: LSApp + Bovada + Kambi, then concrete BEST BET selection.
 import period_market_patch
 import phase_market_patch
 import multi_source_odds_patch
 import btts_period_sources_patch
 import team_total_sources_patch
 import best_market_selector_patch
-
-# Math, score freshness, Telegram card and final exposure/value gate.
 import score_sync_patch
 import market_math_patch
 import gool_xg_consensus
@@ -37,13 +29,10 @@ import telegram_signal_filter_patch
 import telegram_image_signal_patch
 import entry_sync_failopen_patch
 import live_quant_guard_patch
-import core_result_card_patch
 import robust_goal_cooldown_patch
 import fast_core_runtime
 import signal_journal_runtime_patch
 import goal_reset_patch
-
-# Settlement / CLV and auxiliary strategies.
 import core_primary_reconcile
 import clv_tracker
 import live_status_heartbeat
@@ -52,7 +41,6 @@ import multi_engine_runtime
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop
 import production_logging
-
 async def run_live():
  try:
   started=time.monotonic();live=await visual_feed_unified_bot.unified_bot.discover_live_matches();discovery=time.monotonic()-started
