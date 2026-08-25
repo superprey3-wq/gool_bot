@@ -39,10 +39,10 @@ jobs:
           home=(os.getenv('HOME_TEAM') or 'Real Madrid').strip()
           away=(os.getenv('AWAY_TEAM') or 'Real Sociedad').strip()
           print(f'TARGET: {home} — {away}')
-          H={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*'}
+          H={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Accept-Language':'en-US,en;q=0.9'}
           def get(label,url,params=None,headers=None):
               try:
-                  r=requests.get(url,params=params,headers=headers or H,timeout=15)
+                  r=requests.get(url,params=params,headers=headers or H,timeout=15,allow_redirects=True)
                   print(f'\n[{label}] HTTP {r.status_code} type={r.headers.get("content-type","")} bytes={len(r.content)}')
                   print(r.text[:1800].replace('\n',' '))
                   return r
@@ -50,16 +50,22 @@ jobs:
                   print(f'\n[{label}] ERROR {type(e).__name__}: {e}')
                   return None
 
-          common={'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'}
-          for root in ('https://1xbet.com/LiveFeed','https://1xbet.fi/LiveFeed'):
-              get('1XBET '+root,root+'/Get1x2_VZip',common,{**H,'Referer':'https://1xbet.com/'})
-          for root in ('https://melbet.com/LiveFeed','https://melbet.org/LiveFeed'):
-              get('MELBET '+root,root+'/Get1x2_VZip',common,{**H,'Referer':'https://melbet.com/'})
-
-          # Flashscore/LSApp direct reachability + today's market payload for a known event when available.
-          get('LSAPP HEALTH','https://global.ds.lsapp.eu/odds/pq_graphql',{
-              '_hash':'oce','eventId':'','projectId':'5','geoIpCode':'US','geoIpSubdivisionCode':'USCA'
-          },{**H,'Referer':'https://www.flashscore.com/'})
+          param_sets=[
+              {'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'},
+              {'sports':1,'count':1000,'lng':'en','mode':4,'country':137,'gr':285,'virtualSports':'true','noFilterBlockEvent':'true','getEmpty':'true'},
+          ]
+          roots=[
+              ('1XBET service','https://1xbet.com/service-api/LiveFeed','https://1xbet.com'),
+              ('1XBET FI service','https://1xbet.fi/service-api/LiveFeed','https://1xbet.fi'),
+              ('MELBET service','https://melbet.com/service-api/LiveFeed','https://melbet.com'),
+              ('1XBET legacy','https://1xbet.com/LiveFeed','https://1xbet.com'),
+              ('1XBET FI legacy','https://1xbet.fi/LiveFeed','https://1xbet.fi'),
+              ('MELBET legacy','https://melbet.com/LiveFeed','https://melbet.com'),
+              ('MELBET ORG legacy','https://melbet.org/LiveFeed','https://melbet.org'),
+          ]
+          for label,root,origin in roots:
+              for i,params in enumerate(param_sets,1):
+                  get(f'{label} p{i}',root+'/Get1x2_VZip',params,{**H,'Referer':origin+'/','Origin':origin})
 
           key=(os.getenv('GOAL_API_KEY') or '').strip()
           if key:
