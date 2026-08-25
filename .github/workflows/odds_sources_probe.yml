@@ -19,13 +19,12 @@ jobs:
           python-version: '3.12'
       - name: Install probe dependencies
         run: pip install requests
-      - name: Probe live and tomorrow pregame
+      - name: Probe active live and Aug 27 pregame
         run: |
           python - <<'PY'
-          import requests, datetime, json
+          import requests, datetime, collections
           H={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Accept-Language':'en-US,en;q=0.9','Referer':'https://1xbet.fi/','Origin':'https://1xbet.fi'}
           BASE='https://1xbet.fi/service-api'
-          common={'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'}
           def get_json(url,params):
               r=requests.get(url,params=params,headers=H,timeout=20,allow_redirects=True)
               print('GET',url,'HTTP',r.status_code,'bytes',len(r.content),'type',r.headers.get('content-type'))
@@ -34,62 +33,60 @@ jobs:
               try:return r.json()
               except Exception:
                   print(r.text[:500]); return None
-          def event_name(e): return f"{e.get('O1') or e.get('O1E')} — {e.get('O2') or e.get('O2E')}"
-          def event_time(e):
-              for k in ('S','STI','U'):
-                  v=e.get(k)
-                  if isinstance(v,(int,float)) and 1600000000 < v < 2100000000:
-                      return datetime.datetime.fromtimestamp(v,datetime.timezone.utc),k
-              return None,None
-          def summarize(label,e):
+          def etime(e):
+              v=e.get('S')
+              if isinstance(v,(int,float)) and 1600000000 < v < 2100000000:
+                  return datetime.datetime.fromtimestamp(v,datetime.timezone.utc)
+              return None
+          def name(e): return f"{e.get('O1') or e.get('O1E')} — {e.get('O2') or e.get('O2E')}"
+          def stat_rows(e):
+              rows=[]
+              for b in ((e.get('SC') or {}).get('ST') or []):
+                  for s in b.get('Value') or []: rows.append((s.get('N'),s.get('S1'),s.get('S2')))
+              return rows
+          def nonzero(rows):
+              for _,a,b in rows:
+                  try:
+                      if float(a or 0)!=0 or float(b or 0)!=0:return True
+                  except: pass
+              return False
+          def dump(label,e,detail_root=None):
+              sc=e.get('SC') or {}; rows=stat_rows(e)
               print('\n====',label,'====')
-              print('MATCH',event_name(e),'ID',e.get('I'),'LEAGUE',e.get('L') or e.get('LE'))
-              dt,k=event_time(e); print('TIME',dt.isoformat() if dt else None,'FIELD',k)
-              print('CORE',{k:e.get(k) for k in ('I','O1','O2','L','LE','S','U','T','CO','N') if k in e})
-              sc=e.get('SC') or {}; print('PERIOD',sc.get('CPS'), 'SCORE',sc.get('FS'),'PERIOD_SCORE',sc.get('PS'))
-              stats=[]
-              for b in sc.get('ST') or []:
-                  for s in b.get('Value') or []: stats.append((s.get('N'),s.get('S1'),s.get('S2')))
-              print('STATS',stats)
+              print('MATCH',name(e),'ID',e.get('I'),'LEAGUE',e.get('L') or e.get('LE'),'START',etime(e))
+              print('PERIOD',sc.get('CPS'),'SCORE',sc.get('FS'),'PERIOD_SCORES',sc.get('PS'))
+              print('STATS',rows)
               print('MAIN_MARKETS',e.get('E'))
               print('ALT_MARKETS',e.get('AE'))
-          live=get_json(BASE+'/LiveFeed/Get1x2_VZip',common)
-          live_events=(live or {}).get('Value') or []
-          print('LIVE_COUNT',len(live_events))
-          if live_events:
-              live_pick=max(live_events,key=lambda e: len((e.get('SC') or {}).get('ST') or []))
-              summarize('LIVE LIST EVENT',live_pick)
-              gid=live_pick.get('I')
-              if gid:
-                  detail=get_json(BASE+'/LiveFeed/GetGameZip',{'id':gid,'lng':'en','cfview':0,'isSubGames':'true','GroupEvents':'true','allEventsGroupSubGames':'true','countevents':250,'grMode':2})
-                  val=(detail or {}).get('Value')
-                  if isinstance(val,dict): summarize('LIVE DETAIL',val)
-          # Try modern pregame LineFeed. Test both list methods used by the 1xBet family.
-          pre=None; used=None
-          for method in ('Get1x2_VZip','Get1x2_VLine'):
-              d=get_json(BASE+'/LineFeed/'+method,common)
-              vals=(d or {}).get('Value') or []
-              if vals:
-                  pre=vals; used=method; break
-          print('PREGAME_METHOD',used,'COUNT',len(pre or []))
-          if pre:
-              today=datetime.datetime.now(datetime.timezone.utc).date(); tomorrow=today+datetime.timedelta(days=1)
-              candidates=[]
-              for e in pre:
-                  dt,k=event_time(e)
-                  if dt and dt.date()==tomorrow: candidates.append(e)
-              if not candidates:
-                  # fallback: choose nearest future event so we can still validate payload shape
-                  now=datetime.datetime.now(datetime.timezone.utc)
-                  candidates=[e for e in pre if event_time(e)[0] and event_time(e)[0]>now]
-                  candidates.sort(key=lambda e:event_time(e)[0])
+              if detail_root and e.get('I'):
+                  d=get_json(BASE+'/'+detail_root+'/GetGameZip',{'id':e.get('I'),'lng':'en','cfview':0,'isSubGames':'true','GroupEvents':'true','allEventsGroupSubGames':'true','countevents':250,'grMode':2})
+                  v=(d or {}).get('Value')
+                  if isinstance(v,dict):
+                      sc2=v.get('SC') or {}; print('DETAIL_KEYS',sorted(v.keys())); print('DETAIL_PERIOD',sc2.get('CPS'),'DETAIL_SCORE',sc2.get('FS')); print('DETAIL_STATS',stat_rows(v)); print('DETAIL_E',v.get('E')); print('DETAIL_AE',v.get('AE'))
+          common={'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'}
+          live=(get_json(BASE+'/LiveFeed/Get1x2_VZip',common) or {}).get('Value') or []
+          active=[]
+          for e in live:
+              sc=e.get('SC') or {}; rows=stat_rows(e)
+              if sc.get('CPS') and nonzero(rows): active.append(e)
+          print('LIVE_TOTAL',len(live),'ACTIVE_WITH_NONZERO_STATS',len(active))
+          if active:
+              pick=max(active,key=lambda e: len(stat_rows(e)))
+              dump('ACTIVE LIVE',pick,'LiveFeed')
+          elif live:
+              dump('LIVE FALLBACK',live[0],'LiveFeed')
+          target=datetime.date(2026,8,27)
+          for tf in (1500000,3000000,5000000,10000000):
+              params={**common,'tf':tf,'tz':3}
+              pre=(get_json(BASE+'/LineFeed/Get1x2_VZip',params) or {}).get('Value') or []
+              dates=collections.Counter(str(etime(e).date()) for e in pre if etime(e))
+              print('PREGAME tf',tf,'COUNT',len(pre),'DATES',dates.most_common(10))
+              candidates=[e for e in pre if etime(e) and etime(e).date()==target]
               if candidates:
-                  pick=candidates[0]; summarize('PREGAME LIST EVENT',pick)
-                  gid=pick.get('I')
-                  if gid:
-                      detail=get_json(BASE+'/LineFeed/GetGameZip',{'id':gid,'lng':'en','cfview':0,'isSubGames':'true','GroupEvents':'true','allEventsGroupSubGames':'true','countevents':250,'grMode':2})
-                      val=(detail or {}).get('Value')
-                      if isinstance(val,dict): summarize('PREGAME DETAIL',val)
-              else:
-                  print('NO FUTURE EVENT FOUND')
+                  # choose event with richest markets
+                  pick=max(candidates,key=lambda e: len(e.get('E') or [])+sum(len(x.get('ME') or []) for x in (e.get('AE') or [])))
+                  dump('AUG27 PREGAME',pick,'LineFeed')
+                  break
+          else:
+              print('NO_AUG27_EVENT_IN_TESTED_WINDOWS')
           PY
