@@ -1,17 +1,15 @@
-"""Candidate-only multi-source LIVE totals confirmation.
+"""Candidate-only LIVE totals confirmation from LSApp/Flashscore + Kambi.
 
-CORE totals are rebuilt from all available sources for the exact same line:
-LSApp/Flashscore, Bovada and Kambi. No source gets unconditional priority.
-The selected quote is an actual conservative/median source price, never a
-synthetic average. Large source disagreement is exposed to the selector and
-all raw normalized source prices are logged for audit.
+Bovada is intentionally disabled. CORE totals are rebuilt only from the exact
+same line exposed by LSApp/Flashscore and/or Kambi/BetRivers. No synthetic
+average is used; the selected quote is an actual source price. Raw normalized
+source prices are logged for audit.
 """
 from __future__ import annotations
-import logging,statistics,time
+import logging,time
 from collections import defaultdict,deque
 import live_candidate_patch as lc
 import unified_bot
-from bovada_live_odds import get_goal_total_odds
 from kambi_live_odds import get_live_goal_totals
 logger=logging.getLogger("multi_source_odds")
 _HISTORY:dict[str,deque]=defaultdict(lambda:deque(maxlen=4));_TTL=45*60
@@ -38,15 +36,11 @@ def _lsapp(entries,m,p,targets):
  return rows
 def _choose_actual_source(sources):
  ordered=sorted(sources,key=lambda x:float(x["odd"]))
- # 1 source -> it. 2 sources -> conservative lower price. 3 -> actual median quote.
- return ordered[0] if len(ordered)<=2 else ordered[len(ordered)//2]
+ # With two sources use the more conservative lower quote; with one use it directly.
+ return ordered[0]
 def _target_with_multi(entries,m,p):
  goals=int(m.home_score or 0)+int(m.away_score or 0);targets=(float(goals+.5),float(goals+1.5));by=defaultdict(list)
  for r in _lsapp(entries,m,p,targets):by[float(r["line"])].append(r)
- try:
-  for r in get_goal_total_odds(m.home,m.away,m.home_score,m.away_score):
-   if float(r.get("line",-99)) in targets and _sane(r):by[float(r["line"])].append(dict(r,source="Bovada"))
- except Exception as exc:logger.info("ODDS_BOVADA_FAILED %s %s",m.event_id,exc)
  try:
   for r in get_live_goal_totals(m.home,m.away):
    if r.get("scope")=="FULL_TIME" and float(r.get("line",-99)) in targets and _sane(r):by[float(r["line"])].append(dict(r,source="Kambi/BetRivers"))
@@ -72,3 +66,4 @@ def _target_with_multi(entries,m,p):
   best=max(out,key=lambda r:(float(r.get("value_edge",-999)),int(r.get("confidence",0)),-int(r.get("goal_step",9))));best["best_bet"]=True
  return out
 lc._target_goal_markets=_target_with_multi
+logger.info("Bovada disabled | CORE totals sources: LSApp + Kambi/BetRivers")
