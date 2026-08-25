@@ -60,6 +60,23 @@ def _goal_metric(gs,*names):
     return None
 
 
+def _pair_add(*pairs):
+    good=[p for p in pairs if p is not None]
+    if not good:return None
+    return (sum(float(p[0] or 0) for p in good),sum(float(p[1] or 0) for p in good))
+
+
+def _goal_total_shots(gs):
+    direct=_goal_metric(gs,"total shots","shots","shots total")
+    if direct:return direct,"GOAL API"
+    sot=_goal_metric(gs,"on target","shots on goal","shots on target")
+    off=_goal_metric(gs,"off target","shots off target","off target shots")
+    blocked=_goal_metric(gs,"blocked shots","shots blocked","blocked")
+    derived=_pair_add(sot,off,blocked)
+    if derived and sum(derived)>0:return derived,"GOAL API derived"
+    return None,None
+
+
 def provider_payload(match):
     try:goal=ce._goal_stats(match)
     except Exception as exc:
@@ -81,7 +98,6 @@ def enrich(stats,match=None,providers=None):
     fot=providers.get("fotmob") or {};ff=(fot.get("features") or {}) if isinstance(fot,dict) else {}
     sx=providers.get("scores365") or {}
 
-    # xG / xGoT: Flashscore -> FotMob team stats -> FotMob shotmap -> 365Scores.
     if _pair_total(out,"xg")<=0:
         fp=_pair(ff.get("xg_pair"));fv=_scalar(ff.get("shot_xg_total"));sv=_scalar(sx.get("shot_xg_total"))
         if fp and sum(fp)>0:out["xg"]=fp;provenance["xg"]="FotMob"
@@ -93,28 +109,35 @@ def enrich(stats,match=None,providers=None):
         elif fv is not None and fv>0:out["xgot"]=(round(fv,3),0.0);provenance["xgot"]="FotMob"
         elif sv is not None and sv>0:out["xgot"]=(round(sv,3),0.0);provenance["xgot"]="365Scores"
 
-    # Shots: Flashscore -> FotMob team stats -> FotMob shotmap -> GOAL -> 365Scores.
-    if _pair_total(out,"shots")<=0:
-        fp=_pair(ff.get("shots_pair"));fshots=int(ff.get("shotmap_n") or 0);gshots=_goal_metric(gs,"total shots","shots","shots total");sshots=int(sx.get("shots") or 0)
-        if fp and sum(fp)>0:out["shots"]=fp;provenance["shots"]="FotMob"
-        elif fshots>0:out["shots"]=(float(fshots),0.0);provenance["shots"]="FotMob"
-        elif gshots:out["shots"]=gshots;provenance["shots"]="GOAL API"
-        elif sshots>0:out["shots"]=(float(sshots),0.0);provenance["shots"]="365Scores"
-
-    # Shots on target: Flashscore -> FotMob team stats -> GOAL API.
+    # Shots on target first, because total-shots sanity depends on it.
     if _pair_total(out,"shots_on_target")<=0:
         fp=_pair(ff.get("sot_pair"));gp=_goal_metric(gs,"on target","shots on goal","shots on target")
         if fp and sum(fp)>0:out["shots_on_target"]=fp;provenance["shots_on_target"]="FotMob"
         elif gp:out["shots_on_target"]=gp;provenance["shots_on_target"]="GOAL API"
 
-    # Big chances: Flashscore -> FotMob team stats/node -> GOAL API.
+    # Total shots: direct provider total, then component reconstruction.
+    if _pair_total(out,"shots")<=0:
+        fp=_pair(ff.get("shots_pair"));fshots=int(ff.get("shotmap_n") or 0);gshots,gsrc=_goal_total_shots(gs);sshots=int(sx.get("shots") or 0)
+        if fp and sum(fp)>0:out["shots"]=fp;provenance["shots"]="FotMob"
+        elif fshots>0:out["shots"]=(float(fshots),0.0);provenance["shots"]="FotMob"
+        elif gshots:out["shots"]=gshots;provenance["shots"]=gsrc
+        elif sshots>0:out["shots"]=(float(sshots),0.0);provenance["shots"]="365Scores"
+
+    # Football invariant: total shots can never be below shots on target.
+    shots=_pair(out.get("shots")) or (0.0,0.0)
+    sot=_pair(out.get("shots_on_target")) or (0.0,0.0)
+    if shots[0] < sot[0] or shots[1] < sot[1]:
+        out["shots"]=(max(shots[0],sot[0]),max(shots[1],sot[1]))
+        old=provenance.get("shots")
+        provenance["shots"]=(old+" + SOT floor") if old else "Derived from SOT"
+        logger.info("LIVE_STATS_SANITY_SHOTS_FLOOR shots=%s sot=%s",shots,sot)
+
     if _pair_total(out,"big_chances")<=0:
         fp=_pair(ff.get("big_chances_pair"));fv=_node_total(ff.get("big_chances_node"));gp=_goal_metric(gs,"big chances","big chance")
         if fp and sum(fp)>0:out["big_chances"]=fp;provenance["big_chances"]="FotMob"
         elif fv is not None and fv>0:out["big_chances"]=(fv,0.0);provenance["big_chances"]="FotMob"
         elif gp:out["big_chances"]=gp;provenance["big_chances"]="GOAL API"
 
-    # Box activity.
     if _pair_total(out,"shots_inside_box")<=0:
         fp=_pair(ff.get("inside_box_pair"));gp=_goal_metric(gs,"shots inside box","shots inside the box")
         if fp and sum(fp)>0:out["shots_inside_box"]=fp;provenance["shots_inside_box"]="FotMob"
@@ -140,4 +163,4 @@ def enrich(stats,match=None,providers=None):
 
 def source_label(stats,key):return str((stats or {}).get("_metric_sources",{}).get(key) or "")
 
-logger.info("Multi-source LIVE stats resolver active | strict priority Flashscore -> FotMob -> GOAL -> 365")
+logger.info("Multi-source LIVE stats resolver active | strict priority Flashscore -> FotMob -> GOAL -> 365 | shots sanity enabled")
