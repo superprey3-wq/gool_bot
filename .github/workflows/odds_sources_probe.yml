@@ -19,74 +19,36 @@ jobs:
           python-version: '3.12'
       - name: Install probe dependencies
         run: pip install requests
-      - name: Probe active live and Aug 27 pregame
+      - name: Probe default pregame feed for Aug 27
         run: |
           python - <<'PY'
           import requests, datetime, collections
           H={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Accept-Language':'en-US,en;q=0.9','Referer':'https://1xbet.fi/','Origin':'https://1xbet.fi'}
-          BASE='https://1xbet.fi/service-api'
-          def get_json(url,params):
-              r=requests.get(url,params=params,headers=H,timeout=20,allow_redirects=True)
-              print('GET',url,'HTTP',r.status_code,'bytes',len(r.content),'type',r.headers.get('content-type'))
+          URL='https://1xbet.fi/service-api/LineFeed/Get1x2_VZip'
+          def call(params):
+              r=requests.get(URL,params=params,headers=H,timeout=20)
+              print('HTTP',r.status_code,'bytes',len(r.content),'params',params)
               if r.status_code!=200:
-                  print(r.text[:500]); return None
-              try:return r.json()
-              except Exception:
-                  print(r.text[:500]); return None
-          def etime(e):
-              v=e.get('S')
-              if isinstance(v,(int,float)) and 1600000000 < v < 2100000000:
-                  return datetime.datetime.fromtimestamp(v,datetime.timezone.utc)
-              return None
-          def name(e): return f"{e.get('O1') or e.get('O1E')} — {e.get('O2') or e.get('O2E')}"
-          def stat_rows(e):
-              rows=[]
-              for b in ((e.get('SC') or {}).get('ST') or []):
-                  for s in b.get('Value') or []: rows.append((s.get('N'),s.get('S1'),s.get('S2')))
-              return rows
-          def nonzero(rows):
-              for _,a,b in rows:
-                  try:
-                      if float(a or 0)!=0 or float(b or 0)!=0:return True
-                  except: pass
-              return False
-          def dump(label,e,detail_root=None):
-              sc=e.get('SC') or {}; rows=stat_rows(e)
-              print('\n====',label,'====')
-              print('MATCH',name(e),'ID',e.get('I'),'LEAGUE',e.get('L') or e.get('LE'),'START',etime(e))
-              print('PERIOD',sc.get('CPS'),'SCORE',sc.get('FS'),'PERIOD_SCORES',sc.get('PS'))
-              print('STATS',rows)
-              print('MAIN_MARKETS',e.get('E'))
-              print('ALT_MARKETS',e.get('AE'))
-              if detail_root and e.get('I'):
-                  d=get_json(BASE+'/'+detail_root+'/GetGameZip',{'id':e.get('I'),'lng':'en','cfview':0,'isSubGames':'true','GroupEvents':'true','allEventsGroupSubGames':'true','countevents':250,'grMode':2})
-                  v=(d or {}).get('Value')
-                  if isinstance(v,dict):
-                      sc2=v.get('SC') or {}; print('DETAIL_KEYS',sorted(v.keys())); print('DETAIL_PERIOD',sc2.get('CPS'),'DETAIL_SCORE',sc2.get('FS')); print('DETAIL_STATS',stat_rows(v)); print('DETAIL_E',v.get('E')); print('DETAIL_AE',v.get('AE'))
-          common={'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'}
-          live=(get_json(BASE+'/LiveFeed/Get1x2_VZip',common) or {}).get('Value') or []
-          active=[]
-          for e in live:
-              sc=e.get('SC') or {}; rows=stat_rows(e)
-              if sc.get('CPS') and nonzero(rows): active.append(e)
-          print('LIVE_TOTAL',len(live),'ACTIVE_WITH_NONZERO_STATS',len(active))
-          if active:
-              pick=max(active,key=lambda e: len(stat_rows(e)))
-              dump('ACTIVE LIVE',pick,'LiveFeed')
-          elif live:
-              dump('LIVE FALLBACK',live[0],'LiveFeed')
+                  print(r.text[:300]); return []
+              return (r.json().get('Value') or [])
+          def dt(e):
+              s=e.get('S')
+              return datetime.datetime.fromtimestamp(s,datetime.timezone.utc) if isinstance(s,(int,float)) else None
+          def richness(e): return len(e.get('E') or [])+sum(len(x.get('ME') or []) for x in (e.get('AE') or []))
+          variants=[
+              {'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'},
+              {'sports':1,'count':500,'lng':'en','mode':4,'country':1,'getEmpty':'true','tz':3},
+              {'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true','tz':3},
+          ]
           target=datetime.date(2026,8,27)
-          for tf in (1500000,3000000,5000000,10000000):
-              params={**common,'tf':tf,'tz':3}
-              pre=(get_json(BASE+'/LineFeed/Get1x2_VZip',params) or {}).get('Value') or []
-              dates=collections.Counter(str(etime(e).date()) for e in pre if etime(e))
-              print('PREGAME tf',tf,'COUNT',len(pre),'DATES',dates.most_common(10))
-              candidates=[e for e in pre if etime(e) and etime(e).date()==target]
-              if candidates:
-                  # choose event with richest markets
-                  pick=max(candidates,key=lambda e: len(e.get('E') or [])+sum(len(x.get('ME') or []) for x in (e.get('AE') or [])))
-                  dump('AUG27 PREGAME',pick,'LineFeed')
-                  break
-          else:
-              print('NO_AUG27_EVENT_IN_TESTED_WINDOWS')
+          for p in variants:
+              ev=call(p)
+              dates=collections.Counter(str(dt(e).date()) for e in ev if dt(e))
+              print('COUNT',len(ev),'DATES',dates.most_common())
+              c=[e for e in ev if dt(e) and dt(e).date()==target]
+              print('AUG27_COUNT',len(c))
+              for e in sorted(c,key=richness,reverse=True)[:5]:
+                  print('AUG27',e.get('O1'),'—',e.get('O2'),'|',e.get('L'),'|',dt(e),'| ID',e.get('I'),'| markets',richness(e))
+                  print('E',e.get('E')); print('AE',e.get('AE'))
+              if c: break
           PY
