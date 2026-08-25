@@ -13,13 +13,7 @@ _SMART_BLOCK_TOKEN = "__SMART_LIVE_BET_BLOCK__"
 
 
 async def discover_live_matches():
-    """Return the full LIVE feed.
-
-    CORE applies its own minute gate (new entries only through 75'), while HT HUNTER
-    and LATE RISK need to see their dedicated windows up to 38' and 85'. Filtering
-    the shared feed at 75' here prevented LATE RISK from ever receiving new 80–85'
-    matches unless they were already tracked by CORE.
-    """
+    """Return the full LIVE feed for all strategy windows."""
     return await discover_all_live_matches()
 
 
@@ -72,33 +66,50 @@ def _next_goal_1h(entries, match) -> str:
     found = prices.get(target)
     if not found:
         return (
-            "⚽ <b>ЕЩЁ 1 ГОЛ В 1-М ТАЙМЕ</b>\n"
-            "Текущий LIVE-коэффициент сейчас недоступен."
+            "⚽ <b>СЦЕНАРИЙ ДО ПЕРЕРЫВА</b>\n"
+            "Линия на ещё один гол в 1-м тайме сейчас не подтверждена рынком."
         )
     odd, books = found
     return (
-        "⚽ <b>ЕЩЁ 1 ГОЛ В 1-М ТАЙМЕ</b>\n"
-        f"ТБ {target:g} 1Т — LIVE-кэф <b>{odd:.2f}</b> · {books} БК"
+        "⚽ <b>СЦЕНАРИЙ ДО ПЕРЕРЫВА</b>\n"
+        f"Ещё 1 гол: ТБ {target:g} 1Т · LIVE <b>{odd:.2f}</b> · источников {books}."
     )
 
 
 def _history_summary(match, ctx, analysis) -> str:
     parts = []
+    total_n = 0
     for label, stats in ((match.home, analysis["home"]), (match.away, analysis["away"])):
         if stats["n"]:
+            total_n += int(stats["n"])
             parts.append(
-                f"{label}: ТБ2.5 {round(stats['over25'] * 100):d}% из {int(stats['n'])}, "
+                f"{label}: ТБ2.5 {round(stats['over25'] * 100):d}% / {int(stats['n'])}, "
                 f"ср. тотал {stats['avg_total']:.2f}"
             )
     h2h = analysis["h2h"]
     if h2h["n"]:
+        total_n += int(h2h["n"])
         parts.append(
-            f"H2H: ТБ2.5 {round(h2h['over25'] * 100):d}% из {int(h2h['n'])}, "
+            f"H2H: ТБ2.5 {round(h2h['over25'] * 100):d}% / {int(h2h['n'])}, "
             f"ср. тотал {h2h['avg_total']:.2f}"
         )
     if not parts:
-        return "История Flashscore для этого матча недоступна — решение основано на LIVE-статистике."
-    return "\n".join(f"• {x}" for x in parts)
+        return "История недоступна — решение строится на LIVE-данных и рынке."
+    note = "История используется как слабая поправка, а не как основной сигнал."
+    if total_n < 8:
+        note = "Выборка истории маленькая — её вес в модели минимальный."
+    return "\n".join(f"• {x}" for x in parts) + f"\n<i>{note}</i>"
+
+
+def _edge_label(edge: float) -> str:
+    pp = edge * 100
+    if pp >= 5:
+        return f"плюс к рынку <b>+{pp:.1f} п.п.</b>"
+    if pp >= 2:
+        return f"небольшой плюс <b>+{pp:.1f} п.п.</b>"
+    if pp > -2:
+        return f"почти по рынку <b>{pp:+.1f} п.п.</b>"
+    return f"ниже рынка <b>{pp:.1f} п.п.</b>"
 
 
 def _model_pick(entries, match, pressure, ctx, analysis) -> str:
@@ -106,10 +117,11 @@ def _model_pick(entries, match, pressure, ctx, analysis) -> str:
     goals = match.home_score + match.away_score
     if not prices:
         p = unified_bot._live_over_probability(pressure.score, pressure.momentum, goals + 0.5, goals, "FULL_TIME", match.minute, None)
+        fair = 1.0 / max(p, 0.01)
         return (
-            "🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n"
-            f"Ещё 1 гол до конца матча — модель <b>{round(p * 100)}%</b>.\n"
-            "LIVE-коэффициент сейчас не получен, поэтому рыночного подтверждения нет."
+            "🎯 <b>ОСНОВНОЙ LIVE-СЦЕНАРИЙ</b>\n"
+            f"Ещё 1 гол до конца матча: модель <b>{round(p * 100)}%</b> · честный кэф ≈ <b>{fair:.2f}</b>.\n"
+            "Рыночной котировки нет — вход без подтверждения коэффициентом не считаем полноценным."
         )
 
     candidates = []
@@ -129,38 +141,42 @@ def _model_pick(entries, match, pressure, ctx, analysis) -> str:
         edge = calibrated_p - market_p
         needed = unified_bot._goals_needed_for_over(line, goals)
         utility = confidence + edge * 80 - abs(odd - 1.90) * 3 - max(0, needed - 1) * 4
-        candidates.append((utility, line, odd, books, confidence, hist_rate, edge, needed))
+        candidates.append((utility, line, odd, books, confidence, hist_rate, edge, needed, calibrated_p))
 
     if not candidates:
         p = unified_bot._live_over_probability(pressure.score, pressure.momentum, goals + 0.5, goals, "FULL_TIME", match.minute, None)
         return (
-            "🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n"
-            f"Ещё 1 гол до конца матча — модель <b>{round(p * 100)}%</b>.\n"
-            "Доступные LIVE-линии сейчас не подходят для корректного входа."
+            "🎯 <b>ОСНОВНОЙ LIVE-СЦЕНАРИЙ</b>\n"
+            f"Ещё 1 гол: модель <b>{round(p * 100)}%</b>.\n"
+            "Доступные линии сейчас не дают нормального сочетания вероятности и цены — лучше пропуск."
         )
 
     candidates.sort(reverse=True)
-    _, line, odd, books, confidence, hist_rate, edge, needed = candidates[0]
-    support = ""
-    if hist_rate is not None:
-        support = f" · исторический проход линии {round(hist_rate * 100):d}%"
-    needed_text = f"Нужно ещё голов: <b>{needed}</b>."
+    _, line, odd, books, confidence, hist_rate, edge, needed, calibrated_p = candidates[0]
+    fair = 1.0 / calibrated_p
+    history = f" · история линии {round(hist_rate * 100):d}%" if hist_rate is not None else ""
+    action = "✅ Цена интересная" if edge >= 0.03 else "🟡 Цена пограничная" if edge >= 0 else "⛔ Цена хуже оценки модели"
     return (
-        "🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n"
-        f"ТБ {line:g} — LIVE-кэф <b>{odd:.2f}</b> · модель <b>{confidence}%</b> · {books} БК{support}\n"
-        f"{needed_text} Вероятность учитывает оставшееся время, текущее давление и LIVE-рынок."
+        "🎯 <b>ОСНОВНОЙ LIVE-СЦЕНАРИЙ</b>\n"
+        f"ТБ {line:g} · LIVE <b>{odd:.2f}</b> · модель <b>{confidence}%</b> · честный кэф ≈ <b>{fair:.2f}</b>\n"
+        f"{action}: {_edge_label(edge)} · источников {books}{history}.\n"
+        f"Нужно ещё голов: <b>{needed}</b>. Вес LIVE-давления и рынка выше, чем исторической формы."
     )
 
 
 def _build_insight(entries, match, pressure) -> str:
     ctx = fetch_match_history(match.event_id, match.home, match.away, limit=5)
     analysis = analyse_history(ctx)
-    blocks = []
+    blocks = [
+        "📈 <b>СОСТОЯНИЕ МАТЧА</b>\n"
+        f"Давление <b>{pressure.score:.0f}/100</b> · импульс <b>{pressure.momentum:.0f}/100</b>. "
+        "Модель пересчитывает вероятность по времени, счёту, текущему давлению и LIVE-цене."
+    ]
     next_goal = _next_goal_1h(entries, match)
     if next_goal:
         blocks.append(next_goal)
     blocks.append(_model_pick(entries, match, pressure, ctx, analysis))
-    blocks.append("📚 <b>ФОРМА И ОЧНЫЕ ВСТРЕЧИ</b>\n" + _history_summary(match, ctx, analysis))
+    blocks.append("📚 <b>ФОРМА / H2H</b>\n" + _history_summary(match, ctx, analysis))
     return "\n\n".join(blocks)
 
 
@@ -179,8 +195,8 @@ def _recommendations(entries, match, pressure):
         _SIGNAL_INSIGHTS[match.event_id] = _build_insight(entries, match, pressure)
     except Exception:
         _SIGNAL_INSIGHTS[match.event_id] = (
-            "🧠 <b>МОЯ СТАВКА НА МАТЧ</b>\n"
-            "Дополнительный анализ формы временно недоступен; LIVE-сигнал сохранён."
+            "🎯 <b>ОСНОВНОЙ LIVE-СЦЕНАРИЙ</b>\n"
+            "Расширенный анализ формы временно недоступен; LIVE-сигнал оставлен только на данных матча и рынка."
         )
     return recs
 
