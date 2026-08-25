@@ -38,7 +38,6 @@ import entry_sync_failopen_patch
 import live_quant_guard_patch
 import robust_goal_cooldown_patch
 import fast_core_runtime
-import multi_source_core_analysis_patch
 import signal_journal_runtime_patch
 import core_goal_signal_patch
 import goal_reset_patch
@@ -48,6 +47,7 @@ import live_status_heartbeat
 import fast_goal_watch
 import multi_engine_runtime
 import multi_source_aux_stats_patch
+import second_half_strategy_patch
 import card_explainability_patch
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop,BUILD_ID
