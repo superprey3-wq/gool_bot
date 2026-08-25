@@ -51,4 +51,4 @@ jobs:
           cd gool_bot
           python -c "import main; print('IMPORT_OK')"
       - name: Final marker
-        run: echo FINAL_AUDIT_OK_2
+        run: echo FINAL_AUDIT_OK_3
