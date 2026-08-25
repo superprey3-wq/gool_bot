@@ -21,6 +21,7 @@ import phase_market_patch
 import multi_source_odds_patch
 import btts_period_sources_patch
 import team_total_sources_patch
+import sportsgameodds_patch
 import best_market_selector_patch
 import score_sync_patch
 import market_math_patch
@@ -59,7 +60,7 @@ async def status_loop():
   except Exception:logger.exception("LIVE heartbeat failed; runner will continue")
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
- logger.info("GOOL LIVE | CORE BEST BET + 1H observe kickoff / signal 15-25 + 2H O1.5 HT | GOAL/FotMob/365 candidate-only")
+ logger.info("GOOL LIVE | CORE BEST BET + movement + optional SGO | 1H observe kickoff / signal 15-25 + 2H O1.5 HT")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
