@@ -41,6 +41,22 @@ def _market_goals(scope,fh,fa,hh,ha):
     if scope=="2-й тайм":return (fh+fa)-(hh+ha)
     return fh+fa
 
+def _pct(wins,losses):
+    total=wins+losses
+    return round(wins*100/total) if total else 0
+
+def _avg_pressure(rows):
+    vals=[]
+    for row,_,_ in rows:
+        try:vals.append(float(row.get("pressure",0)))
+        except (TypeError,ValueError):pass
+    return round(sum(vals)/len(vals)) if vals else 0
+
+def _split_live(rows,reason):
+    subset=[x for x in rows if str(x[0].get("reason") or "signal")==reason]
+    wins=sum(1 for _,r,_ in subset if r=="+");losses=sum(1 for _,r,_ in subset if r=="-")
+    return len(subset),wins,losses,_pct(wins,losses)
+
 def main():
     today=datetime.now(MOSCOW).date().isoformat();rows=[]
     for row in all_signals():
@@ -48,8 +64,6 @@ def main():
         except Exception:continue
         if created.date().isoformat()!=today:continue
         kind=row.get("kind")
-        # For LIVE, only actual entry decisions are bets. A goal row is merely a
-        # confirmation that an older entry succeeded; followups are service data.
         if kind=="live" and str(row.get("reason") or "signal") not in {"signal","reentry"}:continue
         body=fetch_summary(str(row.get("event_id","")))
         if not body:continue
@@ -62,16 +76,30 @@ def main():
             except Exception:sh=sa=0
             next_goal=(fh+fa)>(sh+sa);primary=row.get("primary") or {};bet_result=_settle_total("ТБ",float(primary.get("line",0)),fh+fa) if primary else "—";result="+" if next_goal else "-";update_signal(row["dedupe_key"],result=result,bet_result=bet_result,final_score=f"{fh}:{fa}");rows.append((row,result,f"{fh}:{fa}"))
     live=[x for x in rows if x[0].get("kind")=="live"];pre=[x for x in rows if x[0].get("kind")=="prematch"]
-    lp=sum(1 for _,r,_ in live if r=="+");lm=sum(1 for _,r,_ in live if r=="-");pp=sum(1 for _,r,_ in pre if r in {"+","+½"});pm=sum(1 for _,r,_ in pre if r in {"-","-½"})
-    initial=sum(1 for row,_,_ in live if str(row.get("reason") or "signal")=="signal");reentries=sum(1 for row,_,_ in live if str(row.get("reason") or "signal")=="reentry")
-    lines=[f"📊 <b>ИТОГИ GOOL BOT — {datetime.now(MOSCOW).strftime('%d.%m.%Y')}</b>","","🔴 <b>LIVE</b>",f"Всего реальных входов: <b>{len(live)}</b>",f"↳ Первичных: <b>{initial}</b> · повторных: <b>{reentries}</b>",f"✅ Зашло: <b>{lp}</b>",f"❌ Не зашло: <b>{lm}</b>","ℹ️ Гол-подтверждения и служебные обновления не считаются отдельными сигналами.","",f"🔥 <b>ПРЕДМАТЧЕВЫЕ ПРОГРУЗЫ</b>",f"✅ Зашли: <b>{pp}</b>",f"❌ Не зашли: <b>{pm}</b>",f"Всего рассчитано: {len(pre)}"]
+    lp=sum(1 for _,r,_ in live if r=="+");lm=sum(1 for _,r,_ in live if r=="-")
+    pp=sum(1 for _,r,_ in pre if r in {"+","+½"});pm=sum(1 for _,r,_ in pre if r in {"-","-½"});push=sum(1 for _,r,_ in pre if r=="ВОЗВРАТ")
+    initial_n,initial_w,initial_l,initial_pct=_split_live(live,"signal");re_n,re_w,re_l,re_pct=_split_live(live,"reentry")
+    won_live=[x for x in live if x[1]=="+"];lost_live=[x for x in live if x[1]=="-"]
+    lines=[
+        f"📊 <b>GOOL BOT — ОТЧЁТ ЗА {datetime.now(MOSCOW).strftime('%d.%m.%Y')}</b>","",
+        "🔴 <b>LIVE: КАЧЕСТВО СИГНАЛОВ</b>",
+        f"Реальных входов: <b>{len(live)}</b> · ✅ {lp} / ❌ {lm}",
+        f"Точность next-goal: <b>{_pct(lp,lm)}%</b>",
+        f"Первичные: <b>{initial_n}</b> · ✅ {initial_w} / ❌ {initial_l} · <b>{initial_pct}%</b>",
+        f"Повторные: <b>{re_n}</b> · ✅ {re_w} / ❌ {re_l} · <b>{re_pct}%</b>",
+        f"Среднее давление: успешные <b>{_avg_pressure(won_live)}/100</b> · неуспешные <b>{_avg_pressure(lost_live)}/100</b>",
+        "ℹ️ Гол-подтверждения и служебные обновления не считаются отдельными входами.","",
+        "🔥 <b>ПРЕДМАТЧЕВЫЕ ПРОГРУЗЫ</b>",
+        f"Рассчитано: <b>{len(pre)}</b> · ✅ {pp} / ❌ {pm} / ↩️ {push}",
+        f"Проход без возвратов: <b>{_pct(pp,pm)}%</b>",
+    ]
     if live:
-        lines += ["","<b>LIVE-входы:</b>"]
+        lines += ["","<b>Последние LIVE-входы:</b>"]
         for row,res,score in live[-12:]:
-            label="ПОВТОРНЫЙ ВХОД" if str(row.get("reason") or "signal")=="reentry" else "ВХОД";lines.append(f"{'✅' if res=='+' else '❌'} {label} · {row.get('home')} — {row.get('away')} | {row.get('minute')}' {row.get('score_at_signal')} → {score}")
+            label="RE" if str(row.get("reason") or "signal")=="reentry" else "IN";primary=row.get("primary") or {};market=f" · ТБ {primary.get('line'):g} @ {primary.get('odd'):.2f}" if isinstance(primary.get("line"),(int,float)) and isinstance(primary.get("odd"),(int,float)) else "";lines.append(f"{'✅' if res=='+' else '❌'} {label} · {row.get('home')} — {row.get('away')} | {row.get('minute')}' {row.get('score_at_signal')} → {score} · P {float(row.get('pressure',0)):.0f}{market}")
     if pre:
         lines += ["","<b>Прогрузы:</b>"]
         for row,res,score in pre[-16:]:lines.append(f"{'✅' if res in {'+','+½'} else '➖' if res=='ВОЗВРАТ' else '❌'} {row.get('home')} — {row.get('away')} | {row.get('scope')} {row.get('side')} {row.get('line')} → {score} ({res})")
-    lines += ["","<i>Статистика считается только по реальным входам GOOL.</i>"];_send("\n".join(lines));return 0
+    lines += ["","<i>Главная метрика LIVE — результат реального входа, а не количество сообщений по матчу.</i>"];_send("\n".join(lines));return 0
 
 if __name__=="__main__":raise SystemExit(main())
