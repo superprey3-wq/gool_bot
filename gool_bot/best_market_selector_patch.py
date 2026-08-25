@@ -1,8 +1,7 @@
 """Rank verified GOOL CORE markets and mark one concrete best bet.
 
-LIVE state and the current market remain primary. Recent form/H2H are used only
-as a fading calibration layer for match totals and BTTS, never as a signal by
-themselves.
+Only Flashscore/LSApp-primary rows are actionable. Recent form/H2H and external
+market confirmations can calibrate/rank those rows, but never create a bet.
 """
 from __future__ import annotations
 import live_candidate_patch as lc
@@ -16,7 +15,7 @@ def _implied(odd):
 
 def _confirmation(r):
     s=str(r.get("external_market_status") or r.get("market_status") or r.get("market_consensus") or "")
-    return {"STEAM":12.,"CONFIRMED":8.,"EARLY":1.,"SINGLE_SOURCE":-2.,"DISAGREE":-9.,"CONFLICT":-14.}.get(s,0.)
+    return {"STEAM":12.,"CONFIRMED":8.,"EARLY":1.,"PRIMARY_ONLY":-2.,"SINGLE_SOURCE":-2.,"DISAGREE":-9.,"CONFLICT":-14.}.get(s,0.)
 
 def _price(odd):
     try:o=float(odd)
@@ -104,6 +103,7 @@ def _market(entries,m,p):
     ranked=[]
     for r in recs:
         if r.get("scope")!="FULL_TIME" or r.get("odd") is None:continue
+        if str(r.get("primary_source") or r.get("source") or "") not in {"Flashscore/LSApp","LSApp"}:continue
         kind=str(r.get("market_type") or "TOTAL")
         if kind not in {"TOTAL","BTTS","TEAM_TOTAL_HOME","TEAM_TOTAL_AWAY"} and r.get("goal_step") is None:continue
         score,meta=_rank(r,m,p);r.update(meta)
@@ -111,8 +111,10 @@ def _market(entries,m,p):
     ranked.sort(key=lambda x:x[0],reverse=True)
     if ranked:
         best=ranked[0][1];best["best_concrete_bet"]=True
-        market["best_concrete_bet"]={k:best.get(k) for k in ("scope","market_type","extra_market","team_side","team_name","line","selection","odd","source","source_prices","selector_score","selector_confidence","selector_edge","selector_movement","movement_status","movement_drop_pct","correlated_steam","market_status","history_market_rate","history_weight")}
-        market["best_alternatives"]=[{k:r.get(k) for k in ("scope","market_type","team_name","line","selection","odd","source","selector_score","selector_edge","selector_movement","movement_status","history_market_rate")} for _,r in ranked[1:3]]
+        market["best_concrete_bet"]={k:best.get(k) for k in ("scope","market_type","extra_market","team_side","team_name","line","selection","odd","source","primary_source","source_prices","selector_score","selector_confidence","selector_edge","selector_movement","movement_status","movement_drop_pct","correlated_steam","market_status","history_market_rate","history_weight")}
+        market["best_alternatives"]=[{k:r.get(k) for k in ("scope","market_type","team_name","line","selection","odd","source","primary_source","selector_score","selector_edge","selector_movement","movement_status","history_market_rate")} for _,r in ranked[1:3]]
+    else:
+        market.pop("best_concrete_bet",None);market["available"]=False
     return recs,market
 
 lc._market=_market
