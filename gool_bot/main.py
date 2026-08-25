@@ -47,6 +47,7 @@ import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
 import multi_engine_runtime
+import aux_score_freshness_patch
 import multi_source_aux_stats_patch
 import second_half_strategy_patch
 import card_explainability_patch
