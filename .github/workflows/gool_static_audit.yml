@@ -12,36 +12,51 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: live-only-quant-foundation
-      - name: Compile and import graph
+      - name: Compile
+        run: python -m compileall -q main.py gool_bot
+      - name: Recursive import graph
         run: |
-          python -m compileall -q main.py gool_bot
           python - <<'PY'
-          import ast, pathlib
+          import ast,pathlib
           root=pathlib.Path('gool_bot')
-          files={p.stem:p for p in root.glob('*.py')}
-          files.update({f'{p.parent.name}.{p.stem}':p for p in root.glob('*/*.py')})
-          start=['main']
-          # Parse gool_bot/main.py as production root; imports are mostly top-level modules.
-          reachable=set(); stack=['main']; mapping={'main':root/'main.py'}
-          mapping.update({p.stem:p for p in root.glob('*.py')})
+          mapping={}
+          for p in root.rglob('*.py'):
+              rel=p.relative_to(root)
+              parts=list(rel.parts)
+              if parts[-1]=='__init__.py':
+                  name='.'.join(parts[:-1])
+                  if name:mapping[name]=p
+              else:
+                  name='.'.join(parts)[:-3]
+                  mapping[name]=p
+                  if len(parts)==1:mapping[p.stem]=p
+          mapping['main']=root/'main.py'
+          reachable=set();stack=['main']
           while stack:
               name=stack.pop()
-              if name in reachable: continue
+              if name in reachable:continue
               p=mapping.get(name)
-              if not p or not p.exists(): continue
+              if not p or not p.exists():continue
               reachable.add(name)
-              try: tree=ast.parse(p.read_text('utf-8'))
-              except Exception as e:
-                  print('PARSE_FAIL',p,e); continue
+              tree=ast.parse(p.read_text('utf-8'))
               for n in ast.walk(tree):
-                  mods=[]
-                  if isinstance(n,ast.Import): mods=[a.name.split('.')[0] for a in n.names]
-                  elif isinstance(n,ast.ImportFrom) and n.module: mods=[n.module.split('.')[0]]
-                  for m in mods:
-                      if m in mapping and m not in reachable: stack.append(m)
-          allmods={p.stem for p in root.glob('*.py')}
-          print('REACHABLE',len(reachable))
-          print('REACHABLE_MODULES',','.join(sorted(reachable)))
-          print('UNREACHABLE_TOP',','.join(sorted(allmods-reachable)))
+                  candidates=[]
+                  if isinstance(n,ast.Import):candidates=[a.name for a in n.names]
+                  elif isinstance(n,ast.ImportFrom) and n.module:candidates=[n.module]
+                  for mod in candidates:
+                      choices=[mod,mod.split('.')[0]]
+                      for c in choices:
+                          if c in mapping and c not in reachable:stack.append(c)
+          used_paths={mapping[n] for n in reachable if n in mapping}
+          all_paths=set(root.rglob('*.py'))
+          print('REACHABLE_FILES',len(used_paths))
+          print('UNREACHABLE_FILES')
+          for p in sorted(all_paths-used_paths):print(p.as_posix())
           print('COMPILE_OK')
           PY
+      - name: Install minimal production requirements
+        run: pip install -q -r gool_bot/requirements.txt
+      - name: Production import smoke
+        run: |
+          cd gool_bot
+          python -c "import main; print('IMPORT_OK')"
