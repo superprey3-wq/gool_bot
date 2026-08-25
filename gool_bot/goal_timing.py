@@ -1,8 +1,4 @@
-"""Optional league goal-timing context for GOOL AI.
-
-Fetches public 15-minute league segment percentages from SoccerSTATS and caches them.
-This is a fail-open auxiliary signal: network/parsing failures never block LIVE analysis.
-"""
+"""Optional league goal-timing context for GOOL AI."""
 from __future__ import annotations
 import json,re,time,logging
 from pathlib import Path
@@ -54,8 +50,8 @@ def _segment_for_minute(minute):
 def context(match,engine):
     segs=get_league_timing(getattr(match,"league","") or "")
     if not segs:return {"available":False,"segment":None,"pct":None,"bonus":0.0,"segments":{}}
-    if engine in {"first_half","ht_hunter","ht"}:segment="31-45"
-    elif engine in {"second_half","late_risk","risk"}:segment="76-90"
+    if engine=="first_half_goal":segment="16-30"
+    elif engine=="second_half_over15":segment="46-60"
     else:segment=_segment_for_minute(getattr(match,"minute",0))
     pct=segs.get(segment);bonus=0.0 if pct is None else max(-4.0,min(8.0,(float(pct)-16.0)*0.8))
     return {"available":True,"segment":segment,"pct":pct,"bonus":round(bonus,1),"segments":segs}

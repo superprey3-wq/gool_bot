@@ -1,114 +1,126 @@
-"""Premium Telegram PNG cards for GOOL actionable LIVE signals."""
+"""GOOL CORE 2.0 Telegram PNG cards: best bet, alternatives and market movement."""
 from __future__ import annotations
 from io import BytesIO
-import logging,re,textwrap
+import re,textwrap
 from typing import Any
 import requests
 from PIL import Image,ImageDraw,ImageFont
 from live_engine import _feed
-logger=logging.getLogger("signal_card")
-
-W=1080
-BG=(7,12,20); PANEL=(15,24,38); PANEL2=(20,30,46); TEXT=(246,248,252); MUTED=(154,168,190)
-GOLD=(255,181,45); GREEN=(87,210,119); BLUE=(52,159,255); LINE=(45,62,86)
-
-def _font(size:int,bold:bool=False):
-    paths=["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf","/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"]
-    for path in paths:
-        try:return ImageFont.truetype(path,size)
-        except OSError:pass
-    return ImageFont.load_default()
-def _fields(record):
-    out={}
-    for token in record.split("¬"):
-        if "÷" in token:k,v=token.split("÷",1);out.setdefault(k,v)
-    return out
-def _logo_names(event_id):
-    body=_feed("f_1_0_0_en_1");needle=f"AA÷{event_id}¬"
-    if not body or needle not in body:return "",""
-    for chunk in body.split("~"):
-        if needle in chunk:
-            f=_fields(chunk);return f.get("OA",""),f.get("OB","")
-    return "",""
-def _download_logo(filename,size=128):
-    if not filename:return None
-    try:
-        r=requests.get(f"https://static.flashscore.com/res/image/data/{filename}",timeout=5,headers={"User-Agent":"Mozilla/5.0"})
-        if r.ok:
-            im=Image.open(BytesIO(r.content)).convert("RGBA");im.thumbnail((size,size),Image.Resampling.LANCZOS);return im
-    except Exception:pass
-    return None
-def _initials(name):
-    w=re.findall(r"[A-Za-zА-Яа-я0-9]+",name);return "".join(x[0] for x in w[:2]).upper() if w else "?"
-def _badge(img,draw,x,y,logo,name,won=False):
-    r=68;glow=GREEN if won else BLUE
-    # layered glow to imitate the approved neon mockup
-    for extra,width in ((14,2),(10,3),(6,4)):
-        shade=tuple(max(0,min(255,int(c*(0.42 if extra==14 else 0.62 if extra==10 else 0.82)))) for c in glow)
-        draw.ellipse((x-r-extra,y-r-extra,x+r+extra,y+r+extra),outline=shade,width=width)
-    draw.ellipse((x-r-3,y-r-3,x+r+3,y+r+3),fill=(9,21,35),outline=glow,width=4)
-    draw.ellipse((x-r,y-r,x+r,y+r),fill=(24,35,52),outline=(66,83,108),width=2)
-    if logo:
-        bbox=logo.getbbox()
-        if bbox:logo=logo.crop(bbox)
-        max_side=120;scale=min(max_side/max(1,logo.width),max_side/max(1,logo.height));nw=max(1,int(logo.width*scale));nh=max(1,int(logo.height*scale));logo=logo.resize((nw,nh),Image.Resampling.LANCZOS);img.alpha_composite(logo,(x-logo.width//2,y-logo.height//2))
-    else:
-        t=_initials(name);f=_font(34,True);b=draw.textbbox((0,0),t,font=f);draw.text((x-(b[2]-b[0])/2,y-(b[3]-b[1])/2-3),t,font=f,fill=TEXT)
-def _fit(draw,text,width,start=38,bold=True):
-    for s in range(start,19,-2):
-        f=_font(s,bold)
-        if draw.textbbox((0,0),text,font=f)[2]<=width:return f
-    return _font(20,bold)
-def _center(draw,text,y,font,fill):
-    b=draw.textbbox((0,0),text,font=font);draw.text(((W-(b[2]-b[0]))/2,y),text,font=font,fill=fill)
-def _best(recs):
-    recs=recs or [];return next((r for r in recs if r.get("best_bet")),None) or next((r for r in recs if r.get("full_match_best")),None) or next((r for r in recs if r.get("scope")=="FULL_TIME" and r.get("goal_step")==1),None)
-def _pair(stats,key):
-    try:a,b=stats.get(key,(0,0));return float(a or 0),float(b or 0)
-    except Exception:return 0.0,0.0
-def _reason(match,pressure,recs,probabilities):
-    stats=getattr(pressure,"stats",None) or getattr(pressure,"raw_stats",None) or {};minute=int(getattr(match,"minute",0) or 0);goals=int(getattr(match,"home_score",0) or 0)+int(getattr(match,"away_score",0) or 0)
-    shots=sum(_pair(stats,"shots"));sot=sum(_pair(stats,"shots_on_target"));xg=sum(_pair(stats,"xg"));p1=int((probabilities or {}).get("one_goal",0) or 0);p2=int((probabilities or {}).get("two_goals",0) or 0);reasons=[]
-    if minute<=25 and goals>=2:reasons.append("Матч начался результативно: команды быстро обменялись голами.")
-    elif goals>=3:reasons.append("Матч уже результативный, а модель всё ещё ждёт продолжения.")
-    if sot>=6 or shots>=18:reasons.append("Темп высокий: команды регулярно доводят атаки до ударов.")
-    elif xg>=1.6:reasons.append("По качеству моментов игра остаётся опасной для ворот.")
-    if p1>=75 and len(reasons)<2:reasons.append(f"Шанс ещё одного гола до конца матча — {p1}%.")
-    if p2>=55 and len(reasons)<2:reasons.append(f"Вероятность ещё двух голов — {p2}%.")
-    if _best(recs) and len(reasons)<2:reasons.append("LIVE-рынок подтверждает продолжение результативности.")
-    if not reasons:reasons.append("Сигнал подтверждён LIVE-моделью, историей команд и рынком.")
-    return " ".join(reasons[:2])
-def _draw_header(draw,accent,win):
-    for d,c in ((10,tuple(int(x*.35) for x in accent)),(6,tuple(int(x*.55) for x in accent)),(3,tuple(int(x*.8) for x in accent))):
-        draw.rounded_rectangle((24-d,20-d,W-24+d,105+d),24+d,outline=c,width=2)
-    draw.rounded_rectangle((24,20,W-24,105),24,fill=PANEL,outline=LINE,width=2);draw.text((54,43),"GOOL AI",font=_font(32,True),fill=TEXT)
-    tag="SIGNAL WON" if win else "LIVE SIGNAL";tf=_font(26,True);tb=draw.textbbox((0,0),tag,font=tf);draw.rounded_rectangle((W-250,37,W-48,89),18,fill=(31,43,60),outline=accent,width=2);draw.text((W-149-(tb[2]-tb[0])/2,49),tag,font=tf,fill=accent)
-def _draw_match(img,draw,match,accent,won=False):
-    hn,an=_logo_names(getattr(match,"event_id",""));hl=_download_logo(hn);al=_download_logo(an);_badge(img,draw,190,320,hl,match.home,won);_badge(img,draw,W-190,320,al,match.away,won)
-    score_outline=GREEN if won else GOLD
-    for d in (8,4):draw.rounded_rectangle((390-d,235-d,690+d,405+d),30+d,outline=tuple(int(x*(0.35 if d==8 else 0.6)) for x in score_outline),width=2)
-    draw.rounded_rectangle((390,235,690,405),30,fill=(10,20,32),outline=score_outline,width=3);_center(draw,"● LIVE",247,_font(24,True),GREEN);_center(draw,f"{match.home_score} : {match.away_score}",286,_font(74,True),TEXT)
-    minute="ПЕРЕРЫВ" if getattr(match,"is_halftime",False) else f"{match.minute}'";_center(draw,minute,363,_font(28,True),accent)
-    hf=_fit(draw,match.home,330,36);af=_fit(draw,match.away,330,36);hb=draw.textbbox((0,0),match.home,font=hf);ab=draw.textbbox((0,0),match.away,font=af);draw.text((190-(hb[2]-hb[0])/2,420),match.home,font=hf,fill=TEXT);draw.text((W-190-(ab[2]-ab[0])/2,420),match.away,font=af,fill=TEXT)
-    league=getattr(match,"league","") or "LIVE FOOTBALL";lf=_fit(draw,league,850,24,False);_center(draw,league,474,lf,MUTED)
-def _draw_stat_card(draw,probs):
-    draw.rounded_rectangle((55,735,1025,885),28,fill=PANEL,outline=LINE,width=2);rows=[]
-    if probs.get("first_half_goal") is not None:rows.append(("ГОЛ ДО ПЕРЕРЫВА",int(probs["first_half_goal"])))
-    rows.append(("ЕЩЁ 1 ГОЛ ДО КОНЦА",int(probs.get("one_goal",0))));rows.append(("ЕЩЁ 2 ГОЛА ДО КОНЦА",int(probs.get("two_goals",0))));xs=[300,780] if len(rows)==2 else [195,540,885]
-    for i,(label,val) in enumerate(rows):
-        x=xs[i]
-        if i:draw.line((x-155,760,x-155,860),fill=LINE,width=2)
-        lf=_fit(draw,label,270,20,True);b=draw.textbbox((0,0),label,font=lf);draw.text((x-(b[2]-b[0])/2,770),label,font=lf,fill=MUTED);vf=_font(38,True);vb=draw.textbbox((0,0),f"{val}%",font=vf);draw.text((x-(vb[2]-vb[0])/2,815),f"{val}%",font=vf,fill=GREEN)
-def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind:str="entry",master:float|None=None,probabilities:dict|None=None)->bytes:
-    win=kind=="goal";accent=GREEN if win else GOLD;H=790 if win else 1180;img=Image.new("RGBA",(W,H),BG+(255,));draw=ImageDraw.Draw(img);_draw_header(draw,accent,win);_center(draw,"ЗАХОД!" if win else "МОЖНО ЗАХОДИТЬ",132,_font(52,True),accent);_draw_match(img,draw,match,accent,win)
-    if win:
-        for d in (8,4):draw.rounded_rectangle((70-d,540-d,1010+d,690+d),30+d,outline=tuple(int(x*(0.38 if d==8 else 0.65)) for x in GREEN),width=2)
-        draw.rounded_rectangle((70,540,1010,690),30,fill=(9,24,25),outline=GREEN,width=3);draw.ellipse((105,575,195,665),fill=(11,35,31),outline=GREEN,width=3);cx=150;draw.line((cx-20,620,cx-4,638),fill=GREEN,width=8);draw.line((cx-4,638,cx+25,602),fill=GREEN,width=8);draw.text((235,570),"✓ ГОЛ ПОДТВЕРЖДЁН",font=_font(37,True),fill=GREEN);draw.line((235,620,925,620),fill=(36,91,66),width=2);draw.text((235,642),"Сигнал успешно отработал",font=_font(25,False),fill=TEXT);footer=735
-    else:
-        probs=probabilities or {};p=int(round(float(master if master is not None else getattr(pressure,"score",0) or 0)));best=_best(recs);draw.rounded_rectangle((55,535,1025,705),28,fill=PANEL2,outline=LINE,width=2);draw.line((540,558,540,682),fill=LINE,width=2);draw.text((105,565),"РЕЙТИНГ GOOL AI",font=_font(22,True),fill=MUTED);draw.text((105,605),f"{p}/100",font=_font(48,True),fill=GOLD);grade="СИЛЬНЫЙ СИГНАЛ" if p>=80 else "ХОРОШИЙ СИГНАЛ" if p>=70 else "РАБОЧИЙ СИГНАЛ";draw.text((105,660),grade,font=_font(20,True),fill=GREEN);draw.text((650,565),"LIVE РЫНОК",font=_font(22,True),fill=MUTED)
-        if best:draw.text((650,606),f"ТБ {float(best['line']):g}  •  {float(best['odd']):.2f}",font=_font(40,True),fill=TEXT);draw.text((650,660),str(best.get("source") or "LIVE"),font=_font(22,True),fill=GREEN)
-        else:draw.text((650,620),"КЭФ НЕ НАЙДЕН",font=_font(28,True),fill=MUTED)
-        _draw_stat_card(draw,probs);draw.rounded_rectangle((55,910,1025,1090),28,fill=PANEL,outline=LINE,width=2);draw.text((95,936),"ПОЧЕМУ МОЖНО ЗАХОДИТЬ",font=_font(23,True),fill=GOLD);reason=_reason(match,pressure,recs,probs);lines=textwrap.wrap(reason,width=58)[:3];yy=980
-        for line in lines:draw.text((95,yy),line,font=_font(22,False),fill=TEXT);yy+=34
-        footer=1135
-    _center(draw,"GOOL AI  •  LIVE FOOTBALL ANALYTICS",footer,_font(21,True),MUTED);out=BytesIO();img.convert("RGB").save(out,"PNG",optimize=True);return out.getvalue()
+W=1080;BG=(5,10,18);PANEL=(13,22,36);PANEL2=(19,31,49);TEXT=(247,249,252);MUTED=(151,166,188);GOLD=(255,184,48);GREEN=(82,220,118);RED=(244,104,104);CYAN=(61,178,255);LINE=(45,63,88)
+def _font(s,b=False):
+ for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if b else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf","/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if b else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"]:
+  try:return ImageFont.truetype(p,s)
+  except OSError:pass
+ return ImageFont.load_default()
+def _fields(r):
+ o={}
+ for t in str(r or '').split('¬'):
+  if '÷' in t:k,v=t.split('÷',1);o.setdefault(k,v)
+ return o
+def _logos(eid):
+ try:b=_feed('f_1_0_0_en_1') or ''
+ except Exception:return '',''
+ n=f'AA÷{eid}¬'
+ for c in b.split('~'):
+  if n in c:
+   f=_fields(c);return f.get('OA',''),f.get('OB','')
+ return '',''
+def _dl(fn):
+ if not fn:return None
+ try:
+  r=requests.get(f'https://static.flashscore.com/res/image/data/{fn}',timeout=5,headers={'User-Agent':'Mozilla/5.0'})
+  if r.ok:return Image.open(BytesIO(r.content)).convert('RGBA')
+ except Exception:pass
+ return None
+def _fit(d,t,w,s=32,b=True):
+ for z in range(s,15,-2):
+  f=_font(z,b)
+  if d.textbbox((0,0),str(t),font=f)[2]<=w:return f
+ return _font(16,b)
+def _center(d,t,y,f,c):
+ b=d.textbbox((0,0),str(t),font=f);d.text(((W-(b[2]-b[0]))/2,y),str(t),font=f,fill=c)
+def _badge(img,d,x,y,logo,name,accent):
+ r=60;d.ellipse((x-r-8,y-r-8,x+r+8,y+r+8),outline=accent,width=3);d.ellipse((x-r,y-r,x+r,y+r),fill=PANEL2,outline=LINE,width=2)
+ if logo:
+  bb=logo.getbbox();logo=logo.crop(bb) if bb else logo;s=min(104/max(1,logo.width),104/max(1,logo.height));logo=logo.resize((max(1,int(logo.width*s)),max(1,int(logo.height*s))),Image.Resampling.LANCZOS);img.alpha_composite(logo,(x-logo.width//2,y-logo.height//2))
+ else:
+  t=''.join(x[0] for x in re.findall(r'[A-Za-zА-Яа-я0-9]+',str(name))[:2]).upper() or '?';f=_font(28,True);b=d.textbbox((0,0),t,font=f);d.text((x-(b[2]-b[0])/2,y-(b[3]-b[1])/2),t,font=f,fill=TEXT)
+def _pair(st,k):
+ try:a,b=st.get(k,(0,0));return float(a or 0),float(b or 0)
+ except Exception:return 0.,0.
+def _best(rs):return next((r for r in (rs or []) if r.get('best_concrete_bet')),None) or next((r for r in (rs or []) if r.get('best_bet')),None) or ((rs or [None])[0])
+def _alternatives(rs,best):
+ rows=[]
+ for r in rs or []:
+  if r is best or r.get('odd') is None:continue
+  if str(r.get('scope') or '').upper()!='FULL_TIME':continue
+  kind=str(r.get('market_type') or 'TOTAL').upper()
+  if kind not in {'TOTAL','BTTS','TEAM_TOTAL_HOME','TEAM_TOTAL_AWAY'} and r.get('goal_step') is None:continue
+  rows.append(r)
+ rows.sort(key=lambda r:float(r.get('selector_score',-999) or -999),reverse=True);return rows[:2]
+def _bet(r):
+ if not r:return 'НЕТ НАДЁЖНОГО РЫНКА'
+ try:o=float(r.get('odd',0) or 0)
+ except Exception:o=0
+ kind=str(r.get('market_type') or r.get('market') or '').upper();line=r.get('line');team=str(r.get('team_name') or 'КОМАНДЫ')
+ if kind=='BTTS':label='ОБЕ ЗАБЬЮТ — ДА'
+ elif kind in {'TEAM_TOTAL_HOME','TEAM_TOTAL_AWAY'} or r.get('team_name'):label=f'ИТБ {team} {float(line):g}'
+ elif str(r.get('scope') or '').upper()=='FIRST_HALF':label=f'ТБ {float(line):g} В 1-М ТАЙМЕ'
+ elif str(r.get('scope') or '').upper()=='SECOND_HALF':label=f'ТБ {float(line):g} ВО 2-М ТАЙМЕ'
+ elif line is not None:label=f'ТБ {float(line):g}'
+ else:label='LIVE MARKET'
+ return f'{label}  @ {o:.2f}' if o>1 else label
+def _sources(r):
+ if not r:return '—'
+ sp=r.get('source_prices') or []
+ if sp:return '  •  '.join(f"{str(x.get('source','LIVE')).split('/')[0]} {float(x.get('odd',0)):.2f}" for x in sp[:3])
+ try:return f"{r.get('source','LIVE')} {float(r.get('odd',0)):.2f}"
+ except Exception:return str(r.get('source','LIVE'))
+def _movement(r):
+ if not r:return 'MARKET —',MUTED
+ st=str(r.get('movement_status') or r.get('external_market_status') or r.get('market_status') or r.get('market_consensus') or '').upper()
+ if r.get('correlated_steam'):label='🔥 ПРОГРУЗ СВЯЗАННЫХ РЫНКОВ';col=GREEN
+ elif st=='CONFIRMED_STEAM':label='🔥 CONFIRMED STEAM';col=GREEN
+ elif st=='STEAM':label='🔥 ПРОГРУЗ';col=GREEN
+ elif st=='REVERSAL':label='↩ РАЗВОРОТ РЫНКА';col=RED
+ elif st in {'CONFLICT','DISAGREE'}:label='⚠ РЫНОК ПРОТИВ';col=RED
+ elif st in {'CONFIRMED'}:label='✓ ПОДТВЕРЖДЕНО';col=GREEN
+ elif st in {'SINGLE_SOURCE','EARLY'}:label='РАННИЙ РЫНОК';col=MUTED
+ else:label='STABLE';col=MUTED
+ try:
+  drop=float(r.get('movement_drop_pct') or 0)
+  if abs(drop)>=0.1:label+=f' • {drop:+.1f}%'
+ except Exception:pass
+ return label,col
+def _box(d,xy,title,value,sub='',accent=TEXT):
+ d.rounded_rectangle(xy,18,fill=PANEL,outline=LINE,width=2);x1,y1,x2,y2=xy;d.text((x1+18,y1+13),title,font=_font(15,True),fill=MUTED);d.text((x1+18,y1+42),value,font=_fit(d,value,x2-x1-36,25,True),fill=accent)
+ if sub:d.text((x1+18,y2-24),sub,font=_fit(d,sub,x2-x1-36,13,False),fill=MUTED)
+def _reason(p,rs,probs):
+ st=getattr(p,'stats',None) or getattr(p,'raw_stats',None) or {};shots=sum(_pair(st,'shots'));sot=sum(_pair(st,'shots_on_target'));xg=sum(_pair(st,'xg'));a=[];best=_best(rs or [])
+ if best and best.get('correlated_steam'):a.append('Связанные рынки двигаются в сторону выбранной ставки.')
+ if xg>=1.4:a.append('Качество созданных моментов высокое.')
+ if sot>=5 or shots>=15:a.append('Темп подтверждается ударами и створами.')
+ if int((probs or {}).get('one_goal',0) or 0)>=70:a.append(f"Модель: ещё гол {(probs or {}).get('one_goal')}%.")
+ if any(int(r.get('source_count',1) or 1)>=2 for r in (rs or [])):a.append('Цена подтверждена несколькими LIVE-источниками.')
+ return ' '.join(a[:3] or ['LIVE-модель, профиль лиги и рынок одновременно подтверждают выбранный вход.'])
+def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind='entry',master=None,probabilities=None)->bytes:
+ win=kind=='goal';accent=GREEN if win else GOLD;H=820 if win else 1320;img=Image.new('RGBA',(W,H),BG+(255,));d=ImageDraw.Draw(img)
+ d.rounded_rectangle((24,20,W-24,112),24,fill=PANEL,outline=accent,width=2);d.text((52,36),'GOOL CORE 2.0',font=_font(36,True),fill=accent);d.text((52,78),'LIVE FOOTBALL • BEST BET • MARKET STEAM',font=_font(16,True),fill=TEXT);d.rounded_rectangle((830,38,1028,93),16,outline=accent,width=2);d.text((870,53),'WIN' if win else 'ENTRY',font=_font(20,True),fill=accent)
+ hn,an=_logos(getattr(match,'event_id',''));_badge(img,d,180,282,_dl(hn),match.home,accent);_badge(img,d,900,282,_dl(an),match.away,accent);d.rounded_rectangle((390,202,690,365),28,fill=(9,19,31),outline=accent,width=3);_center(d,f'{match.home_score} : {match.away_score}',242,_font(66,True),TEXT);_center(d,'ПЕРЕРЫВ' if getattr(match,'is_halftime',False) else f"{match.minute}'",318,_font(27,True),accent)
+ for x,n in ((180,match.home),(900,match.away)):
+  f=_fit(d,n,330,30);b=d.textbbox((0,0),n,font=f);d.text((x-(b[2]-b[0])/2,383),n,font=f,fill=TEXT)
+ _center(d,getattr(match,'league','') or 'LIVE FOOTBALL',434,_fit(d,getattr(match,'league','') or 'LIVE FOOTBALL',850,22,False),MUTED);rs=recs or [];best=_best(rs)
+ if win:
+  d.rounded_rectangle((70,520,1010,705),28,fill=(8,25,24),outline=GREEN,width=3);_center(d,'✓ СТАВКА ЗАШЛА',550,_font(40,True),GREEN);_center(d,_bet(best),606,_fit(d,_bet(best),850,31,True),TEXT);_center(d,'Результат рассчитан по выбранному primary-рынку',662,_font(20),MUTED);footer=765
+ else:
+  probs=probabilities or {};rating=int(round(float(master if master is not None else getattr(pressure,'score',0) or 0)));alts=_alternatives(rs,best);mv,mvcol=_movement(best)
+  d.rounded_rectangle((55,480,1025,675),25,fill=PANEL2,outline=GOLD,width=2);d.text((85,503),'⭐ ЛУЧШАЯ СТАВКА',font=_font(24,True),fill=GOLD);d.text((85,552),_bet(best),font=_fit(d,_bet(best),730,35,True),fill=TEXT);d.text((85,607),_sources(best),font=_fit(d,_sources(best),680,16,False),fill=MUTED);d.text((85,635),mv,font=_fit(d,mv,720,18,True),fill=mvcol);d.text((835,505),'GOOL',font=_font(16,True),fill=MUTED);d.text((825,538),f'{rating}/100',font=_font(39,True),fill=GOLD)
+  d.text((65,700),'АЛЬТЕРНАТИВЫ',font=_font(18,True),fill=MUTED)
+  for i in range(2):
+   r=alts[i] if i<len(alts) else None;x1=55+i*490;x2=x1+475;sub,_c=_movement(r);_box(d,(x1,734,x2,832),f'№{i+2}',_bet(r) if r else '—',sub if r else '',GREEN if r else MUTED)
+  st=getattr(pressure,'stats',None) or getattr(pressure,'raw_stats',None) or {};xg=sum(_pair(st,'xg'));xgot=sum(_pair(st,'xgot'));shots=sum(_pair(st,'shots'));sot=sum(_pair(st,'shots_on_target'))
+  _box(d,(55,865,285,970),'xG / xGoT',f'{xg:.2f} / {xgot:.2f}');_box(d,(300,865,530,970),'УДАРЫ',f'{shots:g}');_box(d,(545,865,775,970),'В СТВОР',f'{sot:g}');_box(d,(790,865,1025,970),'ЕЩЁ ГОЛ',f"{int(probs.get('one_goal',0) or 0)}%",accent=GREEN)
+  d.rounded_rectangle((55,1000,1025,1188),24,fill=PANEL,outline=LINE,width=2);d.text((85,1025),'ПОЧЕМУ ИМЕННО ЭТА СТАВКА',font=_font(21,True),fill=GOLD);yy=1065
+  for line in textwrap.wrap(_reason(pressure,rs,probs),width=72)[:3]:d.text((85,yy),line,font=_font(20),fill=TEXT);yy+=31
+  d.text((85,1152),'Flashscore • LSApp • Bovada • Kambi • xG/xGoT consensus • Market Movement',font=_font(14),fill=MUTED);footer=1260
+ _center(d,'GOOL AI 2.0 • LIVE FOOTBALL ANALYTICS',footer,_font(19,True),MUTED);out=BytesIO();img.convert('RGB').save(out,'PNG',optimize=True);return out.getvalue()

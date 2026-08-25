@@ -1,119 +1,112 @@
-"""Production runtime for one-shot GOOL HT HUNTER and LATE RISK engines."""
+"""Production runtime for GOOL auxiliary LIVE strategies.
+
+FIRST_HALF_GOAL collects evidence from kickoff and may signal at 15'-25'.
+SECOND_HALF_OVER15 decides at half-time from the complete first-half sample.
+"""
 from __future__ import annotations
 import json,time,logging,requests
 from pathlib import Path
 import unified_bot
-from live_engine import fetch_stats,fetch_summary,parse_stats,parse_goal_timeline,calculate_goal_pressure,get_previous_values
-from prematch_scanner import _fetch_event_odds
+from live_engine import fetch_stats,fetch_summary,parse_stats,parse_goal_timeline
 from signal_journal import add_signal,all_signals,update_signal
 from telegram_subscribers import get_subscribers
-from multi_engine import HT_HUNTER,LATE_RISK,delta,ht_hunter,late_risk,snapshot
+from multi_engine import FIRST_HALF_GOAL,SECOND_HALF_OVER15,delta,first_half_goal,second_half_over15,snapshot
 from multi_engine_card import render_engine_card
 from robust_goal_cooldown_patch import active as persistent_goal_cooldown
 from goal_timing import context as timing_context
-logger=logging.getLogger("multi_engine_runtime")
-STATE_FILE=Path("multi_engine_state.json");GOAL_CONFIRM_SECONDS=35
-
+from risk_controller import can_open,value_ok
+from aux_strategy_markets import first_half_next_total,second_half_over15 as second_half_market,best_consensus
+logger=logging.getLogger("multi_engine_runtime");STATE_FILE=Path("multi_engine_state.json")
 def _load():
-    try:d=json.loads(STATE_FILE.read_text("utf-8"));return d if isinstance(d,dict) else {}
-    except:return {}
+ try:d=json.loads(STATE_FILE.read_text("utf-8"));return d if isinstance(d,dict) else {}
+ except:return {}
 def _save(d):
-    cutoff=time.time()-10*3600;d={k:v for k,v in d.items() if isinstance(v,dict) and float(v.get("ts",0) or 0)>=cutoff};STATE_FILE.write_text(json.dumps(d,ensure_ascii=False),"utf-8")
-def _last_goal(goal_times):
-    vals=[]
-    for x in goal_times or []:
-        try:vals.append(int(str(x).split("'",1)[0].split("+",1)[0]))
-        except:pass
-    return max(vals) if vals else None
-def _market(match,pressure,engine):
-    try:recs=unified_bot._recommendations(_fetch_event_odds(match.event_id),match,pressure)
-    except Exception:return None
-    scope="FIRST_HALF" if engine==HT_HUNTER else "FULL_TIME";goals=int(match.home_score)+int(match.away_score);rows=[]
-    for r in recs:
-        try:o=float(r.get("odd",0));line=float(r.get("line",0))
-        except:continue
-        if r.get("scope")==scope and 1.15<=o<=5.0 and line>goals:rows.append(r)
-    return min(rows,key=lambda r:abs(float(r.get("odd",0))-2.2)) if rows else None
+ cutoff=time.time()-10*3600;d={k:v for k,v in d.items() if isinstance(v,dict) and float(v.get("ts",0) or 0)>=cutoff};STATE_FILE.write_text(json.dumps(d,ensure_ascii=False),"utf-8")
+def _last_goal(xs):
+ vals=[]
+ for x in xs or []:
+  try:vals.append(int(str(x).split("'",1)[0].split("+",1)[0]))
+  except:pass
+ return max(vals) if vals else None
+def _primary(engine,market,confidence):
+ if not market:return None
+ try:odd=float(market["odd"]);line=float(market["line"]);conf=float(confidence)
+ except (KeyError,TypeError,ValueError):return None
+ return {"market":"TOTAL_OVER","scope":"FIRST_HALF" if engine==FIRST_HALF_GOAL else "SECOND_HALF","line":line,"odd":odd,"source":str(market.get("source") or "LIVE"),"bookmakers":int(market.get("source_count",1) or 1),"confidence":conf,"value_edge":round(conf-(100.0/odd),1),"market_status":str(market.get("market_status") or "EARLY"),"steam_score":0.0,"source_prices":market.get("source_prices") or []}
 def _send_all(match,engine,score,d,odd,result=None):
-    token=unified_bot.BOT_TOKEN;subs=get_subscribers()
-    if not token or not subs:return False
-    try:png=render_engine_card(match,engine,score,d,odd,result)
-    except Exception as e:logger.exception("ENGINE_CARD_FAILED %s",e);png=None
-    if result=="win":caption="✅ GOOL AI • ЗАХОД! • "+("ПЕРВЫЙ ТАЙМ" if engine==HT_HUNTER else "ВТОРОЙ ТАЙМ")
-    elif result=="loss":caption="❌ GOOL AI • НЕ ЗАШЁЛ • "+("ПЕРВЫЙ ТАЙМ" if engine==HT_HUNTER else "ВТОРОЙ ТАЙМ")
-    else:caption=("🔵 GOOL AI • HT HUNTER • ПЕРВЫЙ ТАЙМ" if engine==HT_HUNTER else "🔴 GOOL AI • LATE RISK • ВТОРОЙ ТАЙМ")
-    ok=0
-    for cid in subs:
-        try:
-            if png:r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",data={"chat_id":str(cid),"caption":caption},files={"photo":("gool-engine.png",png,"image/png")},timeout=25)
-            else:r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage",json={"chat_id":str(cid),"text":caption},timeout=15)
-            ok+=int(r.ok)
-        except requests.RequestException:pass
-    logger.info("ENGINE_DELIVERED %s %s %d/%d",engine,result or "signal",ok,len(subs));return ok>0
+ token=unified_bot.BOT_TOKEN;subs=get_subscribers()
+ if not token or not subs:return False
+ try:png=render_engine_card(match,engine,score,d,odd,result)
+ except Exception as e:logger.exception("ENGINE_CARD_FAILED %s",e);png=None
+ label="ГОЛ В 1-М ТАЙМЕ" if engine==FIRST_HALF_GOAL else "ТБ1.5 ВО 2-М ТАЙМЕ";caption=(f"✅ GOOL AI • ЗАШЛО • {label}" if result=="win" else f"❌ GOOL AI • НЕ ЗАШЛО • {label}" if result=="loss" else f"🎯 GOOL AI • {label}");ok=0
+ for cid in subs:
+  try:
+   if png:r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",data={"chat_id":str(cid),"caption":caption},files={"photo":("gool-engine.png",png,"image/png")},timeout=25)
+   else:r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage",json={"chat_id":str(cid),"text":caption},timeout=15)
+   ok+=int(r.ok)
+  except requests.RequestException:pass
+ logger.info("ENGINE_DELIVERED %s %s %d/%d",engine,result or "signal",ok,len(subs));return ok>0
 def _journal_key(engine,eid):return f"engine:{engine}:{eid}"
-def _record(match,engine,score,d,odd):
-    key=_journal_key(engine,match.event_id);return add_signal({"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","risk_score":score,"trend_delta":d,"odd":odd,"reason":"ht_hunter" if engine==HT_HUNTER else "late_risk","result":"pending"},key)
-def _settle(engine,eid,result,match=None):
-    fields={"result":"+" if result=="win" else "-","settled_ts":int(time.time())}
-    if match:fields.update(final_score=f"{match.home_score}:{match.away_score}",goal_minute=int(match.minute))
-    return update_signal(_journal_key(engine,eid),**fields)
-def _active_rows():return [r for r in all_signals() if r.get("engine") in {HT_HUNTER,LATE_RISK} and str(r.get("result") or "pending")=="pending"]
-
+def _record(match,engine,score,d,market):
+ primary=_primary(engine,market,score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15"
+ if not primary:return False
+ ok,why=value_ok(primary,reason)
+ if not ok:logger.info("ENGINE_VALUE_REJECT %s %s %s",engine,match.event_id,why);return False
+ return add_signal({"journal_version":5,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"odd":primary["odd"],"primary":primary,"market_status":primary["market_status"],"reason":reason,"result":"pending","stake_units":1.0},_journal_key(engine,match.event_id))
+def _active_rows():return [r for r in all_signals() if r.get("engine") in {FIRST_HALF_GOAL,SECOND_HALF_OVER15} and str(r.get("result") or "pending").strip().lower()=="pending"]
+def _score_at_signal(row):
+ try:a,b=map(int,str(row.get("score_at_signal","0:0")).split(":"));return a,b
+ except:return 0,0
+def _result_delta(row):
+ d=dict(row.get("trend_delta") or {});p=row.get("primary") or {};d["_market"]={"line":p.get("line"),"odd":p.get("odd"),"market_status":p.get("market_status"),"source_prices":p.get("source_prices") or []};return d
+def _settle_active(live_by):
+ for row in _active_rows():
+  m=live_by.get(str(row.get("event_id")))
+  if not m:continue
+  sh,sa=_score_at_signal(row);start=sh+sa;now_goals=int(m.home_score)+int(m.away_score);engine=row.get("engine");key=str(row.get("dedupe_key") or "");d=_result_delta(row);odd=row.get("odd")
+  if engine==FIRST_HALF_GOAL:
+   if now_goals>start:update_signal(key,result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
+   elif bool(getattr(m,"is_halftime",False)) or int(getattr(m,"minute",0) or 0)>=46:update_signal(key,result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
+  elif engine==SECOND_HALF_OVER15:
+   if now_goals-start>=2:update_signal(key,result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
+   elif int(getattr(m,"minute",0) or 0)>=90:update_signal(key,result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
+def _fh_market(m):return best_consensus(first_half_next_total(m.home,m.away,int(m.home_score)+int(m.away_score)))
+def _ht_market(m):return best_consensus(second_half_market(m.home,m.away))
 def scan_engines(live):
-    state=_load();live_by={str(m.event_id):m for m in live};now=time.time()
-    counters={"live":len(live),"window":0,"stats":0,"baseline":0,"eligible":0,"duplicate":0,"market":0,"no_market":0,"sent":0}
-    for row in _active_rows():
-        eid=str(row.get("event_id"));engine=row.get("engine");m=live_by.get(eid);ek=f"active:{engine}:{eid}";st=state.setdefault(ek,{"ts":now})
-        try:sh,sa=map(int,str(row.get("score_at_signal","0:0")).split(":"))
-        except:sh=sa=0
-        if m and int(m.home_score)+int(m.away_score)>sh+sa:
-            current=f"{m.home_score}:{m.away_score}"
-            if st.get("goal_score")!=current:st.update(goal_score=current,goal_seen_ts=now,ts=now);continue
-            if now-float(st.get("goal_seen_ts",now))>=GOAL_CONFIRM_SECONDS:
-                _settle(engine,eid,"win",m);_send_all(m,engine,float(row.get("risk_score",0)),row.get("trend_delta") or {},row.get("odd"),"win");st.update(settled=True,ts=now)
-            continue
-        st.pop("goal_score",None);st.pop("goal_seen_ts",None);st["ts"]=now
-        if engine==HT_HUNTER and m and (getattr(m,"is_halftime",False) or int(m.minute)>45):
-            _settle(engine,eid,"loss",m);_send_all(m,engine,float(row.get("risk_score",0)),row.get("trend_delta") or {},row.get("odd"),"loss");st["settled"]=True
-        elif not m and now-float(row.get("created_ts",0) or 0)>10*60:_settle(engine,eid,"loss",None);st["settled"]=True
-    journal=all_signals()
-    for m in live:
-        minute=int(getattr(m,"minute",0) or 0)
-        if not (25<=minute<=38 or 70<=minute<=85):continue
-        counters["window"]+=1
-        body=fetch_stats(m.event_id)
-        if not body:continue
-        stats=parse_stats(body)
-        if not stats:continue
-        counters["stats"]+=1
-        key=f"trend:{m.event_id}";s=state.setdefault(key,{"ts":now,"snaps":[]});snaps=s.setdefault("snaps",[]);snap={"minute":minute,"stats":snapshot(stats)}
-        if not snaps or int(snaps[-1].get("minute",-1))!=minute:snaps.append(snap)
-        s["snaps"]=[x for x in snaps if minute-int(x.get("minute",minute))<=20][-24:];old=[x for x in s["snaps"] if int(x.get("minute",0))<=minute-10];s["ts"]=now
-        if not old:continue
-        counters["baseline"]+=1
-        d=delta(stats,old[-1].get("stats"));goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
-        if persistent_goal_cooldown(m.event_id,minute):last=minute
-        prev=get_previous_values(m.event_id,minute,8);pressure=calculate_goal_pressure(m,stats,prev);engines=[]
-        if 35<=minute<=38:
-            timing=timing_context(m,HT_HUNTER);dht=dict(d);dht["_timing"]=timing;engines.append((HT_HUNTER,ht_hunter(minute,d,last,timing.get("bonus",0)),dht))
-        if 80<=minute<=85:
-            timing=timing_context(m,LATE_RISK);dlr=dict(d);dlr["_timing"]=timing;engines.append((LATE_RISK,late_risk(minute,d,last,timing.get("bonus",0)),dlr))
-        for engine,dec,card_delta in engines:
-            if not dec.eligible:continue
-            counters["eligible"]+=1
-            if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):
-                counters["duplicate"]+=1;continue
-            market=_market(m,pressure,engine)
-            if market:
-                counters["market"]+=1
-                try:odd=float(market.get("odd",0) or 0)
-                except:odd=0.0
-            else:
-                counters["no_market"]+=1
-                odd=None
-                logger.info("ENGINE_NO_MARKET %s %s - %s minute=%d score=%.1f; sending signal anyway",engine,m.home,m.away,minute,dec.score)
-            if _record(m,engine,dec.score,card_delta,odd) and _send_all(m,engine,dec.score,card_delta,odd):
-                counters["sent"]+=1
-                logger.info("ENGINE_SIGNAL %s %s - %s minute=%d score=%.1f odd=%s timing=%s",engine,m.home,m.away,minute,dec.score,"N/A" if odd is None else f"{odd:.2f}",(card_delta.get("_timing") or {}).get("pct"));journal=all_signals()
-    _save(state)
-    logger.info("ENGINE_SCAN_DIAG live=%d window=%d stats=%d baseline=%d eligible=%d duplicate=%d market=%d no_market=%d sent=%d",counters["live"],counters["window"],counters["stats"],counters["baseline"],counters["eligible"],counters["duplicate"],counters["market"],counters["no_market"],counters["sent"])
+ state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();c={"live":len(live),"fh_seen":0,"fh_eligible":0,"ht_seen":0,"ht_eligible":0,"duplicate":0,"exposure":0,"market":0,"value_reject":0,"sent":0}
+ for m in live:
+  minute=int(getattr(m,"minute",0) or 0);is_ht=bool(getattr(m,"is_halftime",False))
+  if 0<=minute<=25 and not is_ht:
+   c["fh_seen"]+=1;body=fetch_stats(m.event_id)
+   if not body:continue
+   stats=parse_stats(body)
+   if not stats:continue
+   key=f"fhtrend:{m.event_id}";s=state.setdefault(key,{"ts":now,"snaps":[]});snaps=s.setdefault("snaps",[]);snap={"minute":minute,"stats":snapshot(stats)}
+   if not snaps or int(snaps[-1].get("minute",-1))!=minute:snaps.append(snap)
+   s["snaps"]=snaps[-30:];s["ts"]=now
+   if minute<15:continue
+   baseline=s["snaps"][0].get("stats") if s["snaps"] else {};d=delta(stats,baseline);goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
+   if persistent_goal_cooldown(m.event_id,minute):last=minute
+   timing=timing_context(m,FIRST_HALF_GOAL);d["_timing"]=timing;dec=first_half_goal(minute,d,last,timing.get("bonus",0))
+   if not dec.eligible:continue
+   c["fh_eligible"]+=1;engine=FIRST_HALF_GOAL;market=_fh_market(m)
+  elif is_ht:
+   c["ht_seen"]+=1;engine=SECOND_HALF_OVER15
+   if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):c["duplicate"]+=1;continue
+   body=fetch_stats(m.event_id)
+   if not body:continue
+   stats=parse_stats(body)
+   if not stats:continue
+   timing=timing_context(m,SECOND_HALF_OVER15);dec=second_half_over15(stats,timing.get("bonus",0));d=snapshot(stats);d["_timing"]=timing
+   if not dec.eligible:continue
+   c["ht_eligible"]+=1;market=_ht_market(m)
+  else:continue
+  if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):c["duplicate"]+=1;continue
+  allowed,why=can_open(journal,m.event_id)
+  if not allowed:c["exposure"]+=1;logger.info("ENGINE_EXPOSURE_REJECT %s %s %s",engine,m.event_id,why);continue
+  if not market:logger.info("ENGINE_NO_MARKET %s %s",engine,m.event_id);continue
+  primary=_primary(engine,market,dec.score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15";ok,why=value_ok(primary,reason)
+  if not ok:c["value_reject"]+=1;logger.info("ENGINE_VALUE_REJECT %s %s %s",engine,m.event_id,why);continue
+  c["market"]+=1;odd=float(market.get("odd",0) or 0);d["_market"]={"line":market.get("line"),"odd":market.get("odd"),"market_status":market.get("market_status"),"source_count":market.get("source_count"),"source_prices":market.get("source_prices") or []}
+  if _record(m,engine,dec.score,d,market) and _send_all(m,engine,dec.score,d,odd):c["sent"]+=1;journal=all_signals()
+ _save(state);logger.info("ENGINE_SCAN_DIAG %s",c)

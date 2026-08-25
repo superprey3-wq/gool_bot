@@ -1,11 +1,11 @@
-"""Unified PREMATCH + LIVE bot runner."""
+"""Unified GOOL LIVE bot runner."""
 from __future__ import annotations
 import asyncio, json, logging, math, os, statistics, time
 from pathlib import Path
 from typing import Any
 import requests
 from live_engine import StatsSnapshot, calculate_goal_pressure, discover_live_matches, fetch_stats, fetch_summary, get_previous_values, parse_goal_timeline, parse_stats, save_snapshot
-from prematch_scanner import _fetch_event_odds
+from live_odds import fetch_live_odds as _fetch_event_odds
 from signal_journal import add_signal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -32,19 +32,13 @@ def telegram_send(text):
     except requests.RequestException:return False
 
 def telegram_send_signal(match, pressure, recs, text):
-    """Send visual match card first, then the compact text signal.
-
-    Card generation/upload is best-effort: a photo failure must never suppress the
-    actual text signal.
-    """
     if not BOT_TOKEN or not CHAT_ID:return False
     try:
         from signal_card import render_signal_card
         png=render_signal_card(match,pressure,recs)
         r=requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",data={"chat_id":CHAT_ID},files={"photo":("gool-live.png",png,"image/png")},timeout=20)
         if not r.ok: logger.warning("Signal card upload failed: HTTP %s %s",r.status_code,r.text[:200])
-    except Exception as e:
-        logger.warning("Signal card render/send failed: %s",e)
+    except Exception as e: logger.warning("Signal card render/send failed: %s",e)
     return telegram_send(text)
 
 def _minutes_remaining(scope:str, minute:int)->float:
