@@ -1,7 +1,7 @@
 """VAR-safe CORE goal confirmation for analytics-first signals.
 
-A confirmed new goal closes the analytical signal as WIN regardless of whether
-the optional displayed bet has crossed yet. Bet settlement is stored separately.
+A confirmed new goal closes the analytical signal as WIN. Signal quality is
+measured by the football event itself and never by bookmaker odds.
 """
 from __future__ import annotations
 import time,logging
@@ -41,7 +41,7 @@ def _confirm_goal_worker(event_id):
   except Exception:logger.exception("Could not mark analytical signal win %s",event_id)
   token=tip.unified_bot.BOT_TOKEN
   if token:
-   text=f"✅ <b>GOOL AI • СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ</b>\n\n⚽ <b>{row.get('home')} — {row.get('away')}</b>\n⏱ после входа · <b>{current[0]}:{current[1]}</b>\n<i>Коэффициент/ставка на карточке — отдельная справочная метрика.</i>"
+   text=f"✅ <b>GOOL AI • СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ</b>\n\n⚽ <b>{row.get('home')} — {row.get('away')}</b>\n⏱ после сигнала · <b>{current[0]}:{current[1]}</b>\n<i>Прогноз модели по голевой активности подтверждён.</i>"
    for cid in get_subscribers():tip._send_text_to_chat(token,cid,text)
   try:tip._close_confirmed_entry(event_id,current,minute)
   except Exception:pass
@@ -49,4 +49,4 @@ def _confirm_goal_worker(event_id):
   return
 
 tip._confirm_goal_worker=_confirm_goal_worker
-logger.info("CORE goal confirmation is signal-first; card bet cannot delay WIN")
+logger.info("CORE goal confirmation is analytics-first and odds-independent")
