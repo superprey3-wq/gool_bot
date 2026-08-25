@@ -44,10 +44,8 @@ import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
 import multi_engine_runtime
-import live_button_patch
-import live_button_emergency_patch
 from league_signal_gate import filter_for_multi_engine
-from telegram_subscribers import polling_loop
+from telegram_subscribers import polling_loop,BUILD_ID
 import production_logging
 async def run_live():
  try:
@@ -67,7 +65,7 @@ async def status_loop():
   except Exception:logger.exception("LIVE heartbeat failed; runner will continue")
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
- logger.info("GOOL LIVE | analytics drive signals: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context | odds optional metadata only")
+ logger.info("GOOL LIVE | build=%s | analytics: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context | odds optional metadata only",BUILD_ID)
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
