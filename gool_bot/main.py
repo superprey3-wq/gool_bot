@@ -46,6 +46,7 @@ import core_primary_reconcile
 import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
+import confirmation_integrity_patch
 import multi_engine_runtime
 import aux_score_freshness_patch
 import multi_source_aux_stats_patch
