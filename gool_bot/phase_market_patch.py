@@ -24,14 +24,15 @@ def _first_half_rows(entries,m,p):
     targets=(goals+.5,goals+1.5)
     ls_rows=[r for r in unified_bot._recommendations(entries,m,p)
              if r.get("scope")=="FIRST_HALF"
+             and r.get("line") is not None
              and float(r.get("line",-99)) in targets
              and _visible_price(r)]
-    ls_by={float(r["line"]):dict(r,source="LSApp") for r in ls_rows}
+    ls_by={float(r["line"]):dict(r,source="LSApp") for r in ls_rows if r.get("line") is not None}
     try:
         bov=get_first_half_total_odds(m.home,m.away,m.home_score,m.away_score)
     except Exception as exc:
         logger.info("FIRST_HALF_BOVADA_FAILED %s: %s",m.event_id,exc); bov=[]
-    bov_by={float(r["line"]):r for r in bov if _visible_price(r)}
+    bov_by={float(r["line"]):r for r in bov if r.get("line") is not None and _visible_price(r)}
     rows=[]
     for step,line in enumerate(targets,1):
         row=dict(bov_by.get(float(line)) or ls_by.get(float(line)) or {})
@@ -50,7 +51,14 @@ def _market(entries,m,p):
 
 
 def _row_map(recs,scope):
-    return {float(r["line"]):r for r in recs if r.get("scope")==scope and _visible_price(r)}
+    out={}
+    for r in recs:
+        if r.get("scope")!=scope or not _visible_price(r):continue
+        line=r.get("line")
+        if line is None:continue
+        try:out[float(line)]=r
+        except (TypeError,ValueError):continue
+    return out
 
 
 def _period_prices(recs,m):
@@ -103,7 +111,7 @@ def _format_strategy_signal(m,p,s,recs,goals,reason,route,master,hz,market):
             action += "\n🔵 Приоритет: ещё 1 гол во 2-м тайме"
     model_goal=max(1,min(92,round(hz[3])))
     prices=_period_prices(recs,m)
-    best=next((r for r in recs if r.get("best_bet") and r.get("scope")=="FULL_TIME" and lc._sane_price(r)),None)
+    best=next((r for r in recs if r.get("best_bet") and r.get("scope")=="FULL_TIME" and r.get("line") is not None and lc._sane_price(r)),None)
     if m.minute<=45 and not m.is_halftime:
         best_line=(f"⭐ Лучшая ставка на весь матч: <b>ТБ {float(best['line']):g} @ {float(best['odd']):.2f}</b>"
                    if best else "⭐ Лучшая ставка на весь матч: <b>сейчас нет подходящего LIVE-кэфа</b>")
