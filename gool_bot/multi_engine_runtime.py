@@ -32,7 +32,7 @@ def _primary(engine,market,confidence):
  if not market:return None
  try:odd=float(market["odd"]);line=float(market["line"]);conf=float(confidence)
  except (KeyError,TypeError,ValueError):return None
- return {"market":"TOTAL_OVER","scope":"FIRST_HALF" if engine==FIRST_HALF_GOAL else "SECOND_HALF","line":line,"odd":odd,"source":str(market.get("source") or "LIVE"),"bookmakers":int(market.get("source_count",1) or 1),"confidence":conf,"value_edge":round(conf-(100.0/odd),1),"market_status":str(market.get("market_status") or "EARLY"),"steam_score":0.0,"source_prices":market.get("source_prices") or []}
+ return {"market":"TOTAL_OVER","scope":"FIRST_HALF" if engine==FIRST_HALF_GOAL else "SECOND_HALF","line":line,"odd":odd,"source":str(market.get("source") or "Flashscore/LSApp"),"primary_source":"Flashscore/LSApp","bookmakers":int(market.get("source_count",1) or 1),"confidence":conf,"value_edge":round(conf-(100.0/odd),1),"market_status":str(market.get("market_status") or "PRIMARY_ONLY"),"steam_score":0.0,"source_prices":market.get("source_prices") or []}
 def _send_all(match,engine,score,d,odd,result=None):
  token=unified_bot.BOT_TOKEN;subs=get_subscribers()
  if not token or not subs:return False
@@ -70,8 +70,8 @@ def _settle_active(live_by):
   elif engine==SECOND_HALF_OVER15:
    if now_goals-start>=2:update_signal(key,result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
    elif int(getattr(m,"minute",0) or 0)>=90:update_signal(key,result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
-def _fh_market(m):return best_consensus(first_half_next_total(m.home,m.away,int(m.home_score)+int(m.away_score)))
-def _ht_market(m):return best_consensus(second_half_market(m.home,m.away))
+def _fh_market(m):return best_consensus(first_half_next_total(m.event_id,m.home,m.away,int(m.home_score)+int(m.away_score)))
+def _ht_market(m):return best_consensus(second_half_market(m.event_id,m.home,m.away))
 def scan_engines(live):
  state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();c={"live":len(live),"fh_seen":0,"fh_eligible":0,"ht_seen":0,"ht_eligible":0,"duplicate":0,"exposure":0,"market":0,"value_reject":0,"sent":0}
  for m in live:
@@ -104,7 +104,7 @@ def scan_engines(live):
   if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):c["duplicate"]+=1;continue
   allowed,why=can_open(journal,m.event_id)
   if not allowed:c["exposure"]+=1;logger.info("ENGINE_EXPOSURE_REJECT %s %s %s",engine,m.event_id,why);continue
-  if not market:logger.info("ENGINE_NO_MARKET %s %s",engine,m.event_id);continue
+  if not market:logger.info("ENGINE_NO_FLASHSCORE_MARKET %s %s",engine,m.event_id);continue
   primary=_primary(engine,market,dec.score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15";ok,why=value_ok(primary,reason)
   if not ok:c["value_reject"]+=1;logger.info("ENGINE_VALUE_REJECT %s %s %s",engine,m.event_id,why);continue
   c["market"]+=1;odd=float(market.get("odd",0) or 0);d["_market"]={"line":market.get("line"),"odd":market.get("odd"),"market_status":market.get("market_status"),"source_count":market.get("source_count"),"source_prices":market.get("source_prices") or []}
