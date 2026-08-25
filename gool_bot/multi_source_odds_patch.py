@@ -1,65 +1,74 @@
-"""Candidate-only multi-source LIVE odds confirmation.
+"""Candidate-only multi-source LIVE totals confirmation.
 
-Adds verified Kambi/BetRivers prices beside the existing LSApp/Bovada candidate
-market. It never creates a candidate by itself. Only standard .0/.5 totals are
-accepted. Stores tiny in-memory micro-history per matched line to expose source
-agreement and simple price movement without growing VPS memory.
+CORE totals are rebuilt from all available sources for the exact same line:
+LSApp/Flashscore, Bovada and Kambi. No source gets unconditional priority.
+The selected quote is an actual conservative/median source price, never a
+synthetic average. Large source disagreement is exposed to the selector and
+all raw normalized source prices are logged for audit.
 """
 from __future__ import annotations
-
-import time
-from collections import defaultdict, deque
-
+import logging,statistics,time
+from collections import defaultdict,deque
 import live_candidate_patch as lc
+import unified_bot
+from bovada_live_odds import get_goal_total_odds
 from kambi_live_odds import get_live_goal_totals
+logger=logging.getLogger("multi_source_odds")
+_HISTORY:dict[str,deque]=defaultdict(lambda:deque(maxlen=4));_TTL=45*60
 
-_HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=4))
-_TTL = 45 * 60
-_orig_target = lc._target_goal_markets
-
-
-def _standard(line: float) -> bool:
-    return abs(float(line) * 2 - round(float(line) * 2)) < 1e-9
-
-
-def _track(key: str, odd: float) -> dict:
-    now=time.time(); q=_HISTORY[key]
-    while q and now-q[0][0] > _TTL: q.popleft()
-    if not q or abs(q[-1][1]-odd) > 1e-6 or now-q[-1][0] >= 20: q.append((now,float(odd)))
-    if len(q)<2:return {"direction":"flat","from":round(odd,3),"to":round(odd,3),"drop_pct":0.0}
-    old=float(q[0][1]); new=float(q[-1][1]); drop=(old-new)/old*100 if old>1 else 0.0
-    return {"direction":"toward" if drop>0.5 else "against" if drop<-0.5 else "flat","from":round(old,3),"to":round(new,3),"drop_pct":round(drop,2)}
-
-
+def _standard(line):
+ try:return abs(float(line)*2-round(float(line)*2))<1e-9
+ except:return False
+def _track(key,odd):
+ now=time.time();q=_HISTORY[key]
+ while q and now-q[0][0]>_TTL:q.popleft()
+ if not q or abs(q[-1][1]-float(odd))>1e-6 or now-q[-1][0]>=20:q.append((now,float(odd)))
+ if len(q)<2:return {"direction":"flat","from":round(float(odd),3),"to":round(float(odd),3),"drop_pct":0.0}
+ old,new=float(q[0][1]),float(q[-1][1]);drop=(old-new)/old*100 if old>1 else 0.0
+ return {"direction":"toward" if drop>.5 else "against" if drop<-.5 else "flat","from":round(old,3),"to":round(new,3),"drop_pct":round(drop,2)}
+def _sane(row):return lc._sane_price(row) and _standard(float(row.get("line",-99)))
+def _lsapp(entries,m,p,targets):
+ rows=[]
+ try:base=unified_bot._recommendations(entries,m,p)
+ except Exception:return rows
+ for r in base:
+  try:line=float(r.get("line"));odd=float(r.get("odd"))
+  except Exception:continue
+  if r.get("scope")=="FULL_TIME" and line in targets and _sane({"line":line,"odd":odd}):rows.append({"scope":"FULL_TIME","line":line,"odd":odd,"source":"LSApp","bookmakers":int(r.get("bookmakers") or 1)})
+ return rows
+def _choose_actual_source(sources):
+ ordered=sorted(sources,key=lambda x:float(x["odd"]))
+ # 1 source -> it. 2 sources -> conservative lower price. 3 -> actual median quote.
+ return ordered[0] if len(ordered)<=2 else ordered[len(ordered)//2]
 def _target_with_multi(entries,m,p):
-    rows=_orig_target(entries,m,p)
-    if not rows:return rows
-    try:krows=get_live_goal_totals(m.home,m.away)
-    except Exception:krows=[]
-    kby={float(x.get("line")):x for x in krows if x.get("scope")=="FULL_TIME" and _standard(float(x.get("line",-99))) and lc._sane_price(x)}
-    for r in rows:
-        try:line=float(r.get("line")); base=float(r.get("odd"))
-        except Exception:continue
-        if not _standard(line):continue
-        sources=[{"source":str(r.get("source") or "LSApp/Bovada"),"odd":base}]
-        kr=kby.get(line)
-        if kr:
-            ko=float(kr["odd"]); sources.append({"source":"Kambi/BetRivers","odd":ko})
-        moves=[]
-        for s in sources:
-            key=f"{m.event_id}|{line:g}|{s['source']}"; mv=_track(key,float(s['odd'])); s["movement"]=mv; moves.append(mv)
-        r["source_prices"]=sources
-        r["source_count"]=len(sources)
-        if len(sources)>=2:
-            vals=[float(s["odd"]) for s in sources]
-            spread=(max(vals)-min(vals))/min(vals)*100 if min(vals)>0 else 999
-            r["market_consensus"]="CONFIRMED" if spread<=12 else "DISAGREE"
-            r["source_spread_pct"]=round(spread,2)
-            r["bookmakers"]=max(int(r.get("bookmakers") or 1),len(sources))
-        else:r["market_consensus"]="SINGLE_SOURCE"
-        toward=sum(1 for x in moves if x.get("direction")=="toward")
-        against=sum(1 for x in moves if x.get("direction")=="against")
-        r["external_market_status"]="STEAM" if len(moves)>=2 and toward>=2 else "CONFLICT" if against>toward else "EARLY"
-    return rows
-
+ goals=int(m.home_score or 0)+int(m.away_score or 0);targets=(float(goals+.5),float(goals+1.5));by=defaultdict(list)
+ for r in _lsapp(entries,m,p,targets):by[float(r["line"])].append(r)
+ try:
+  for r in get_goal_total_odds(m.home,m.away,m.home_score,m.away_score):
+   if float(r.get("line",-99)) in targets and _sane(r):by[float(r["line"])].append(dict(r,source="Bovada"))
+ except Exception as exc:logger.info("ODDS_BOVADA_FAILED %s %s",m.event_id,exc)
+ try:
+  for r in get_live_goal_totals(m.home,m.away):
+   if r.get("scope")=="FULL_TIME" and float(r.get("line",-99)) in targets and _sane(r):by[float(r["line"])].append(dict(r,source="Kambi/BetRivers"))
+ except Exception as exc:logger.info("ODDS_KAMBI_FAILED %s %s",m.event_id,exc)
+ out=[];now=time.time()
+ for step,line in enumerate(targets,1):
+  raw=by.get(line,[]);dedup={}
+  for x in raw:
+   try:odd=float(x["odd"]);src=str(x.get("source") or "LIVE")
+   except Exception:continue
+   dedup[src]={"source":src,"odd":odd,"movement":_track(f"{m.event_id}|TOTAL|{line:g}|{src}",odd)}
+  sources=list(dedup.values())
+  if not sources:continue
+  anchor=_choose_actual_source(sources);vals=[float(x["odd"]) for x in sources];spread=(max(vals)-min(vals))/min(vals)*100 if len(vals)>=2 and min(vals)>0 else 0.0
+  toward=sum(x["movement"]["direction"]=="toward" for x in sources);against=sum(x["movement"]["direction"]=="against" for x in sources)
+  consensus="CONFIRMED" if len(sources)>=2 and spread<=12 else "DISAGREE" if len(sources)>=2 else "SINGLE_SOURCE"
+  movement="STEAM" if len(sources)>=2 and toward>=2 else "CONFLICT" if against>toward else "EARLY"
+  odd=float(anchor["odd"]);conf=unified_bot._model_confidence(p.score,p.momentum,line,goals,"FULL_TIME",m.minute,odd)
+  row={"scope":"FULL_TIME","market_type":"TOTAL","selection":"OVER","line":line,"odd":odd,"source":anchor["source"],"source_prices":sources,"source_count":len(sources),"bookmakers":len(sources),"market_consensus":consensus,"market_status":consensus,"external_market_status":movement,"source_spread_pct":round(spread,2),"quote_ts":now,"goal_step":step,"target_label":"ещё 1 гол" if step==1 else "ещё 2 гола","confidence":conf,"value_edge":round(conf-(100/odd),1)}
+  logger.info("ODDS_MAP event=%s match=%s-%s line=%.1f sources=%s selected=%s@%.3f spread=%.1f%% consensus=%s",m.event_id,m.home,m.away,line,[(x['source'],round(float(x['odd']),3)) for x in sources],anchor['source'],odd,spread,consensus)
+  out.append(row)
+ if out:
+  best=max(out,key=lambda r:(float(r.get("value_edge",-999)),int(r.get("confidence",0)),-int(r.get("goal_step",9))));best["best_bet"]=True
+ return out
 lc._target_goal_markets=_target_with_multi
