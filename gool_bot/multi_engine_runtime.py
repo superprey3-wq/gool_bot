@@ -1,7 +1,7 @@
 """Production runtime for GOOL auxiliary LIVE strategies.
 
 FIRST_HALF_GOAL collects evidence from kickoff and may signal at 15'-25'.
-SECOND_HALF_OVER15 decides at half-time from the complete first-half sample.
+SECOND_HALF_OVER15 decides at half-time/recovery windows from the available sample.
 Odds are display-only and never gate an analytically eligible signal.
 """
 from __future__ import annotations
@@ -61,16 +61,17 @@ def _score_at_signal(row):
 def _result_delta(row):
  d=dict(row.get("trend_delta") or {});p=row.get("primary") or {};d["_market"]={"line":p.get("line"),"odd":p.get("odd"),"market_status":p.get("market_status") or "NO_PRICE","source_prices":p.get("source_prices") or []};return d
 def _settle_active(live_by):
+ now_ts=int(time.time())
  for row in _active_rows():
   m=live_by.get(str(row.get("event_id")))
   if not m:continue
   sh,sa=_score_at_signal(row);start=sh+sa;now_goals=int(m.home_score)+int(m.away_score);engine=row.get("engine");key=str(row.get("dedupe_key") or "");d=_result_delta(row);odd=row.get("odd")
   if engine==FIRST_HALF_GOAL:
-   if now_goals>start:update_signal(key,result="win",signal_result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
-   elif bool(getattr(m,"is_halftime",False)) or int(getattr(m,"minute",0) or 0)>=46:update_signal(key,result="loss",signal_result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
+   if now_goals>start:update_signal(key,result="win",signal_result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute),settled_ts=now_ts,next_goal_confirmed_ts=now_ts);_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
+   elif bool(getattr(m,"is_halftime",False)) or int(getattr(m,"minute",0) or 0)>=46:update_signal(key,result="loss",signal_result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute),settled_ts=now_ts);_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
   elif engine==SECOND_HALF_OVER15:
-   if now_goals-start>=2:update_signal(key,result="win",signal_result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
-   elif int(getattr(m,"minute",0) or 0)>=90:update_signal(key,result="loss",signal_result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
+   if now_goals-start>=2:update_signal(key,result="win",signal_result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute),settled_ts=now_ts,next_goal_confirmed_ts=now_ts);_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
+   elif int(getattr(m,"minute",0) or 0)>=90:update_signal(key,result="loss",signal_result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute),settled_ts=now_ts);_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
 def _fh_market(m):return best_consensus(first_half_next_total(m.event_id,m.home,m.away,int(m.home_score)+int(m.away_score)))
 def _ht_market(m):return best_consensus(second_half_market(m.event_id,m.home,m.away))
 def scan_engines(live):
@@ -103,7 +104,7 @@ def scan_engines(live):
    c["ht_eligible"]+=1;market=_ht_market(m)
   else:continue
   if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):c["duplicate"]+=1;continue
-  allowed,why=can_open(journal,m.event_id)
+  allowed,why=can_open(journal,m.event_id,current_minute=minute)
   if not allowed:c["exposure"]+=1;logger.info("ENGINE_EXPOSURE_REJECT %s %s %s",engine,m.event_id,why);continue
   odd=float(market.get("odd",0) or 0) if market else None
   if market:c["priced"]+=1;d["_market"]={"line":market.get("line"),"odd":market.get("odd"),"market_status":market.get("market_status"),"source_count":market.get("source_count"),"source_prices":market.get("source_prices") or []}
