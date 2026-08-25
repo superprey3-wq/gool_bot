@@ -1,7 +1,8 @@
-"""Final LIVE-only exposure gate before CORE Telegram delivery.
+"""Final exposure/cadence gate before CORE Telegram delivery.
 
-Odds/edge are intentionally NOT used here. A signal is allowed or rejected by
-analytics upstream; this guard only prevents duplicate/open exposure spam.
+Analytics decides signal quality. This guard enforces only match-level cadence:
+max two entries, one open entry, cooldown, and no new signal after 75'. Odds do
+not participate.
 """
 from __future__ import annotations
 import logging
@@ -19,9 +20,12 @@ def _entry_reason(text):
 def _send(match,pressure,recs,text):
  reason=_entry_reason(text)
  if not reason:return _original_send(match,pressure,recs,text)
- eid=str(getattr(match,"event_id","") or "");allowed,why=can_open(all_signals(),eid)
- if not allowed:logger.info("CORE_EXPOSURE_REJECT %s %s",eid,why);return False
+ eid=str(getattr(match,"event_id","") or "");minute=int(getattr(match,"minute",0) or 0)
+ allowed,why=can_open(all_signals(),eid,current_minute=minute)
+ if not allowed:
+  logger.info("CORE_CADENCE_REJECT %s %d' %s",eid,minute,why)
+  return False
  return _original_send(match,pressure,recs,text)
 
 lc._send=_send
-logger.info("LIVE quant guard: exposure-only; odds cannot block CORE signals")
+logger.info("LIVE quant guard: max2 + cooldown + <=75m; odds cannot block CORE signals")
