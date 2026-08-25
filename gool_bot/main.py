@@ -33,9 +33,9 @@ import signal_journal_runtime_patch
 import goal_reset_patch
 import live_status_heartbeat
 import fast_goal_watch
-# Auxiliary strategies: 1H goal at 15-20' + 2H O1.5 at half-time.
-import aux_engine_card_labels_patch
+# Auxiliary strategies: FIRST_HALF_GOAL at 15-25' + SECOND_HALF_OVER15 at half-time.
 import multi_engine_runtime
+# Owner-only manual diagnostic; it does not poll 1xBet during normal production cycles.
 import xbet_probe_patch
 from telegram_subscribers import polling_loop
 import production_logging
@@ -59,7 +59,7 @@ async def main():
     poller=asyncio.create_task(polling_loop(),name="telegram-command-poller")
     heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat")
     goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
-    logger.info("GOOL BOT LIGHT 24/7 started | CORE + 1H GOAL + 2H O1.5 | FAST GOAL WATCH 20s")
+    logger.info("GOOL BOT LIGHT 24/7 started | CORE + 1H GOAL 15-25 + 2H O1.5 HT | FAST GOAL WATCH 20s")
     try:
         while True:
             started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
