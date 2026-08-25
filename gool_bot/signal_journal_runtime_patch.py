@@ -1,10 +1,10 @@
-"""Persist auditable runtime truth for GOOL CORE entries."""
+"""Persist GOOL CORE signal truth separately from optional card-bet metadata."""
 from __future__ import annotations
 import re,time,logging
 import live_candidate_patch as lc
 import unified_bot
 from signal_journal import all_signals,update_signal
-from market_settlement import fully_won_now,settle_primary
+from market_settlement import settle_primary
 logger=logging.getLogger("signal_journal_runtime_patch");_PENDING_META={};_orig_send=lc._send;_orig_record=unified_bot._record_live
 _PENDING={"","pending","wait","waiting"}
 def _score_total(v):
@@ -23,6 +23,10 @@ def _selected_primary(recs):
  if kind:p["market"]=kind
  elif p.get("line") is not None:p["market"]="TOTAL_OVER"
  return p
+def _bet_fields(primary,score):
+ if not isinstance(primary,dict):return {}
+ s=settle_primary(primary,score) or {};mapping={"result":"bet_result","pnl_units":"bet_pnl_units","settled_market":"bet_settled_market","settled_line":"bet_settled_line","settled_odd":"bet_settled_odd"}
+ return {dst:s[src] for src,dst in mapping.items() if s.get(src) is not None}
 def reconcile_reentry_labels():
  rows=all_signals();by={};fixed=0
  for r in rows:
@@ -43,7 +47,7 @@ def _record(m,p,s,recs,reason):
  if record_reason in {"signal","reentry"}:
   meta=_PENDING_META.pop((eid,minute),{});c=[r for r in all_signals() if r.get("kind")=="live" and str(r.get("event_id"))==eid and int(r.get("minute") or 0)==minute and str(r.get("reason") or "signal") in {"signal","reentry"}]
   if c:
-   row=max(c,key=lambda x:int(x.get("created_ts",0) or 0));fields={"journal_version":5,"stake_units":1.0,"next_goal_hit":False};primary=_selected_primary(recs)
+   row=max(c,key=lambda x:int(x.get("created_ts",0) or 0));fields={"journal_version":6,"stake_units":1.0,"next_goal_hit":False,"signal_result":"pending"};primary=_selected_primary(recs)
    if primary:fields["primary"]=primary;fields["odd"]=primary.get("odd");fields["market_status"]=primary.get("external_market_status") or primary.get("market_status") or primary.get("market_consensus")
    if meta.get("master") is not None:fields["master"]=float(meta["master"])
    update_signal(str(row.get("dedupe_key")),**fields)
@@ -51,13 +55,11 @@ def _record(m,p,s,recs,reason):
 def mark_latest_entry_goal(event_id,final_score=None,goal_minute=None):
  eid=str(event_id or "");rows=[r for r in all_signals() if r.get("kind")=="live" and str(r.get("event_id"))==eid and str(r.get("reason") or "signal") in {"signal","reentry"} and str(r.get("result") or "pending").strip().lower() in _PENDING]
  if not rows:return False
- row=max(rows,key=lambda x:int(x.get("created_ts",0) or 0));fields={"next_goal_hit":True,"next_goal_confirmed_ts":int(time.time())}
- if final_score:fields["next_goal_score"]=str(final_score)
+ row=max(rows,key=lambda x:int(x.get("created_ts",0) or 0));fields={"next_goal_hit":True,"signal_result":"win","result":"win","next_goal_confirmed_ts":int(time.time()),"result_source":"confirmed_goal_after_signal","settled_ts":int(time.time())}
+ if final_score:fields["next_goal_score"]=str(final_score);fields["final_score"]=str(final_score);fields.update(_bet_fields(row.get("primary"),str(final_score)))
  if goal_minute is not None:fields["next_goal_minute"]=int(goal_minute)
- primary=row.get("primary")
- if final_score and fully_won_now(primary,final_score):fields.update(settle_primary(primary,final_score) or {},result_source="primary_market_crossed",settled_ts=int(time.time()),final_score=str(final_score))
  ok=update_signal(str(row.get("dedupe_key")),**fields)
- if ok:logger.info("JOURNAL_GOAL_CONFIRMED %s settled=%s",eid,fields.get("result","pending"))
+ if ok:logger.info("JOURNAL_SIGNAL_GOAL_CONFIRMED %s bet=%s",eid,fields.get("bet_result"))
  return ok
 mark_latest_entry_win=mark_latest_entry_goal
 try:reconcile_reentry_labels()
