@@ -45,6 +45,7 @@ import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
 import multi_engine_runtime
+import card_explainability_patch
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop,BUILD_ID
 import production_logging
