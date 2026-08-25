@@ -39,7 +39,7 @@ def _send_all(match,engine,score,d,odd,result=None):
  if not token or not subs:return False
  try:png=render_engine_card(match,engine,score,d,odd,result)
  except Exception as e:logger.exception("ENGINE_CARD_FAILED %s",e);png=None
- label="ГОЛ В 1-М ТАЙМЕ" if engine==FIRST_HALF_GOAL else "ТБ1.5 ВО 2-М ТАЙМЕ";caption=(f"✅ GOOL AI • ЗАШЛО • {label}" if result=="win" else f"❌ GOOL AI • НЕ ЗАШЛО • {label}" if result=="loss" else f"🎯 GOOL AI • {label}");ok=0
+ label="ГОЛ ДО ПЕРЕРЫВА" if engine==FIRST_HALF_GOAL else "2+ ГОЛА ВО 2-М ТАЙМЕ";caption=(f"✅ GOOL AI • СИГНАЛ ПОДТВЕРЖДЁН • {label}" if result=="win" else f"❌ GOOL AI • СИГНАЛ НЕ ПОДТВЕРЖДЁН • {label}" if result=="loss" else f"🎯 GOOL AI • АНАЛИТИЧЕСКИЙ СИГНАЛ • {label}");ok=0
  for cid in subs:
   try:
    if png:r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",data={"chat_id":str(cid),"caption":caption},files={"photo":("gool-engine.png",png,"image/png")},timeout=25)
@@ -50,11 +50,9 @@ def _send_all(match,engine,score,d,odd,result=None):
 def _journal_key(engine,eid):return f"engine:{engine}:{eid}"
 def _record(match,engine,score,d,market):
  primary=_primary(engine,market,score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15"
- row={"journal_version":6,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"reason":reason,"result":"pending","stake_units":1.0}
- if primary:
-  row.update({"odd":primary["odd"],"primary":primary,"market_status":primary["market_status"]})
- else:
-  row.update({"odd":None,"primary":None,"market_status":"NO_PRICE","odds_display_only":True})
+ row={"journal_version":6,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"reason":reason,"result":"pending","signal_result":"pending","stake_units":1.0}
+ if primary:row.update({"odd":primary["odd"],"primary":primary,"market_status":primary["market_status"],"odds_display_only":True})
+ else:row.update({"odd":None,"primary":None,"market_status":"NO_PRICE","odds_display_only":True})
  return add_signal(row,_journal_key(engine,match.event_id))
 def _active_rows():return [r for r in all_signals() if r.get("engine") in {FIRST_HALF_GOAL,SECOND_HALF_OVER15} and str(r.get("result") or "pending").strip().lower()=="pending"]
 def _score_at_signal(row):
@@ -68,11 +66,11 @@ def _settle_active(live_by):
   if not m:continue
   sh,sa=_score_at_signal(row);start=sh+sa;now_goals=int(m.home_score)+int(m.away_score);engine=row.get("engine");key=str(row.get("dedupe_key") or "");d=_result_delta(row);odd=row.get("odd")
   if engine==FIRST_HALF_GOAL:
-   if now_goals>start:update_signal(key,result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
-   elif bool(getattr(m,"is_halftime",False)) or int(getattr(m,"minute",0) or 0)>=46:update_signal(key,result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
+   if now_goals>start:update_signal(key,result="win",signal_result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
+   elif bool(getattr(m,"is_halftime",False)) or int(getattr(m,"minute",0) or 0)>=46:update_signal(key,result="loss",signal_result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
   elif engine==SECOND_HALF_OVER15:
-   if now_goals-start>=2:update_signal(key,result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
-   elif int(getattr(m,"minute",0) or 0)>=90:update_signal(key,result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
+   if now_goals-start>=2:update_signal(key,result="win",signal_result="win",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"win")
+   elif int(getattr(m,"minute",0) or 0)>=90:update_signal(key,result="loss",signal_result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
 def _fh_market(m):return best_consensus(first_half_next_total(m.event_id,m.home,m.away,int(m.home_score)+int(m.away_score)))
 def _ht_market(m):return best_consensus(second_half_market(m.event_id,m.home,m.away))
 def scan_engines(live):
@@ -108,9 +106,7 @@ def scan_engines(live):
   allowed,why=can_open(journal,m.event_id)
   if not allowed:c["exposure"]+=1;logger.info("ENGINE_EXPOSURE_REJECT %s %s %s",engine,m.event_id,why);continue
   odd=float(market.get("odd",0) or 0) if market else None
-  if market:
-   c["priced"]+=1;d["_market"]={"line":market.get("line"),"odd":market.get("odd"),"market_status":market.get("market_status"),"source_count":market.get("source_count"),"source_prices":market.get("source_prices") or []}
-  else:
-   c["unpriced"]+=1;d["_market"]={"line":None,"odd":None,"market_status":"NO_PRICE","source_count":0,"source_prices":[]}
+  if market:c["priced"]+=1;d["_market"]={"line":market.get("line"),"odd":market.get("odd"),"market_status":market.get("market_status"),"source_count":market.get("source_count"),"source_prices":market.get("source_prices") or []}
+  else:c["unpriced"]+=1;d["_market"]={"line":None,"odd":None,"market_status":"NO_PRICE","source_count":0,"source_prices":[]}
   if _record(m,engine,dec.score,d,market) and _send_all(m,engine,dec.score,d,odd):c["sent"]+=1;journal=all_signals()
  _save(state);logger.info("ENGINE_SCAN_DIAG %s",c)
