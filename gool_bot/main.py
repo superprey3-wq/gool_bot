@@ -13,6 +13,7 @@ import live_only_recommendation_patch
 import live_candidate_patch
 import candidate_enrichment_patch
 import scores365_enrichment_patch
+import deep_stats_consensus_patch
 import context_adjustment_patch
 import core_warmup_patch
 import halftime_hazard_patch
@@ -27,6 +28,7 @@ import best_market_selector_patch
 import score_sync_patch
 import market_math_patch
 import gool_xg_consensus
+import odds_nonblocking_patch
 import telegram_signal_filter_patch
 import signal_card_history_patch
 import signal_card_source_footer_patch
@@ -63,7 +65,7 @@ async def status_loop():
   except Exception:logger.exception("LIVE heartbeat failed; runner will continue")
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
- logger.info("GOOL LIVE | Flashscore/LSApp primary + Kambi/SGO confirmation | CORE + prematch context | 1H 15-25 + 2H O1.5 HT")
+ logger.info("GOOL LIVE | analytics drive signals: Flashscore + history/H2H + FotMob + 365Scores + xG context | odds display-only")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
