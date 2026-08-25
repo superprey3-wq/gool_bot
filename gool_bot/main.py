@@ -57,6 +57,7 @@ import aux_result_minute_patch
 import release_build_patch
 import prematch_market_service
 import prematch_market_context_patch
+import period_prematch_market_patch
 from league_signal_gate import filter_for_multi_engine
 import telegram_subscribers
 import telegram_interactive_live_patch
@@ -80,7 +81,7 @@ async def status_loop():
   except Exception:logger.exception("LIVE heartbeat failed; runner will continue")
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");prematch=asyncio.create_task(prematch_market_service.loop(),name="prematch-market-rolling")
- logger.info("GOOL LIVE | build=%s | analytics: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context | rolling prematch market history active | odds context only",BUILD_ID)
+ logger.info("GOOL LIVE | build=%s | analytics: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context | rolling prematch market history active | period market observation active | odds context only",BUILD_ID)
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
