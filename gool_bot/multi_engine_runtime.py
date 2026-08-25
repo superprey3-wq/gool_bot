@@ -1,10 +1,10 @@
 """Production runtime for GOOL auxiliary LIVE strategies.
 
 Auxiliary engines:
-- FIRST_HALF_GOAL: signal at 15'-20' for the current first-half Over line.
+- FIRST_HALF_GOAL: signal at 15'-25' for the current first-half Over line.
 - SECOND_HALF_OVER15: signal at half-time for Over 1.5 goals in the 2nd half.
 
-The retired LATE RISK engine is not evaluated anywhere in this runtime.
+The retired risk engine is not evaluated anywhere in this runtime.
 """
 from __future__ import annotations
 import json,time,logging,requests
@@ -46,9 +46,10 @@ def _send_all(match,engine,score,d,odd,result=None):
     if not token or not subs:return False
     try:png=render_engine_card(match,engine,score,d,odd,result)
     except Exception as e:logger.exception("ENGINE_CARD_FAILED %s",e);png=None
-    if result=="win":caption="✅ GOOL AI • ЗАШЛО • "+("ГОЛ В 1-М ТАЙМЕ" if engine==FIRST_HALF_GOAL else "ТБ1.5 ВО 2-М ТАЙМЕ")
-    elif result=="loss":caption="❌ GOOL AI • НЕ ЗАШЛО • "+("ГОЛ В 1-М ТАЙМЕ" if engine==FIRST_HALF_GOAL else "ТБ1.5 ВО 2-М ТАЙМЕ")
-    else:caption="🔵 GOOL AI • ГОЛ В 1-М ТАЙМЕ" if engine==FIRST_HALF_GOAL else "🟣 GOOL AI • ТБ1.5 ВО 2-М ТАЙМЕ"
+    label="ГОЛ В 1-М ТАЙМЕ" if engine==FIRST_HALF_GOAL else "ТБ1.5 ВО 2-М ТАЙМЕ"
+    if result=="win":caption=f"✅ GOOL AI • ЗАШЛО • {label}"
+    elif result=="loss":caption=f"❌ GOOL AI • НЕ ЗАШЛО • {label}"
+    else:caption=("🔵 GOOL AI • ГОЛ В 1-М ТАЙМЕ" if engine==FIRST_HALF_GOAL else "🟣 GOOL AI • ТБ1.5 ВО 2-М ТАЙМЕ")
     ok=0
     for cid in subs:
         try:
@@ -93,15 +94,15 @@ def scan_engines(live):
     state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();counters={"live":len(live),"fh_seen":0,"fh_eligible":0,"ht_seen":0,"ht_eligible":0,"duplicate":0,"exposure":0,"market":0,"value_reject":0,"sent":0}
     for m in live:
         minute=int(getattr(m,"minute",0) or 0);is_ht=bool(getattr(m,"is_halftime",False))
-        # Strategy 1: collect from 10', signal only 15'-20'.
-        if 10<=minute<=20 and not is_ht:
+        # Strategy 1: observe from 10', allow a qualified signal from 15' through 25'.
+        if 10<=minute<=25 and not is_ht:
             counters["fh_seen"]+=1;body=fetch_stats(m.event_id)
             if not body:continue
             stats=parse_stats(body)
             if not stats:continue
             key=f"fhtrend:{m.event_id}";s=state.setdefault(key,{"ts":now,"snaps":[]});snaps=s.setdefault("snaps",[]);snap={"minute":minute,"stats":snapshot(stats)}
             if not snaps or int(snaps[-1].get("minute",-1))!=minute:snaps.append(snap)
-            s["snaps"]=[x for x in snaps if minute-int(x.get("minute",minute))<=12][-16:];s["ts"]=now
+            s["snaps"]=[x for x in snaps if minute-int(x.get("minute",minute))<=15][-20:];s["ts"]=now
             old=[x for x in s["snaps"] if int(x.get("minute",0))<=minute-5]
             if minute<15 or not old:continue
             d=delta(stats,old[-1].get("stats"));goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
@@ -109,7 +110,7 @@ def scan_engines(live):
             timing=timing_context(m,FIRST_HALF_GOAL);d["_timing"]=timing;dec=first_half_goal(minute,d,last,timing.get("bonus",0))
             if not dec.eligible:continue
             counters["fh_eligible"]+=1;engine=FIRST_HALF_GOAL;market=_fh_market(m)
-        # Strategy 2: evaluate once during half-time, using the whole first half.
+        # Strategy 2: one decision during the break, using the complete first half.
         elif is_ht:
             counters["ht_seen"]+=1;engine=SECOND_HALF_OVER15
             if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):counters["duplicate"]+=1;continue
