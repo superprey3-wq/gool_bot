@@ -34,6 +34,13 @@ def _score_tuple(value):
         return 0, 0
 
 
+def _int_minute(value):
+    try:
+        return int(float(value or 0))
+    except Exception:
+        return 0
+
+
 def _pending_entries():
     """Latest pending real LIVE entry per event."""
     latest = {}
@@ -58,24 +65,38 @@ def _pending_entries():
     return latest
 
 
-def _schedule_direct(row, current_score, goal_minute):
-    """Create the same candidate used by the normal goal-confirmation path.
+def _goal_is_after_entry(row, goal_minute):
+    """Reject a goal event that happened at/before the actual entry minute.
 
-    Comparison is against score_at_signal from the persistent journal rather than the
-    mutable TRACK score. This avoids missing a goal when a long main scan updates TRACK
-    before it reaches Telegram confirmation code.
-
-    IMPORTANT: this direct path used to bypass the normal post-goal cooldown hook. That
-    allowed FAST CORE to issue a fresh entry immediately after the goal. We now write the
-    same persistent 5-minute cooldown marker here before confirmation is scheduled.
+    A summary can contain the last goal from before ENTRY while score_at_signal has
+    already been synchronized to the post-goal score.  Confirmation must never use
+    that historical goal.  Unknown goal minute is allowed only when score growth itself
+    proves a new goal; known stale minutes are always rejected.
     """
+    gm = _int_minute(goal_minute)
+    entry_minute = _int_minute(row.get("minute"))
+    if gm and entry_minute and gm <= entry_minute:
+        logger.warning(
+            "FAST_GOAL_STALE_REJECT %s | goal=%s' <= entry=%s' | entry_score=%s",
+            row.get("event_id", "?"), gm, entry_minute, row.get("score_at_signal"),
+        )
+        return False
+    return True
+
+
+def _schedule_direct(row, current_score, goal_minute):
+    """Create the same candidate used by the normal goal-confirmation path."""
     eid = str(row.get("event_id") or "")
     before = _score_tuple(row.get("score_at_signal"))
     current = tuple(current_score)
     if not eid or sum(current) <= sum(before):
         return False
 
-    minute = int(goal_minute or row.get("minute") or 0)
+    # Critical invariant: a known goal minute must be strictly after ENTRY.
+    if not _goal_is_after_entry(row, goal_minute):
+        return False
+
+    minute = _int_minute(goal_minute) or _int_minute(row.get("minute"))
 
     with tip._GOAL_LOCK:
         existing = tip._GOAL_CANDIDATES.get(eid)
@@ -86,7 +107,6 @@ def _schedule_direct(row, current_score, goal_minute):
                 goal_cooldown.mark(eid, minute, f"{current[0]}:{current[1]}")
             return True
 
-        # Mark immediately, before TRACK/result cleanup can make the event eligible again.
         goal_cooldown.mark(eid, minute, f"{current[0]}:{current[1]}")
 
         match = SimpleNamespace(
@@ -112,12 +132,14 @@ def _schedule_direct(row, current_score, goal_minute):
             "recs": recs,
             "master": master,
             "ts": time.time(),
+            "entry_minute": _int_minute(row.get("minute")),
+            "goal_minute": minute,
         }
 
     logger.warning(
-        "FAST_GOAL_DETECTED %s %s — %s | %s -> %s at %s'",
+        "FAST_GOAL_DETECTED %s %s — %s | %s -> %s at %s' (entry %s')",
         eid, row.get("home", ""), row.get("away", ""), before, current,
-        minute,
+        minute, _int_minute(row.get("minute")),
     )
     threading.Thread(
         target=tip._confirm_goal_worker,
@@ -143,6 +165,8 @@ def scan_once():
                 continue
             before = _score_tuple(row.get("score_at_signal"))
             if sum(current) > sum(before):
+                if not _goal_is_after_entry(row, goal_minute):
+                    continue
                 if _schedule_direct(row, current, goal_minute):
                     detected += 1
         except Exception as exc:
