@@ -33,6 +33,7 @@ import telegram_signal_filter_patch
 import telegram_image_signal_patch
 import analytics_card_fallback_patch
 import live_card_quality_patch
+import entry_card_delivery_patch
 import multi_source_core_stats_patch
 import entry_sync_failopen_patch
 import live_quant_guard_patch
