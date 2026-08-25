@@ -81,43 +81,52 @@ def enrich(stats,match=None,providers=None):
     fot=providers.get("fotmob") or {};ff=(fot.get("features") or {}) if isinstance(fot,dict) else {}
     sx=providers.get("scores365") or {}
 
-    # xG / xGoT: Flashscore -> FotMob -> 365Scores (GOAL currently has no parsed xG field).
+    # xG / xGoT: Flashscore -> FotMob team stats -> FotMob shotmap -> 365Scores.
     if _pair_total(out,"xg")<=0:
-        fv=_scalar(ff.get("shot_xg_total"));sv=_scalar(sx.get("shot_xg_total"))
-        if fv is not None and fv>0:out["xg"]=(round(fv,3),0.0);provenance["xg"]="FotMob"
+        fp=_pair(ff.get("xg_pair"));fv=_scalar(ff.get("shot_xg_total"));sv=_scalar(sx.get("shot_xg_total"))
+        if fp and sum(fp)>0:out["xg"]=fp;provenance["xg"]="FotMob"
+        elif fv is not None and fv>0:out["xg"]=(round(fv,3),0.0);provenance["xg"]="FotMob"
         elif sv is not None and sv>0:out["xg"]=(round(sv,3),0.0);provenance["xg"]="365Scores"
     if _pair_total(out,"xgot")<=0:
-        fv=_scalar(ff.get("shot_xgot_total"));sv=_scalar(sx.get("shot_xgot_total"))
-        if fv is not None and fv>0:out["xgot"]=(round(fv,3),0.0);provenance["xgot"]="FotMob"
+        fp=_pair(ff.get("xgot_pair"));fv=_scalar(ff.get("shot_xgot_total"));sv=_scalar(sx.get("shot_xgot_total"))
+        if fp and sum(fp)>0:out["xgot"]=fp;provenance["xgot"]="FotMob"
+        elif fv is not None and fv>0:out["xgot"]=(round(fv,3),0.0);provenance["xgot"]="FotMob"
         elif sv is not None and sv>0:out["xgot"]=(round(sv,3),0.0);provenance["xgot"]="365Scores"
 
-    # Shots: Flashscore -> FotMob shotmap -> GOAL API -> 365Scores.
+    # Shots: Flashscore -> FotMob team stats -> FotMob shotmap -> GOAL -> 365Scores.
     if _pair_total(out,"shots")<=0:
-        fshots=int(ff.get("shotmap_n") or 0);gshots=_goal_metric(gs,"total shots","shots","shots total");sshots=int(sx.get("shots") or 0)
-        if fshots>0:out["shots"]=(float(fshots),0.0);provenance["shots"]="FotMob"
+        fp=_pair(ff.get("shots_pair"));fshots=int(ff.get("shotmap_n") or 0);gshots=_goal_metric(gs,"total shots","shots","shots total");sshots=int(sx.get("shots") or 0)
+        if fp and sum(fp)>0:out["shots"]=fp;provenance["shots"]="FotMob"
+        elif fshots>0:out["shots"]=(float(fshots),0.0);provenance["shots"]="FotMob"
         elif gshots:out["shots"]=gshots;provenance["shots"]="GOAL API"
         elif sshots>0:out["shots"]=(float(sshots),0.0);provenance["shots"]="365Scores"
 
-    # Shots on target: Flashscore -> GOAL API. Other providers are used only when
-    # their adapters expose a trustworthy SOT field in the future.
+    # Shots on target: Flashscore -> FotMob team stats -> GOAL API.
     if _pair_total(out,"shots_on_target")<=0:
-        p=_goal_metric(gs,"on target","shots on goal","shots on target")
-        if p:out["shots_on_target"]=p;provenance["shots_on_target"]="GOAL API"
+        fp=_pair(ff.get("sot_pair"));gp=_goal_metric(gs,"on target","shots on goal","shots on target")
+        if fp and sum(fp)>0:out["shots_on_target"]=fp;provenance["shots_on_target"]="FotMob"
+        elif gp:out["shots_on_target"]=gp;provenance["shots_on_target"]="GOAL API"
 
-    # Big chances: Flashscore -> FotMob -> GOAL API.
+    # Big chances: Flashscore -> FotMob team stats/node -> GOAL API.
     if _pair_total(out,"big_chances")<=0:
-        fv=_node_total(ff.get("big_chances_node"));gp=_goal_metric(gs,"big chances","big chance")
-        if fv is not None and fv>0:out["big_chances"]=(fv,0.0);provenance["big_chances"]="FotMob"
+        fp=_pair(ff.get("big_chances_pair"));fv=_node_total(ff.get("big_chances_node"));gp=_goal_metric(gs,"big chances","big chance")
+        if fp and sum(fp)>0:out["big_chances"]=fp;provenance["big_chances"]="FotMob"
+        elif fv is not None and fv>0:out["big_chances"]=(fv,0.0);provenance["big_chances"]="FotMob"
         elif gp:out["big_chances"]=gp;provenance["big_chances"]="GOAL API"
 
-    # Box activity: keep true shots-inside-box distinct from touches-in-box.
+    # Box activity.
     if _pair_total(out,"shots_inside_box")<=0:
-        gp=_goal_metric(gs,"shots inside box","shots inside the box")
-        if gp:out["shots_inside_box"]=gp;provenance["shots_inside_box"]="GOAL API"
+        fp=_pair(ff.get("inside_box_pair"));gp=_goal_metric(gs,"shots inside box","shots inside the box")
+        if fp and sum(fp)>0:out["shots_inside_box"]=fp;provenance["shots_inside_box"]="FotMob"
+        elif gp:out["shots_inside_box"]=gp;provenance["shots_inside_box"]="GOAL API"
     if _pair_total(out,"touches_box")<=0:
-        fv=_node_total(ff.get("touches_box_node"));gp=_goal_metric(gs,"touches in opposition box","touches in box")
-        if fv is not None and fv>0:out["touches_box"]=(fv,0.0);provenance["touches_box"]="FotMob"
+        fp=_pair(ff.get("touches_box_pair"));fv=_node_total(ff.get("touches_box_node"));gp=_goal_metric(gs,"touches in opposition box","touches in box")
+        if fp and sum(fp)>0:out["touches_box"]=fp;provenance["touches_box"]="FotMob"
+        elif fv is not None and fv>0:out["touches_box"]=(fv,0.0);provenance["touches_box"]="FotMob"
         elif gp:out["touches_box"]=gp;provenance["touches_box"]="GOAL API"
+    if _pair_total(out,"corners")<=0:
+        fp=_pair(ff.get("corners_pair"))
+        if fp and sum(fp)>0:out["corners"]=fp;provenance["corners"]="FotMob"
 
     out["_metric_sources"]=provenance
     out["_provider_presence"]={
