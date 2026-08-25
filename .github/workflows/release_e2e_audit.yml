@@ -1,0 +1,113 @@
+name: GOOL 2.0 release e2e audit
+on:
+  push:
+    branches: [live-only-quant-foundation]
+    paths: ['.github/workflows/release_e2e_audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: pip install -q -r requirements.txt
+      - name: Compile and production import
+        run: |
+          python -m compileall -q gool_bot
+          cd gool_bot
+          python - <<'PY'
+          import main
+          import live_engine, multi_engine_runtime, telegram_image_signal_patch
+          import signal_card, multi_engine_card, market_settlement
+          print('IMPORT_OK')
+          PY
+      - name: Real LIVE transport smoke
+        working-directory: gool_bot
+        run: |
+          python - <<'PY'
+          import asyncio
+          from live_engine import discover_live_matches,fetch_stats,parse_stats,calculate_goal_pressure
+          ms=asyncio.run(discover_live_matches())
+          print('FLASHSCORE_LIVE_COUNT',len(ms))
+          if ms:
+            m=ms[0]
+            print('LIVE_MATCH',m.event_id,m.home,'vs',m.away,'min',m.minute,'score',m.home_score,m.away_score)
+            raw=fetch_stats(m.event_id)
+            print('STATS_BYTES',len(raw or ''))
+            vals=parse_stats(raw or '')
+            print('STATS_KEYS',sorted(vals.keys()))
+            p=calculate_goal_pressure(m,vals,{})
+            print('PRESSURE',p.score,p.momentum,p.quality,p.context)
+          else:
+            print('NO_LIVE_MATCHES_AT_PROBE_TIME')
+          PY
+      - name: Odds providers smoke
+        working-directory: gool_bot
+        run: |
+          python - <<'PY'
+          import bovada_live_odds as b
+          import kambi_live_odds as k
+          try:
+            be=b._live_events(); print('BOVADA_EVENTS',len(be))
+          except Exception as e: print('BOVADA_ERROR',repr(e))
+          try:
+            # internal cache loader name can vary; use public provider on impossible teams to exercise HTTP/cache safely
+            r=k.get_goal_total_odds('__GOOL_TEST_HOME__','__GOOL_TEST_AWAY__',0,0); print('KAMBI_CALL_OK',type(r).__name__,len(r or []))
+          except Exception as e: print('KAMBI_ERROR',repr(e))
+          PY
+      - name: Market settlement contract
+        working-directory: gool_bot
+        run: |
+          python - <<'PY'
+          from market_settlement import fully_won_now
+          cases=[
+            ({'market_type':'BTTS','selection':'YES'},'1:1',True),
+            ({'market_type':'BTTS','selection':'YES'},'1:0',False),
+            ({'market_type':'TEAM_TOTAL_HOME','line':0.5},'1:0',True),
+            ({'market_type':'TEAM_TOTAL_AWAY','line':0.5},'1:0',False),
+            ({'market_type':'TOTAL','line':2.5},'2:1',True),
+            ({'market_type':'TOTAL','line':2.5},'1:1',False),
+          ]
+          for p,s,exp in cases:
+            got=fully_won_now(p,s); print('SETTLE',p,s,got)
+            assert got is exp,(p,s,got,exp)
+          print('SETTLEMENT_OK')
+          PY
+      - name: Render all GOOL 2.0 cards
+        working-directory: gool_bot
+        run: |
+          python - <<'PY'
+          from types import SimpleNamespace
+          from live_engine import LiveMatch,GoalPressureResult
+          from signal_card import render_signal_card
+          from multi_engine_card import render_engine_card
+          m=LiveMatch('TEST',24,'Cardiff City','Norwich City',0,0,'LIVE','EFL Cup',False)
+          p=GoalPressureResult(84,72,78,65,['test'])
+          p.stats={'xg':(.92,.90),'xgot':(.70,.77),'shots':(9,8),'shots_on_target':(4,3)}
+          recs=[
+            {'best_concrete_bet':True,'market_type':'TOTAL','scope':'FULL_TIME','line':1.5,'odd':1.74,'source':'LSApp','source_count':3,'source_prices':[{'source':'LSApp','odd':1.74},{'source':'Bovada','odd':1.76},{'source':'Kambi','odd':1.72}],'selector_score':90,'market_status':'CONFIRMED'},
+            {'market_type':'BTTS','scope':'FULL_TIME','selection':'YES','odd':1.91,'source':'Bovada','selector_score':80,'market_status':'CONFIRMED'},
+            {'market_type':'TEAM_TOTAL_HOME','scope':'FULL_TIME','team_name':'Cardiff City','line':0.5,'odd':1.63,'source':'Kambi','selector_score':70,'market_status':'CONFIRMED'},
+          ]
+          files=[]
+          files.append(('core_entry.png',render_signal_card(m,p,recs,'entry',84,{'one_goal':78})))
+          m2=LiveMatch('TEST',90,'Cardiff City','Norwich City',1,2,'FT','EFL Cup',False)
+          files.append(('core_win.png',render_signal_card(m2,p,[recs[0]],'goal',84,None)))
+          d1={'xg':.92,'xgot':.70,'shots':8,'shots_on_target':4,'big_chances':2,'shots_inside_box':5,'_market':{'scope':'FIRST_HALF','line':.5,'odd':2.05,'source_prices':[{'source':'LSApp','odd':2.05},{'source':'Bovada','odd':2.10},{'source':'Kambi','odd':2.01}],'market_status':'CONFIRMED'}}
+          files.append(('first_entry.png',render_engine_card(m,'first_half_goal',77,d1,2.05)))
+          files.append(('first_lose.png',render_engine_card(LiveMatch('TEST',45,'Cardiff City','Norwich City',0,0,'HT','EFL Cup',True),'first_half_goal',77,d1,2.05,'lose')))
+          d2={'xg':1.05,'xgot':.82,'shots':12,'shots_on_target':5,'big_chances':2,'shots_inside_box':7,'_market':{'scope':'SECOND_HALF','line':1.5,'odd':1.82,'source_prices':[{'source':'LSApp','odd':1.82},{'source':'Bovada','odd':1.86},{'source':'Kambi','odd':1.79}],'market_status':'CONFIRMED'}}
+          files.append(('second_entry.png',render_engine_card(LiveMatch('TEST',45,'Cardiff City','Norwich City',0,0,'HT','EFL Cup',True),'second_half_over15',79,d2,1.82)))
+          files.append(('second_win.png',render_engine_card(m2,'second_half_over15',79,d2,1.82,'win')))
+          for name,data in files:
+            assert data.startswith(b'\x89PNG') and len(data)>10000,(name,len(data))
+            print('CARD_OK',name,len(data))
+          print('ALL_CARDS_OK')
+          PY
+      - name: Legacy production guard
+        run: |
+          ! grep -RIn --include='*.py' -E 'import (playwright|selenium)|from (playwright|selenium)|Gemini|1xBet' gool_bot --exclude='signal_card_archive.py'
+          echo LEGACY_GUARD_OK
