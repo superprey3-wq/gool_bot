@@ -38,6 +38,7 @@ import live_quant_guard_patch
 import robust_goal_cooldown_patch
 import fast_core_runtime
 import signal_journal_runtime_patch
+import core_goal_signal_patch
 import goal_reset_patch
 import core_primary_reconcile
 import clv_tracker
