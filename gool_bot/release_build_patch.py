@@ -1,4 +1,4 @@
 """Set a visible production build id after runtime patches are loaded."""
 import telegram_subscribers as ts
 
-ts.BUILD_ID = "GOOL-PROD-FINAL-AUDIT-6"
+ts.BUILD_ID = "GOOL-PROD-FOTMOB-STATS-7"
