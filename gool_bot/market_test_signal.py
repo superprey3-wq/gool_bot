@@ -5,7 +5,7 @@ from pathlib import Path
 import requests
 import market_node_bridge,telegram_subscribers
 log=logging.getLogger("market_test_signal")
-_LOCK=threading.Lock();_LAST_SENT={};_LAST_FINGERPRINT={};_PRIMED=False
+_LOCK=threading.Lock();_LAST_SENT={};_LAST_FINGERPRINT={};_ALERTED=set();_PRIMED=False
 
 def _journal_path():
  explicit=os.getenv("MARKET_TEST_JOURNAL","").strip()
@@ -57,7 +57,7 @@ def _message(sig):
  parts.append(_meaning(delta,name))
  susp=int(sig.get("suspends",0) or 0);reop=int(sig.get("reopens",0) or 0)
  if susp or reop:parts.append(f"⚡ Букмекер: блокировок {susp} · reopen {reop}")
- parts.append("<i>Автосигнал только владельцу · новое резкое изменение рынка.</i>")
+ parts.append("<i>Автосигнал только владельцу · один вход на один рынок матча.</i>")
  return "\n".join(parts)
 
 def _write_journal(sig,delivered):
@@ -88,7 +88,6 @@ def scan_once():
  if not signals:return 0
  owner=telegram_subscribers._owner_chat_id()
  if not owner:return 0
- now=time.time()
  with _LOCK:
   if not _PRIMED:
    for sig in signals:_LAST_FINGERPRINT[_id(sig)]=str(sig.get("fingerprint") or "")
@@ -97,10 +96,12 @@ def scan_once():
  for sig in signals:
   key=_id(sig);fp=str(sig.get("fingerprint") or "")
   with _LOCK:
+   if key in _ALERTED:continue
    if _LAST_FINGERPRINT.get(key)==fp:continue
    _LAST_FINGERPRINT[key]=fp
-   if now-_LAST_SENT.get(key,0)<120:continue
-   _LAST_SENT[key]=now
+   _ALERTED.add(key)
   delivered=telegram_subscribers._post_message(owner,_message(sig));_write_journal(sig,delivered)
-  if delivered:sent+=1;log.info("MARKET_ALERT_SENT key=%s market=%s delta=%+.2f",sig.get("key"),sig.get("market"),float(sig.get("delta_pp",0) or 0))
+  if delivered:sent+=1;log.info("MARKET_ALERT_SENT_ONCE key=%s market=%s delta=%+.2f",sig.get("key"),sig.get("market"),float(sig.get("delta_pp",0) or 0))
+  else:
+   with _LOCK:_ALERTED.discard(key)
  return sent
