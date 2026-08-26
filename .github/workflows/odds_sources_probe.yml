@@ -17,38 +17,65 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install probe dependencies
-        run: pip install requests
-      - name: Probe default pregame feed for Aug 27
+      - run: pip install requests
+      - name: Deep audit 1xBet market trees
         run: |
           python - <<'PY'
-          import requests, datetime, collections
+          import requests, json, collections, datetime
+          BASE='https://1xbet.fi/service-api'
           H={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Accept-Language':'en-US,en;q=0.9','Referer':'https://1xbet.fi/','Origin':'https://1xbet.fi'}
-          URL='https://1xbet.fi/service-api/LineFeed/Get1x2_VZip'
-          def call(params):
-              r=requests.get(URL,params=params,headers=H,timeout=20)
-              print('HTTP',r.status_code,'bytes',len(r.content),'params',params)
-              if r.status_code!=200:
-                  print(r.text[:300]); return []
-              return (r.json().get('Value') or [])
-          def dt(e):
-              s=e.get('S')
-              return datetime.datetime.fromtimestamp(s,datetime.timezone.utc) if isinstance(s,(int,float)) else None
-          def richness(e): return len(e.get('E') or [])+sum(len(x.get('ME') or []) for x in (e.get('AE') or []))
-          variants=[
-              {'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'},
-              {'sports':1,'count':500,'lng':'en','mode':4,'country':1,'getEmpty':'true','tz':3},
-              {'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true','tz':3},
-          ]
-          target=datetime.date(2026,8,27)
-          for p in variants:
-              ev=call(p)
-              dates=collections.Counter(str(dt(e).date()) for e in ev if dt(e))
-              print('COUNT',len(ev),'DATES',dates.most_common())
-              c=[e for e in ev if dt(e) and dt(e).date()==target]
-              print('AUG27_COUNT',len(c))
-              for e in sorted(c,key=richness,reverse=True)[:5]:
-                  print('AUG27',e.get('O1'),'—',e.get('O2'),'|',e.get('L'),'|',dt(e),'| ID',e.get('I'),'| markets',richness(e))
-                  print('E',e.get('E')); print('AE',e.get('AE'))
-              if c: break
+          def get(path,params):
+              r=requests.get(BASE+path,params=params,headers=H,timeout=25)
+              print('GET',path,'HTTP',r.status_code,'bytes',len(r.content))
+              if r.status_code!=200: print(r.text[:300]); return None
+              try:return r.json().get('Value')
+              except Exception: print(r.text[:300]); return None
+          def markets(v):
+              out=[]
+              def walk(x,trail='root'):
+                  if isinstance(x,dict):
+                      if 'T' in x and 'C' in x:
+                          out.append({'trail':trail, **{k:x.get(k) for k in ('G','T','P','C','B','N','CE','CV','PL','TG','S') if k in x}})
+                      for k,val in x.items():
+                          if k in ('E','AE','GE','ME','SG') or isinstance(val,(dict,list)): walk(val,trail+'/'+str(k))
+                  elif isinstance(x,list):
+                      for i,val in enumerate(x): walk(val,trail+f'[{i}]')
+              walk(v)
+              return out
+          def summarize(label,v):
+              if not isinstance(v,dict): print(label,'NO_DICT'); return
+              print('\n====',label,'====')
+              print('CORE',{k:v.get(k) for k in ('I','O1','O2','L','LE','S','TN','SI','SN')})
+              sc=v.get('SC') or {}; print('SC',{k:sc.get(k) for k in ('CPS','CP','FS','TS','PS')})
+              print('TOP_KEYS',sorted(v.keys()))
+              print('GE_META',[{k:g.get(k) for k in g if k not in ('E','ME')} for g in (v.get('GE') or [])][:100])
+              print('AE_META',[{k:a.get(k) for k in a if k not in ('E','ME')} for a in (v.get('AE') or [])][:100])
+              ms=markets(v); print('MARKET_COUNT',len(ms))
+              groups=collections.Counter(str(m.get('G')) for m in ms); types=collections.Counter(str(m.get('T')) for m in ms)
+              print('GROUPS',groups.most_common()); print('TYPES',types.most_common())
+              for m in ms: print('MKT',json.dumps(m,ensure_ascii=False,sort_keys=True))
+          common={'sports':1,'count':1000,'lng':'en','mode':4,'country':1,'getEmpty':'true'}
+          line=get('/LineFeed/Get1x2_VZip',common) or []
+          print('LINE_EVENTS',len(line))
+          # Prefer a rich event with recognizable standard totals and many markets.
+          if line:
+              e=max(line,key=lambda x:len(x.get('E') or [])+len(x.get('AE') or []))
+              print('LINE_PICK',e.get('O1'),e.get('O2'),e.get('I'))
+              d=get('/LineFeed/GetGameZip',{'id':e.get('I'),'lng':'en','cfview':0,'isSubGames':'true','GroupEvents':'true','allEventsGroupSubGames':'true','countevents':250,'grMode':2})
+              summarize('PREMATCH_GETGAMEZIP',d if isinstance(d,dict) else {})
+          live=get('/LiveFeed/Get1x2_VZip',common) or []
+          print('LIVE_EVENTS',len(live))
+          if live:
+              # pick event with richest stats/markets
+              def rich(x):
+                  st=sum(len(b.get('Value') or []) for b in ((x.get('SC') or {}).get('ST') or []))
+                  return st*100+len(x.get('E') or [])+len(x.get('AE') or [])
+              e=max(live,key=rich)
+              print('LIVE_PICK',e.get('O1'),e.get('O2'),e.get('I'),(e.get('SC') or {}).get('CPS'))
+              d=get('/LiveFeed/GetGameZip',{'id':e.get('I'),'lng':'en','cfview':0,'isSubGames':'true','GroupEvents':'true','allEventsGroupSubGames':'true','countevents':250,'grMode':2})
+              summarize('LIVE_GETGAMEZIP',d if isinstance(d,dict) else {})
+              if isinstance(d,dict):
+                  print('LIVE_STATS')
+                  for b in ((d.get('SC') or {}).get('ST') or []):
+                      for s in b.get('Value') or []: print('STAT',json.dumps(s,ensure_ascii=False,sort_keys=True))
           PY
