@@ -6,6 +6,7 @@ can use a two-node consensus without changing GOOL signal eligibility.
 """
 from __future__ import annotations
 import logging,os,threading,time,requests
+from difflib import SequenceMatcher
 import betb2b_market_signal as bms
 
 log=logging.getLogger("market_node_bridge")
@@ -17,9 +18,34 @@ _ORIG_SIGNAL=bms.signal_for_match
 _ORIG_DOT=bms.dot_for_match
 
 def _key(home,away):return bms._key(home,away)
-def _remote_signal(home,away):
+def _sim(a,b):
+ a=bms._norm(a);b=bms._norm(b)
+ if not a or not b:return 0.0
+ if a==b:return 1.0
+ if a in b or b in a:return .94
+ return SequenceMatcher(None,a,b).ratio()
+def _lookup_remote(home,away):
+ """Resolve a Flashscore/card match against bookmaker-keyed remote rows.
+
+ Exact match is preferred. Fuzzy fallback is intentionally conservative and
+ keeps home/away orientation, fixing aliases such as Viet Nam/Vietnam, U19
+ suffixes and common club prefixes without merging unrelated matches.
+ """
  k=_key(home,away)
- with LOCK:row=dict(REMOTE.get(k) or {})
+ with LOCK:
+  exact=REMOTE.get(k)
+  if exact:return k,dict(exact),"exact",1.0
+  items=list(REMOTE.items())
+ best=None;best_score=0.0
+ for rk,row in items:
+  rh=row.get("home") or "";ra=row.get("away") or ""
+  hs=_sim(home,rh);as_=_sim(away,ra);score=(hs+as_)/2.0
+  if min(hs,as_)<0.66 or score<0.78:continue
+  if score>best_score:best=(rk,dict(row));best_score=score
+ if best:return best[0],best[1],"fuzzy",best_score
+ return k,{},"none",0.0
+def _remote_signal(home,away):
+ _,row,_,_=_lookup_remote(home,away)
  pts=[]
  for x in row.get("points") or []:
   try:pts.append(bms.MarketPoint(float(x[0]),float(x[1]),float(x[2]) if x[2] is not None else None,"BETB2B_NODE"))
@@ -45,6 +71,9 @@ def signal_for_match(home,away):
  return remote if remote.direction else local
 
 def dot_for_match(home,away):return bms.card_market_dot(signal_for_match(home,away))
+def diagnostic_for_match(home,away):
+ rk,row,mode,similarity=_lookup_remote(home,away);remote=_remote_signal(home,away);local=_ORIG_SIGNAL(home,away);final=signal_for_match(home,away)
+ return {"match_mode":mode,"similarity":round(similarity,3),"remote_key":rk if row else "","remote_points":len(row.get("points") or []),"local_dot":local.dot,"local_delta":local.delta_pp,"remote_dot":remote.dot,"remote_delta":remote.delta_pp,"final_dot":final.dot,"final_delta":final.delta_pp}
 
 def poll_once():
  global LAST_OK,LAST_ERROR
