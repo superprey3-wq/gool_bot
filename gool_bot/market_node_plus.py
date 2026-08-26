@@ -43,7 +43,6 @@ def _top_markets(row, now, limit=5):
         sig=_signal(mk,sel,now)
         if sig: signals.append(sig)
     signals.sort(key=lambda s:(s["strength"],abs(s["delta_pp"]),s["updated"]),reverse=True)
-    # Keep diversity: do not return duplicate same side/line snapshots.
     out=[]; seen=set()
     for s in signals:
         key=(s.get("type_id"),s.get("last_line"),s.get("period"))
@@ -53,11 +52,25 @@ def _top_markets(row, now, limit=5):
     return out
 
 
+def _fixture_meta(src):
+    fs_id=str(src.get("fs_id") or "")
+    fixture={}
+    if fs_id:
+        fixture=mn.FS_MATCHES.get(fs_id) or mn.FIXTURES.get(fs_id) or {}
+    league=str(fixture.get("league") or src.get("league") or "").strip()
+    country=str(fixture.get("country") or src.get("country") or "").strip()
+    return league,country
+
+
 def _compact_events_multi():
     out=_ORIG_COMPACT(); now=time.time()
     for k,row in out.items():
         src=mn.STATE.get(k) or {}
         top=_top_markets(src,now,5)
+        league,country=_fixture_meta(src)
+        row["league"]=league
+        row["country"]=country
+        row["tournament"]=league
         row["top_markets"]=top
         if top:
             row["best_market_start_odds"]=top[0].get("start_odds")
