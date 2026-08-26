@@ -55,16 +55,43 @@ def _active_rows():
   out.append(r)
  return out
 
+def _opposite_type(ti):
+ try:ti=int(ti)
+ except Exception:return None
+ return {9:10,10:9,11:12,12:11,13:14,14:13,7:8,8:7,1:3,3:1}.get(ti)
+
+def _same_line(a,b):
+ try:return abs(float(a)-float(b))<1e-6
+ except Exception:return a==b
+
 def _pick(diag):
+ markets=list(diag.get("top_markets") or [])[:8]
  candidates=[]
- for m in list(diag.get("top_markets") or [])[:5]:
-  try:d=float(m.get("delta_pp",0) or 0)
+ for m in markets:
+  try:d=float(m.get("delta_pp",0) or 0);ti=int(m.get("type_id"))
   except Exception:continue
   if abs(d)<1.5:continue
-  line=m.get("last_line")
-  ti=m.get("type_id");gi=m.get("group_id")
+  gi=m.get("group_id");line=m.get("last_line")
   if ti in (7,8,9,10,11,12,13,14) and line is None:continue
-  candidates.append((abs(d),m))
+  chosen=m
+  # Negative delta means this outcome is losing market probability. Recommend
+  # only the actually observed opposite side; never flip a bet synthetically.
+  if d<0:
+   oti=_opposite_type(ti);opposites=[]
+   for x in markets:
+    try:xti=int(x.get("type_id"))
+    except Exception:continue
+    if xti!=oti:continue
+    if ti in (7,8,9,10,11,12,13,14) and not _same_line(x.get("last_line"),line):continue
+    try:xd=float(x.get("delta_pp",0) or 0)
+    except Exception:xd=0.0
+    if xd<=0:continue
+    opposites.append((abs(xd),x))
+   if not opposites:continue
+   chosen=max(opposites,key=lambda z:z[0])[1]
+   try:d=float(chosen.get("delta_pp",0) or 0)
+   except Exception:continue
+  candidates.append((abs(d),chosen))
  if not candidates:return None
  m=max(candidates,key=lambda x:x[0])[1]
  return {"market":m.get("market") or "","type_id":m.get("type_id"),"group_id":m.get("group_id"),"line":m.get("last_line"),"odd":m.get("last_odds"),"delta_pp":m.get("delta_pp"),"dot":m.get("dot"),"captured_ts":int(time.time())}
@@ -79,8 +106,7 @@ def capture_active():
   rec=_pick(diag)
   if not rec:continue
   key=str(r.get("dedupe_key") or "")
-  if key and update_signal(key,market_recommendation=rec,market_rec_status="tracking"):
-   saved+=1
+  if key and update_signal(key,market_recommendation=rec,market_rec_status="tracking"):saved+=1
  return saved
 
 def update_from_live(live):
@@ -95,13 +121,10 @@ def update_from_live(live):
   eid=str(r.get("event_id") or "");key=str(r.get("dedupe_key") or "")
   if not key or not eid:continue
   if eid in current:
-   update_signal(key,market_last_score=current[eid],market_last_seen_ts=int(now),market_rec_status="tracking")
-   continue
+   update_signal(key,market_last_score=current[eid],market_last_seen_ts=int(now),market_rec_status="tracking");continue
   last=float(r.get("market_last_seen_ts",0) or 0)
-  # Do not call a temporary feed gap full-time. Require 10 minutes missing.
   if last and now-last>=600:
-   final=r.get("market_last_score")
-   res=settle(rec,final) if final else "unknown"
+   final=r.get("market_last_score");res=settle(rec,final) if final else "unknown"
    update_signal(key,market_rec_status="settled" if res!="unknown" else "unknown",market_rec_result=res,market_rec_final_score=final,market_rec_settled_ts=int(now))
 
 def _rec_name(rec):
@@ -128,11 +151,9 @@ def build_results_text():
  wins=sum(r.get("market_rec_result") in {"win","half-win"} for r in settled);losses=sum(r.get("market_rec_result") in {"loss","half-loss"} for r in settled);push=sum(r.get("market_rec_result")=="push" for r in settled)
  decisive=wins+losses;hit=round(100*wins/decisive) if decisive else 0
  lines=["📋 <b>ИТОГИ РЫНКА</b>","<i>Проверка рекомендованных ставок из «Линия LIVE» после завершения матчей.</i>",""]
- lines.append(f"Закрыто: <b>{len(settled)}</b> · ✅ {wins} · ❌ {losses} · ↔️ {push}"+(f" · точность <b>{hit}%</b>" if decisive else ""))
- lines.append("")
+ lines.append(f"Закрыто: <b>{len(settled)}</b> · ✅ {wins} · ❌ {losses} · ↔️ {push}"+(f" · точность <b>{hit}%</b>" if decisive else ""));lines.append("")
  for r in settled[-10:][::-1]:
-  res=r.get("market_rec_result");mark="✅" if res in {"win","half-win"} else "❌" if res in {"loss","half-loss"} else "↔️"
-  rec=r["market_recommendation"];odd=rec.get("odd");odd_txt=f" · кэф {float(odd):.2f}" if odd else ""
+  res=r.get("market_rec_result");mark="✅" if res in {"win","half-win"} else "❌" if res in {"loss","half-loss"} else "↔️";rec=r["market_recommendation"];odd=rec.get("odd");odd_txt=f" · кэф {float(odd):.2f}" if odd else ""
   lines.append(f"{mark} <b>{r.get('home')} — {r.get('away')}</b> · {_rec_name(rec)}{odd_txt} · итог {r.get('market_rec_final_score') or '—'}")
  if not settled:lines.append("Пока нет завершённых рекомендаций. Новые рекомендации уже начинают отслеживаться автоматически.")
  tracking=sum(r.get("market_rec_status")=="tracking" for r in rows)
