@@ -16,69 +16,76 @@ def _owner_keyboard():
 def _safe(v,default="—"):return html.escape(str(v)) if v not in (None,"") else default
 
 def _line_from_raw(s):
- m=re.search(r"(?:^|\s)([-+]?\d+(?:\.\d+)?)\s*$",str(s or ""))
- return m.group(1) if m else ""
+ m=re.search(r"(?:^|\s)([-+]?\d+(?:\.\d+)?)\s*$",str(s or ""));return m.group(1) if m else ""
 
-def _market_name(raw):
- """Translate common BetB2B football ids into betting-language labels."""
- s=" ".join(str(raw or "").split());low=s.casefold();line=_line_from_raw(s)
- if not s:return "рынок не указан"
- # Human-readable names supplied by provider/node.
+def _market_name(raw, type_id=None, line=None, group_id=None):
+ s=" ".join(str(raw or "").split());low=s.casefold();ln=str(line if line is not None else _line_from_raw(s) or "?")
+ try:ti=int(type_id) if type_id is not None else None
+ except Exception:ti=None
+ try:gi=int(group_id) if group_id is not None else None
+ except Exception:gi=None
+ if ti is None:
+  g=re.search(r"\bG(\d+)\b",s,re.I);t=re.search(r"\bT(\d+)\b",s,re.I);gi=int(g.group(1)) if g else gi;ti=int(t.group(1)) if t else ti
  aliases=(("team total home","ИТ хозяев"),("team total away","ИТ гостей"),("home team total","ИТ хозяев"),("away team total","ИТ гостей"),("first half total","Тотал 1-го тайма"),("second half total","Тотал 2-го тайма"),("match total","Тотал матча"),("total over","ТБ"),("total under","ТМ"),("handicap","Фора"),("home win","П1"),("away win","П2"))
  for key,label in aliases:
-  if key in low:return f"{label}{(' '+line) if line else ''}"
- # BetB2B fallback ids used by this collector.
- g=re.search(r"\bG(\d+)\b",s,re.I);t=re.search(r"\bT(\d+)\b",s,re.I)
- gi=int(g.group(1)) if g else None;ti=int(t.group(1)) if t else None
- if gi==4 and ti==9:return f"⚽ Тотал матча · ТБ {line or '?'}"
- if gi==4 and ti==10:return f"⚽ Тотал матча · ТМ {line or '?'}"
- if ti==11:return f"⚽ ИТ команды 1 · ТМ {line or '?'}"
- if ti==12:return f"⚽ ИТ команды 1 · ТБ {line or '?'}"
- if ti==13:return f"⚽ ИТ команды 2 · ТМ {line or '?'}"
- if ti==14:return f"⚽ ИТ команды 2 · ТБ {line or '?'}"
- if gi==1 and ti==1:return "🏆 Победа хозяев · П1"
- if gi==1 and ti==3:return "🏆 Победа гостей · П2"
- if ti==7:return f"📐 Фора команды 1{(' '+line) if line else ''}"
- if ti==8:return f"📐 Фора команды 2{(' '+line) if line else ''}"
- return s[:55]+("…" if len(s)>55 else "")
+  if key in low:return f"{label}{(' '+ln) if ln!='?' and ('total' in key or 'handicap' in key) else ''}"
+ if gi==4 and ti==9:return f"⚽ Тотал матча · ТБ {ln}"
+ if gi==4 and ti==10:return f"⚽ Тотал матча · ТМ {ln}"
+ if ti==11:return f"⚽ ИТ1 · ТМ {ln}"
+ if ti==12:return f"⚽ ИТ1 · ТБ {ln}"
+ if ti==13:return f"⚽ ИТ2 · ТМ {ln}"
+ if ti==14:return f"⚽ ИТ2 · ТБ {ln}"
+ if gi==1 and ti==1:return "🏆 П1"
+ if gi==1 and ti==3:return "🏆 П2"
+ if ti==7:return f"📐 Фора 1 · {ln}"
+ if ti==8:return f"📐 Фора 2 · {ln}"
+ return s[:55]+("…" if len(s)>55 else "") if s else "рынок"
 
-def _interpret(delta,dot,market):
- if abs(delta)<.01:return "рынок почти без движения"
- growing=delta>0
- m=str(market)
- if "ТБ" in m or "ИТ" in m and "ТБ" in m:
-  side="рынок усиливает сценарий голов" if growing else "рынок охлаждает сценарий голов"
- elif "ТМ" in m:
-  side="рынок сильнее ждёт низ" if growing else "рынок уходит от низа"
- else:
-  side="вероятность этого исхода растёт" if growing else "вероятность этого исхода падает"
+def _is_goal_total(m):
+ try:return int(m.get("type_id")) in {9,10,11,12,13,14}
+ except Exception:return "total" in str(m.get("market") or "").casefold()
+
+def _meaning(delta,name):
+ if abs(delta)<.01:return "без заметного движения"
+ is_over="ТБ" in name;is_under="ТМ" in name
+ if is_over:return "рынок сильнее ждёт голы" if delta>0 else "рынок уходит от голов"
+ if is_under:return "рынок сильнее ждёт низ" if delta>0 else "рынок уходит от низа"
+ return "вероятность исхода растёт" if delta>0 else "вероятность исхода падает"
+
+def _market_row(m):
+ try:delta=float(m.get("delta_pp",0) or 0)
+ except Exception:delta=0.0
+ dot=str(m.get("dot") or ("🟣" if abs(delta)>=4 else "🟢" if delta>0 else "🔴" if delta<0 else "🟡"))
+ name=_market_name(m.get("market"),m.get("type_id"),m.get("last_line"),m.get("group_id"))
+ old=m.get("start_odds");new=m.get("last_odds")
+ try:odds=f"{float(old):.2f} → {float(new):.2f}" if old is not None and new is not None else ""
+ except Exception:odds=""
  strength="ОЧЕНЬ СИЛЬНО" if dot=="🟣" or abs(delta)>=4 else "заметно" if abs(delta)>=1.5 else "слабо"
- return f"{strength} · {side}"
+ return f"{dot} <b>{_safe(name)}</b>" + (f" · кэф <b>{odds}</b>" if odds else "") + f"\n   ↳ Δ {delta:+.2f} п.п. · {strength} · {_safe(_meaning(delta,name))}"
 
 def _market_line(row):
- home=str(row.get("home") or "?");away=str(row.get("away") or "?");entry=row.get("minute")
+ home=str(row.get("home") or "?");away=str(row.get("away") or "?");entry=row.get("minute");score=row.get("score_at_signal") or "—"
  try:diag=bridge.diagnostic_for_match(home,away)
  except Exception:logger.exception("OWNER_MARKET_TAPE diag failed for %s - %s",home,away);diag={}
- mode=str(diag.get("match_mode") or "none")
- if mode=="none":return f"⚪ <b>{_safe(home)} — {_safe(away)}</b> · сигнал {entry}'\n↳ рынок пока не сопоставлен"
- dot=str(diag.get("final_dot") or "⚪")
- try:delta=float(diag.get("remote_delta",0) or 0)
- except Exception:delta=0.0
- market=_market_name(diag.get("remote_market") or "")
- arrow="⬇️ кэф" if delta>0 else "⬆️ кэф" if delta<0 else "➡️ кэф"
- return (f"{dot} <b>{_safe(home)} — {_safe(away)}</b> · сигнал {entry}'\n"
-         f"↳ <b>{_safe(market)}</b>\n"
-         f"↳ {arrow} · Δ <b>{delta:+.2f} п.п.</b>\n"
-         f"↳ {_safe(_interpret(delta,dot,market))}")
+ if str(diag.get("match_mode") or "none")=="none":return f"⚪ <b>{_safe(home)} — {_safe(away)}</b> · сигнал {entry}' · {score}\n↳ рынок пока не сопоставлен"
+ markets=list(diag.get("top_markets") or [])
+ # For GOOL, show several goal-related totals first: e.g. TB 2.5, 3.5, 4.5.
+ totals=[m for m in markets if _is_goal_total(m)]
+ chosen=(totals or markets)[:3]
+ if not chosen:
+  chosen=[{"market":diag.get("remote_market"),"delta_pp":diag.get("remote_delta",0),"dot":diag.get("final_dot"),"start_odds":diag.get("remote_start_odds"),"last_odds":diag.get("remote_last_odds")}]
+ lines=[f"⚽ <b>{_safe(home)} — {_safe(away)}</b> · сигнал {entry}' · счёт {score}"]
+ for m in chosen:lines.append(_market_row(m))
+ return "\n".join(lines)
 
 def _send_market_tape(chat_id):
  if not _owner(chat_id):tg._send_reply(chat_id,"⛔ Линия LIVE доступна только владельцу.");return
  rows=tg._active_signal_rows()
  if not rows:tg._post_message(chat_id,"📈 <b>ЛИНИЯ LIVE</b>\n\nСейчас активных GOOL-сигналов нет.",_owner_keyboard());return
- lines=[f"📈 <b>ЛИНИЯ LIVE · {len(rows)}</b>","<i>Самое сильное движение рынка по матчам, где GOOL уже дал сигнал.</i>",""]
- for row in rows[:8]:lines.extend([_market_line(row),""])
- if len(rows)>8:lines.append(f"…ещё {len(rows)-8} активных матчей")
- lines.append("<i>⬇️ кэф = рынок сильнее верит в выбранный исход. ⬆️ кэф = рынок от него уходит.</i>")
+ lines=[f"📈 <b>ЛИНИЯ LIVE · {len(rows)}</b>","<i>До 3 самых сильных движений тоталов по матчам, где GOOL уже дал сигнал.</i>",""]
+ for row in rows[:6]:lines.extend([_market_line(row),""])
+ if len(rows)>6:lines.append(f"…ещё {len(rows)-6} активных матчей")
+ lines.append("<i>Кэф ↓ на ТБ = рынок сильнее ждёт голы. Кэф ↓ на ТМ = рынок сильнее ждёт низ.</i>")
  tg._post_message(chat_id,"\n".join(lines),_owner_keyboard());logger.info("OWNER_MARKET_TAPE sent rows=%d",len(rows))
 
 def _handle_message(message):
@@ -89,4 +96,4 @@ def _handle_message(message):
  if chat_id is not None and _owner(chat_id) and command in {"/start","/menu"}:tg._post_message(chat_id,"👑 <i>Панель владельца</i>",_owner_keyboard())
 
 tg._main_keyboard=_main_keyboard;tg._handle_message=_handle_message;tg.send_owner_market_tape=_send_market_tape
-logger.info("Owner-only decoded market tape enabled")
+logger.info("Owner-only multi-line market tape enabled")
