@@ -4,7 +4,7 @@ Purpose: collect BetB2B/1xBet live goal-total prices and suspend/reopen state fr
 a second IP. No Telegram, PIL, analytics or database dependencies.
 
 Env:
-  PORT=3000
+  PORT=3000 (or Bot-Hosting SERVER_PORT)
   MARKET_NODE_SECRET=<shared secret>
   MARKET_NODE_INTERVAL=20
   MARKET_NODE_MAX_EVENTS=80
@@ -22,7 +22,7 @@ HEADERS={"User-Agent":"Mozilla/5.0","Accept":"application/json,text/plain,*/*","
 INTERVAL=max(12,int(os.getenv("MARKET_NODE_INTERVAL","20")))
 MAX_EVENTS=max(10,min(120,int(os.getenv("MARKET_NODE_MAX_EVENTS","80"))))
 SECRET=os.getenv("MARKET_NODE_SECRET","").strip()
-PORT=int(os.getenv("PORT",os.getenv("MARKET_NODE_PORT","3000")))
+PORT=int(os.getenv("PORT") or os.getenv("SERVER_PORT") or os.getenv("MARKET_NODE_PORT") or "3000")
 LOCK=threading.Lock();STATE={};LAST_CYCLE=0.;LAST_ERROR="";CYCLES=0
 SESSION=requests.Session();SESSION.headers.update(HEADERS)
 
