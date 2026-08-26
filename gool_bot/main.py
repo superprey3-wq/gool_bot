@@ -66,6 +66,7 @@ import period_prematch_market_patch
 from league_signal_gate import filter_for_multi_engine
 import telegram_subscribers
 import telegram_interactive_live_patch
+import market_test_signal
 from telegram_subscribers import polling_loop,BUILD_ID
 import production_logging
 async def run_live():
@@ -92,16 +93,27 @@ async def betb2b_loop():
 async def market_node_loop():
  while True:
   if market_node_bridge.URL:
-   try:await asyncio.to_thread(market_node_bridge.poll_once)
+   try:
+    n=await asyncio.to_thread(market_node_bridge.poll_once)
+    if n:
+     h=market_node_bridge.health();logger.info("PROGRUZ_ONLINE events=%d age=%.1fs",h.get("events",0),max(0.,time.time()-float(h.get("last_ok",time.time()) or time.time())))
    except Exception:logger.exception("Remote market node pull failed; runner will continue")
   await asyncio.sleep(MARKET_NODE_PULL_SECONDS)
+async def market_test_loop():
+ while True:
+  try:
+   await asyncio.sleep(3)
+   sent=await asyncio.to_thread(market_test_signal.scan_once)
+   if sent:logger.info("MARKET_TEST batch_sent=%d",sent)
+  except Exception:logger.exception("MARKET TEST scan failed; runner will continue")
+  await asyncio.sleep(MARKET_NODE_PULL_SECONDS)
 async def main():
- poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");prematch=asyncio.create_task(prematch_market_service.loop(),name="prematch-market-rolling");betb2b=asyncio.create_task(betb2b_loop(),name="betb2b-market-sampler");marketnode=asyncio.create_task(market_node_loop(),name="remote-market-node")
- logger.info("GOOL LIVE | build=%s | analytics: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context + BETB2B local+remote market lamp | rolling prematch market history active | period market observation active | odds context only | remote_market_node=%s",BUILD_ID,bool(market_node_bridge.URL))
+ poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");prematch=asyncio.create_task(prematch_market_service.loop(),name="prematch-market-rolling");betb2b=asyncio.create_task(betb2b_loop(),name="betb2b-market-sampler");marketnode=asyncio.create_task(market_node_loop(),name="remote-market-node");markettest=asyncio.create_task(market_test_loop(),name="market-test-signal")
+ logger.info("GOOL LIVE | build=%s | analytics: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context + BETB2B local+remote market lamp | rolling prematch market history active | period market observation active | odds context only | remote_market_node=%s | market_test=owner-text",BUILD_ID,bool(market_node_bridge.URL))
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
  finally:
-  for task in (poller,heartbeat,goal_watch,prematch,betb2b,marketnode):task.cancel()
-  await asyncio.gather(poller,heartbeat,goal_watch,prematch,betb2b,marketnode,return_exceptions=True)
+  for task in (poller,heartbeat,goal_watch,prematch,betb2b,marketnode,markettest):task.cancel()
+  await asyncio.gather(poller,heartbeat,goal_watch,prematch,betb2b,marketnode,markettest,return_exceptions=True)
 if __name__=="__main__":asyncio.run(main())
