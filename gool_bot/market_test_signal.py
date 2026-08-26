@@ -3,6 +3,10 @@
 Independent from CORE/1T/2T. The backup market node keeps the heavy all-market
 history and exposes only compact anomaly candidates. The main server only pulls
 those candidates, de-duplicates them and sends owner-only TEST messages.
+
+Important: the first successful pull is a baseline only. Existing anomalies are
+remembered but never delivered, so a restart cannot dump historical signals.
+Only a genuinely new fingerprint observed after baseline can be sent.
 """
 from __future__ import annotations
 import json,logging,os,threading,time
@@ -11,7 +15,7 @@ import requests
 import market_node_bridge,telegram_subscribers
 log=logging.getLogger("market_test_signal")
 COOLDOWN=max(300,int(os.getenv("MARKET_TEST_COOLDOWN_SECONDS","1800")))
-_LOCK=threading.Lock();_LAST_SENT={};_LAST_FINGERPRINT={}
+_LOCK=threading.Lock();_LAST_SENT={};_LAST_FINGERPRINT={};_PRIMED=False
 
 def _journal_path():
  explicit=os.getenv("MARKET_TEST_JOURNAL","").strip()
@@ -57,17 +61,38 @@ def _fetch_anomalies():
  except Exception as exc:
   log.warning("MARKET_TEST_PULL_FAIL %s: %s",type(exc).__name__,exc);return []
 
+def _id(sig):
+ return f"{sig.get('key')}:{sig.get('market_key')}"
+
 def scan_once():
+ global _PRIMED
  signals=_fetch_anomalies()
  if not signals:return 0
  owner=telegram_subscribers._owner_chat_id()
  if not owner:return 0
- now=time.time();sent=0
+ now=time.time()
+ # First successful snapshot is baseline only: memorize everything already active
+ # and send nothing. This is what prevents historical bursts after restart.
+ with _LOCK:
+  if not _PRIMED:
+   for sig in signals:
+    _LAST_FINGERPRINT[_id(sig)]=str(sig.get("fingerprint") or "")
+   _PRIMED=True
+   log.info("MARKET_TEST_BASELINE candidates=%d sent=0",len(signals))
+   return 0
+ sent=0
  for sig in signals:
-  dedupe_key=f"{sig.get('key')}:{sig.get('market_key')}";fp=str(sig.get("fingerprint") or "")
+  dedupe_key=_id(sig);fp=str(sig.get("fingerprint") or "")
   with _LOCK:
-   if now-_LAST_SENT.get(dedupe_key,0)<COOLDOWN and _LAST_FINGERPRINT.get(dedupe_key)==fp:continue
-   _LAST_SENT[dedupe_key]=now;_LAST_FINGERPRINT[dedupe_key]=fp
+   prev=_LAST_FINGERPRINT.get(dedupe_key)
+   # Same fingerprint means the same old market event, even if many minutes pass.
+   if prev==fp:continue
+   _LAST_FINGERPRINT[dedupe_key]=fp
+   last_sent=_LAST_SENT.get(dedupe_key,0)
+   # New fingerprint is current information. Keep a short anti-spam guard only
+   # for pathological rapid flips of the exact same market.
+   if now-last_sent<60:continue
+   _LAST_SENT[dedupe_key]=now
   delivered=telegram_subscribers._post_message(owner,_message(sig));_write_journal(sig,delivered)
   if delivered:
    sent+=1;log.info("MARKET_TEST_SENT key=%s market=%s score=%s delta=%+.2f",sig.get("key"),sig.get("market"),sig.get("score"),float(sig.get("delta_pp",0) or 0))
