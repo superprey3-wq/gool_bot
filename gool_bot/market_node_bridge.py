@@ -25,12 +25,6 @@ def _sim(a,b):
  if a in b or b in a:return .94
  return SequenceMatcher(None,a,b).ratio()
 def _lookup_remote(home,away):
- """Resolve a Flashscore/card match against bookmaker-keyed remote rows.
-
- Exact match is preferred. Fuzzy fallback is intentionally conservative and
- keeps home/away orientation, fixing aliases such as Viet Nam/Vietnam, U19
- suffixes and common club prefixes without merging unrelated matches.
- """
  k=_key(home,away)
  with LOCK:
   exact=REMOTE.get(k)
@@ -46,6 +40,14 @@ def _lookup_remote(home,away):
  return k,{},"none",0.0
 def _remote_signal(home,away):
  _,row,_,_=_lookup_remote(home,away)
+ # New secondary-node snapshots already choose the strongest current movement
+ # across the whitelisted markets. Prefer that classification directly.
+ declared=str(row.get("market_dot") or "")
+ try:declared_delta=float(row.get("market_delta_pp",0) or 0)
+ except Exception:declared_delta=0.0
+ if declared in ("🟢","🔴","🟣","🟡") and row.get("best_market"):
+  direction=1 if declared_delta>0 else -1 if declared_delta<0 else 0
+  return bms.MarketSignal(declared,round(declared_delta,2),declared=="🟣",direction)
  pts=[]
  for x in row.get("points") or []:
   try:pts.append(bms.MarketPoint(float(x[0]),float(x[1]),float(x[2]) if x[2] is not None else None,"BETB2B_NODE"))
@@ -73,7 +75,7 @@ def signal_for_match(home,away):
 def dot_for_match(home,away):return bms.card_market_dot(signal_for_match(home,away))
 def diagnostic_for_match(home,away):
  rk,row,mode,similarity=_lookup_remote(home,away);remote=_remote_signal(home,away);local=_ORIG_SIGNAL(home,away);final=signal_for_match(home,away)
- return {"match_mode":mode,"similarity":round(similarity,3),"remote_key":rk if row else "","remote_points":len(row.get("points") or []),"local_dot":local.dot,"local_delta":local.delta_pp,"remote_dot":remote.dot,"remote_delta":remote.delta_pp,"final_dot":final.dot,"final_delta":final.delta_pp}
+ return {"match_mode":mode,"similarity":round(similarity,3),"remote_key":rk if row else "","remote_points":len(row.get("points") or []),"remote_market":row.get("best_market") or "","remote_strength":row.get("market_strength",0),"local_dot":local.dot,"local_delta":local.delta_pp,"remote_dot":remote.dot,"remote_delta":remote.delta_pp,"final_dot":final.dot,"final_delta":final.delta_pp}
 
 def poll_once():
  global LAST_OK,LAST_ERROR
@@ -87,7 +89,7 @@ def poll_once():
   with LOCK:
    REMOTE.clear();REMOTE.update(events)
   LAST_OK=time.time();LAST_ERROR="";age=max(0.,time.time()-float(body.get("ts") or time.time()))
-  log.info("PROGRUZ_ONLINE events=%d age=%.1fs",len(events),age)
+  log.info("PROGRUZ_ONLINE events=%d age=%.1fs strongest=%s",len(events),age,bool(body.get("strongest_market_snapshot")))
   return len(events)
  except Exception as exc:
   LAST_ERROR=f"{type(exc).__name__}: {exc}";log.warning("PROGRUZ_OFFLINE %s",LAST_ERROR);return 0
