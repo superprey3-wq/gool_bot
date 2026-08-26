@@ -6,7 +6,8 @@ from typing import Any
 import requests
 from PIL import Image,ImageDraw,ImageFont
 from live_engine import _feed
-W=1080;BG=(5,10,18);PANEL=(13,22,36);PANEL2=(19,31,49);TEXT=(247,249,252);MUTED=(151,166,188);GOLD=(255,184,48);GREEN=(82,220,118);RED=(244,104,104);CYAN=(61,178,255);LINE=(45,63,88)
+import betb2b_market_signal as bms
+W=1080;BG=(5,10,18);PANEL=(13,22,36);PANEL2=(19,31,49);TEXT=(247,249,252);MUTED=(151,166,188);GOLD=(255,184,48);GREEN=(82,220,118);RED=(244,104,104);CYAN=(61,178,255);YELLOW=(245,197,66);LINE=(45,63,88)
 def _font(s,b=False):
  for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if b else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf","/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if b else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"]:
   try:return ImageFont.truetype(p,s)
@@ -91,9 +92,15 @@ def _reason(p,rs,probs):
  pgoal=int((probs or {}).get('one_goal',0) or 0)
  if pgoal:reasons.append(f'Модель оценивает вероятность ещё одного гола примерно в {pgoal}%.')
  return reasons[:5] or ['Сигнал сформирован совокупностью LIVE-статистики, темпа и исторического контекста.']
+def _market_dot(draw,match):
+ try:dot=bms.dot_for_match(match.home,match.away)
+ except Exception:dot='🟡'
+ col=GREEN if dot=='🟢' else RED if dot=='🔴' else YELLOW
+ draw.ellipse((1000,46,1024,70),fill=col,outline=TEXT,width=1)
 def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind='entry',master=None,probabilities=None)->bytes:
  win=kind=='goal';accent=GREEN if win else GOLD;H=860 if win else 1320;img=Image.new('RGBA',(W,H),BG+(255,));d=ImageDraw.Draw(img)
  d.rounded_rectangle((24,20,W-24,112),24,fill=PANEL,outline=accent,width=2);d.text((52,36),'GOOL CORE 2.0',font=_font(36,True),fill=accent);d.text((52,78),'LIVE FOOTBALL • MULTI-SOURCE ANALYSIS',font=_font(16,True),fill=TEXT);d.rounded_rectangle((830,38,1028,93),16,outline=accent,width=2);d.text((862,53),'GOAL' if win else 'ENTRY',font=_font(20,True),fill=accent)
+ if not win:_market_dot(d,match)
  hn,an=_logos(getattr(match,'event_id',''));_badge(img,d,180,282,_dl(hn),match.home,accent);_badge(img,d,900,282,_dl(an),match.away,accent);d.rounded_rectangle((390,202,690,365),28,fill=(9,19,31),outline=accent,width=3);_center(d,f'{match.home_score} : {match.away_score}',242,_font(66,True),TEXT);_center(d,'ПЕРЕРЫВ' if getattr(match,'is_halftime',False) else f"{match.minute}'",318,_font(27,True),accent)
  for x,n in ((180,match.home),(900,match.away)):
   f=_fit(d,n,330,30);b=d.textbbox((0,0),n,font=f);d.text((x-(b[2]-b[0])/2,383),n,font=f,fill=TEXT)
