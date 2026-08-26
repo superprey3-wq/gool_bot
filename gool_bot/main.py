@@ -75,9 +75,6 @@ import card_explainability_patch
 import second_half_card_reason_patch
 import aux_result_minute_patch
 import release_build_patch
-import prematch_market_service
-import prematch_market_context_patch
-import period_prematch_market_patch
 from league_signal_gate import filter_for_multi_engine
 import telegram_subscribers
 import telegram_interactive_live_patch
@@ -144,12 +141,12 @@ async def memory_watchdog():
   await asyncio.sleep(MEMORY_DIAG_SECONDS)
   _mem("watchdog")
 async def main():
- poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");prematch=asyncio.create_task(prematch_market_service.loop(),name="prematch-market-rolling");betb2b=asyncio.create_task(betb2b_loop(),name="betb2b-market-sampler");marketnode=asyncio.create_task(market_node_loop(),name="remote-market-node");markettest=asyncio.create_task(market_test_loop(),name="market-test-signal");memwatch=asyncio.create_task(memory_watchdog(),name="memory-watchdog")
- logger.info("GOOL LIVE | build=%s | analytics: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context + BETB2B local+remote market lamp | rolling prematch market history active | period market observation active | odds context only | remote_market_node=%s | market_test=owner-text",BUILD_ID,bool(market_node_bridge.URL));_mem("main_started")
+ poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");betb2b=asyncio.create_task(betb2b_loop(),name="betb2b-market-sampler");marketnode=asyncio.create_task(market_node_loop(),name="remote-market-node");markettest=asyncio.create_task(market_test_loop(),name="market-test-signal");memwatch=asyncio.create_task(memory_watchdog(),name="memory-watchdog")
+ logger.info("GOOL LIVE | build=%s | live-only primary | analytics: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context + BETB2B + remote market node | local prematch collector disabled | remote_market_node=%s | market_test=owner-text",BUILD_ID,bool(market_node_bridge.URL));_mem("main_started")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
  finally:
-  for task in (poller,heartbeat,goal_watch,prematch,betb2b,marketnode,markettest,memwatch):task.cancel()
-  await asyncio.gather(poller,heartbeat,goal_watch,prematch,betb2b,marketnode,markettest,memwatch,return_exceptions=True)
+  for task in (poller,heartbeat,goal_watch,betb2b,marketnode,markettest,memwatch):task.cancel()
+  await asyncio.gather(poller,heartbeat,goal_watch,betb2b,marketnode,markettest,memwatch,return_exceptions=True)
 if __name__=="__main__":asyncio.run(main())
