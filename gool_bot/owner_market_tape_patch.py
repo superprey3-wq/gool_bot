@@ -5,14 +5,21 @@ import telegram_subscribers as tg
 import market_node_bridge as bridge
 
 logger=logging.getLogger("owner_market_tape_patch")
-_BUTTON="📈 Линия LIVE";_orig_keyboard=tg._main_keyboard;_orig_handle_message=tg._handle_message
+_BUTTON="📈 Линия LIVE";_orig_keyboard=tg._main_keyboard;_orig_handle_message=tg._handle_message;_orig_send_reply=tg._send_reply
 
 def _owner(chat_id):return str(chat_id)==str(tg._owner_chat_id())
 def _main_keyboard():return _orig_keyboard()
 def _owner_keyboard():
- kb=_orig_keyboard();rows=list(kb.get("keyboard") or [])
- if not any(any(str(b.get("text"))==_BUTTON for b in r if isinstance(b,dict)) for r in rows):rows.append([{"text":_BUTTON}])
- return {"keyboard":rows,"resize_keyboard":True}
+ # Keep the normal public keyboard intact, but give the owner a stable 2x2 panel.
+ return {"keyboard":[[{"text":"🟢 В игре"},{"text":"📊 Отчёт"}],[{"text":_BUTTON},{"text":"🧠 Анализ"}]],"resize_keyboard":True}
+def _send_reply(chat_id,text,keyboard=True):
+ # telegram_subscribers handlers resolve _send_reply dynamically, so this makes
+ # every owner reply restore the private button instead of overwriting it with
+ # the public three-button keyboard.
+ if keyboard and _owner(chat_id):
+  if tg._post_message(chat_id,text,_owner_keyboard()):return True
+  return tg._post_message(chat_id,text)
+ return _orig_send_reply(chat_id,text,keyboard)
 def _safe(v,default="—"):return html.escape(str(v)) if v not in (None,"") else default
 
 def _line_from_raw(s):
@@ -107,5 +114,5 @@ def _handle_message(message):
  _orig_handle_message(message)
  if chat_id is not None and _owner(chat_id) and command in {"/start","/menu"}:tg._post_message(chat_id,"👑 <i>Панель владельца</i>",_owner_keyboard())
 
-tg._main_keyboard=_main_keyboard;tg._handle_message=_handle_message;tg.send_owner_market_tape=_send_market_tape
-logger.info("Owner-only multi-line market tape with tournament enabled")
+tg._main_keyboard=_main_keyboard;tg._send_reply=_send_reply;tg._handle_message=_handle_message;tg.send_owner_market_tape=_send_market_tape
+logger.info("Owner-only multi-line market tape with persistent 2x2 owner keyboard enabled")
