@@ -59,8 +59,6 @@ def _parse_fs_feed(text):
   try:ts=float(x.get("AD") or 0)
   except Exception:ts=0.
   status=str(x.get("AB","") or "")
-  # Feed is a today feed, but fail closed on wrong-day rows. Keep a live match
-  # across midnight so a match that started before 00:00 is not lost mid-game.
   if ts:
    try:local_date=datetime.fromtimestamp(ts,TZ).date()
    except Exception:local_date=today
@@ -105,7 +103,6 @@ def _main_over(event):
  return float(x["P"]),float(x["C"])
 def _wanted_market(group,row,period):
  gid=group.get("G");tid=row.get("T");g=_norm(_txt(group,"GN","N","Name"));n=_norm(_txt(row,"N","Name","SN","SelectionName"));s=f"{g} {n}";p=_norm(period)
- # Only football match/1H/2H markets that GOOL actually uses.
  if p and not any(x in p for x in ("ft","match","1st","first","1 half","1h","2nd","second","2 half","2h","0","1","2")):return False
  if any(x in s for x in ("corner","card","booking","offside","throw in","shot","goal kick","exact score","correct score","next goal","penalty","substitution","both teams","btts","double chance","draw no bet")):return False
  if any(x in s for x in ("team total","individual total")):return True
@@ -118,9 +115,6 @@ def _wanted_market(group,row,period):
  except Exception:t=-999
  try:gidi=int(gid)
  except Exception:gidi=-999
- # BetB2B fallback IDs when human-readable labels are absent:
- # G1/T1,T3 = home/away win; G2/G3/T7,T8 = handicap sides;
- # T9..T14 = totals/team totals families.
  if gidi==1 and t in (1,3):return True
  if gidi in (2,3) and t in (7,8):return True
  if t in (9,10,11,12,13,14):return True
@@ -146,7 +140,6 @@ def _detail(event):
  if not eid or not h or not a:return None
  try:start=float(event.get("S") or 0)
  except Exception:start=0.
- # A bookmaker event is ignored unless the same match is live on Flashscore now.
  fs=_fs_match(h,a,start,live_only=True)
  if not fs:return None
  d=_get("/LiveFeed/GetGameZip",{"id":eid,"lng":"en","cfview":0,"isSubGames":"true","GroupEvents":"true","allEventsGroupSubGames":"true","countevents":250,"grMode":2})
@@ -185,7 +178,6 @@ def collect_once():
  now=time.time();priced=0;selections=0;matched=0
  try:
   if not FS_MATCHES or time.time()-LAST_FS>FS_INTERVAL:refresh_flashscore()
-  # If Flashscore is stale, do not silently fall back to bookmaker-only matches.
   if not FS_MATCHES or time.time()-LAST_FS>max(FS_INTERVAL*3,180):raise RuntimeError("Flashscore gate unavailable/stale")
   events=(_get("/LiveFeed/Get1x2_VZip",{"sports":1,"count":1000,"lng":"en","mode":4,"country":1,"getEmpty":"true"}) or [])[:MAX_EVENTS]
   with ThreadPoolExecutor(max_workers=5) as ex:
@@ -217,11 +209,42 @@ def collect_prematch_once():
   LAST_PREMATCH=time.time();PREMATCH_ERROR="";live=sum(1 for f in out.values() if str(f.get("status"))=="2");log.info("PREMATCH_TODAY flashscore_fixtures=%d live=%d date=%s",len(out),live,today.isoformat());return len(out)
  except Exception as exc:
   PREMATCH_ERROR=f"{type(exc).__name__}: {exc}";LAST_PREMATCH=time.time();log.warning("PREMATCH_TODAY_FAIL %s",PREMATCH_ERROR);return 0
-def _compact_events():return {k:{x:r.get(x) for x in ("home","away","event_id","fs_id","fs_status","fs_minute","fs_period","points","offered","missing_since","suspends","reopens","last_reopen_delta_pp","last_odds","updated")} for k,r in STATE.items()}
 def _label(sel):
  name=str(sel.get("name") or "").strip();group=str(sel.get("group") or "").strip();period=str(sel.get("period") or "").strip();line=sel.get("line");base=name or group or f"G{sel.get('group_id')} / T{sel.get('type_id')}"
  if isinstance(line,(int,float)) and str(line) not in base:base=f"{base} {line:g}"
  return f"{period} · {base}" if period and period not in {"FT","0"} else base
+def _best_market_signal(row,now=None):
+ now=now or time.time();best=None
+ for mk,sel in (row.get("markets") or {}).items():
+  pts=[]
+  for raw in sel.get("points") or []:
+   try:ts=float(raw[0]);odd=float(raw[1]);line=None if raw[2] is None else float(raw[2])
+   except Exception:continue
+   if odd>1 and ts>=now-600:pts.append([ts,odd,line])
+  if len(pts)<2:continue
+  first,last=pts[0],pts[-1];elapsed=max(1.,last[0]-first[0]);delta=(1/last[1]-1/first[1])*100;lm=0.
+  if first[2] is not None and last[2] is not None:lm=last[2]-first[2]
+  susp=int(sel.get("suspends",0) or 0);reop=int(sel.get("reopens",0) or 0);rd=float(sel.get("last_reopen_delta_pp",0) or 0)
+  purple=abs(delta)>=4 or (susp>=2 and abs(rd)>=1.5) or (susp>=1 and reop>=1 and abs(rd)>=3)
+  if purple:dot="🟣"
+  elif abs(delta)<1.5:dot="🟡"
+  elif delta>0:dot="🟢"
+  else:dot="🔴"
+  strength=abs(delta)+min(2.,abs(lm)*2.)+min(2.,susp*.5+reop*.5)+min(2.,abs(rd)*.35)+(3. if purple else 0.)
+  sig={"market_key":mk,"market":_label(sel),"dot":dot,"delta_pp":round(delta,2),"elapsed":int(elapsed),"line_move":round(lm,2),"suspends":susp,"reopens":reop,"reopen_delta_pp":round(rd,2),"points":pts[-12:],"last_odds":last[1],"last_line":last[2],"updated":last[0],"strength":round(strength,2)}
+  if best is None or (sig["strength"],abs(sig["delta_pp"]),sig["updated"])>(best["strength"],abs(best["delta_pp"]),best["updated"]):best=sig
+ return best
+def _compact_events():
+ now=time.time();out={}
+ for k,r in STATE.items():
+  best=_best_market_signal(r,now)
+  row={x:r.get(x) for x in ("home","away","event_id","fs_id","fs_status","fs_minute","fs_period","updated")}
+  if best:
+   row.update({"points":best["points"],"offered":True,"missing_since":None,"suspends":best["suspends"],"reopens":best["reopens"],"last_reopen_delta_pp":best["reopen_delta_pp"],"last_odds":best["last_odds"],"best_market":best["market"],"best_market_key":best["market_key"],"market_dot":best["dot"],"market_delta_pp":best["delta_pp"],"market_strength":best["strength"],"market_elapsed":best["elapsed"],"market_line_move":best["line_move"]})
+  else:
+   row.update({"points":[],"offered":False,"missing_since":None,"suspends":0,"reopens":0,"last_reopen_delta_pp":0.0,"last_odds":None,"best_market":"","best_market_key":"","market_dot":"🟡","market_delta_pp":0.0,"market_strength":0.0,"market_elapsed":0,"market_line_move":0.0})
+  out[k]=row
+ return out
 def _anomalies(now=None):
  now=now or time.time();out=[]
  for ek,row in STATE.items():
@@ -266,7 +289,7 @@ class Handler(BaseHTTPRequestHandler):
   if self.path.startswith("/health"):
    with LOCK:
     mc=sum(len(r.get("markets") or {}) for r in STATE.values());fx=len(FIXTURES);fsn=len(FS_MATCHES);fsl=sum(1 for f in FS_MATCHES.values() if str(f.get("status"))=="2")
-   self._send(200,{"ok":True,"cycles":CYCLES,"last_cycle":LAST_CYCLE,"last_error":LAST_ERROR,"events":len(STATE),"markets":mc,"fixtures_today":fx,"flashscore_today":fsn,"flashscore_live":fsl,"last_flashscore":LAST_FS,"flashscore_error":FS_ERROR,"last_prematch":LAST_PREMATCH,"prematch_error":PREMATCH_ERROR,"flashscore_gate":True,"flashscore_live_gate":True,"selected_markets_only":True});return
+   self._send(200,{"ok":True,"cycles":CYCLES,"last_cycle":LAST_CYCLE,"last_error":LAST_ERROR,"events":len(STATE),"markets":mc,"fixtures_today":fx,"flashscore_today":fsn,"flashscore_live":fsl,"last_flashscore":LAST_FS,"flashscore_error":FS_ERROR,"last_prematch":LAST_PREMATCH,"prematch_error":PREMATCH_ERROR,"flashscore_gate":True,"flashscore_live_gate":True,"selected_markets_only":True,"strongest_market_snapshot":True});return
   if not _authorized(self):self._send(401,{"ok":False,"error":"unauthorized"});return
   if self.path.startswith("/fixtures/live"):
    with LOCK:data=[dict(f) for f in FS_MATCHES.values() if str(f.get("status"))=="2"]
@@ -279,8 +302,8 @@ class Handler(BaseHTTPRequestHandler):
    self._send(200,{"ok":True,"anomalies":data,"count":len(data),"flashscore_gate":True,"live_only":True});return
   if self.path.startswith("/snapshot"):
    with LOCK:data=_compact_events()
-   self._send(200,{"ok":True,"events":data,"count":len(data),"flashscore_gate":True,"live_only":True});return
+   self._send(200,{"ok":True,"events":data,"count":len(data),"flashscore_gate":True,"live_only":True,"strongest_market_snapshot":True});return
   self._send(404,{"ok":False,"error":"not found"})
 def main():
- refresh_flashscore();collect_prematch_once();threading.Thread(target=collector,daemon=True).start();threading.Thread(target=prematch_collector,daemon=True).start();threading.Thread(target=flashscore_collector,daemon=True).start();log.info("MARKET_NODE_HTTP port=%d compact_api=1 flashscore_today=1 flashscore_live_gate=1 selected_markets=1",PORT);ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
+ refresh_flashscore();collect_prematch_once();threading.Thread(target=collector,daemon=True).start();threading.Thread(target=prematch_collector,daemon=True).start();threading.Thread(target=flashscore_collector,daemon=True).start();log.info("MARKET_NODE_HTTP port=%d compact_api=1 flashscore_today=1 flashscore_live_gate=1 selected_markets=1 strongest_market_snapshot=1",PORT);ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
 if __name__=="__main__":main()
