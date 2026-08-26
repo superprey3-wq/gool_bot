@@ -119,10 +119,12 @@ async def scan_live_once():
             recs=_recommendations(_fetch_event_odds(match.event_id),match,pressure); text=_format_signal(match,pressure,stats,recs,goal_times,"signal")
             if telegram_send_signal(match,pressure,recs,text):_record_live(match,pressure,stats,recs,"signal"); state[track_key]={"tracked_since":now,"ts":now,"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":match.is_halftime}; sent+=1
             continue
-        previous_score=str(tracked.get("score",current_score)); score_changed=previous_score!=current_score; halftime_new=match.is_halftime and not bool(tracked.get("halftime_sent")); last_ts=float(tracked.get("ts",0)); last_pressure=float(tracked.get("pressure",0)); pressure_jump=pressure.score>=LIVE_SIGNAL_THRESHOLD and pressure.score>=last_pressure+8; regular_followup=pressure.score>=LIVE_SIGNAL_THRESHOLD and now-last_ts>=LIVE_COOLDOWN_MINUTES*60
-        if score_changed or halftime_new or pressure_jump or regular_followup:
-            reason="goal" if score_changed else "followup"; recs=_recommendations(_fetch_event_odds(match.event_id),match,pressure); text=_format_signal(match,pressure,stats,recs,goal_times,reason)
-            if telegram_send_signal(match,pressure,recs,text):_record_live(match,pressure,stats,recs,reason); tracked.update({"ts":now,"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":bool(tracked.get("halftime_sent")) or match.is_halftime}); state[track_key]=tracked; sent+=1
-        else:tracked.update({"score":current_score,"minute":match.minute}); state[track_key]=tracked
+        previous_score=str(tracked.get("score",current_score)); score_changed=previous_score!=current_score
+        if score_changed:
+            recs=_recommendations(_fetch_event_odds(match.event_id),match,pressure); text=_format_signal(match,pressure,stats,recs,goal_times,"goal")
+            if telegram_send_signal(match,pressure,recs,text):_record_live(match,pressure,stats,recs,"goal"); tracked.update({"ts":now,"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":bool(tracked.get("halftime_sent")) or match.is_halftime}); state[track_key]=tracked; sent+=1
+        else:
+            tracked.update({"score":current_score,"minute":match.minute,"pressure":pressure.score,"halftime_sent":bool(tracked.get("halftime_sent")) or match.is_halftime}); state[track_key]=tracked
+            logger.info("LIVE_REPEAT_BLOCK event=%s score=%s minute=%s pressure=%.1f reason=no_new_goal",match.event_id,current_score,match.minute,pressure.score)
     _save_sent(state); logger.info("Отправлено LIVE-сигналов/обновлений: %d; сопровождается матчей: %d",sent,sum(1 for k in state if k.startswith('TRACK:'))); return sent
 if __name__=="__main__":asyncio.run(scan_live_once())
