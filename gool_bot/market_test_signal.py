@@ -5,7 +5,7 @@ import market_node_bridge,telegram_subscribers
 from prematch_market_lab import fetch_odds,normalize_odds
 log=logging.getLogger("market_test_signal")
 _LOCK=threading.Lock();_ALERTED=set();_BASELINE=set();_PRIMED=False;TOP_MATCHES=5;WINDOW=7200
-_PM_LAST=0.0;_PM_INTERVAL=60;_PM_STATE={}
+_PM_LAST=0.0;_PM_INTERVAL=60;_PM_STATE={};MIN_RECOMMENDED_ODD=1.35
 
 def _num(v,d=2):
  try:return f"{float(v):.{d}f}"
@@ -32,8 +32,13 @@ def _is_over(s):
  raw=(str(s.get("selection") or "")+" "+str(s.get("market") or "")).casefold();return "over" in raw or "тб" in raw
 def _name(s):
  ln=_num(s.get("last_line"),1).rstrip("0").rstrip(".");return ("ТБ " if _is_over(s) else "ТМ ")+ln
+def _opposite_name(s):
+ ln=_num(s.get("last_line"),1).rstrip("0").rstrip(".");return ("ТМ " if _is_over(s) else "ТБ ")+ln
 def _sharp(s):
  try:d=abs(float(s.get("delta_pp",0) or 0));sec=int(s.get("elapsed",0) or 0);return d>=8 or (d>=5 and sec<=180)
+ except Exception:return False
+def _price_ok(s):
+ try:return float(s.get("last_odds") or 0)>=MIN_RECOMMENDED_ODD
  except Exception:return False
 def _eligible_time(s):
  status=str(s.get("status") or s.get("state") or "").casefold()
@@ -58,11 +63,17 @@ def _time_label(s):
 def _meaning(s,d):
  if _is_over(s):return "🟢 рынок резко сильнее ждёт голы" if d>0 else "🔴 рынок резко уходит от голов"
  return "🔴 рынок резко сильнее ждёт низ" if d>0 else "🟢 рынок резко уходит от низа"
+def _recommendation(s,d):
+ # Positive delta = probability of the displayed side is growing. Negative
+ # delta = displayed side is weakening, so direction points to the opposite
+ # total. We only print an opposite recommendation without inventing its odds.
+ if d>0:return f"🎯 <b>Рекомендованная ставка:</b> <b>{_name(s)}</b> · текущий кэф {_num(s.get('last_odds'))}"
+ return f"🎯 <b>Рекомендованное направление:</b> <b>{_opposite_name(s)}</b>\n<i>Кэф противоположной стороны в этом автосигнале не получен — не подставляю выдуманное значение.</i>"
 def _message(s):
  d=float(s.get("delta_pp",0) or 0);a=s.get("start_odds");b=s.get("last_odds");p0=_prob(a);p1=_prob(b);sec=max(1,int(s.get("elapsed",0) or 0));arrow="↓" if d>0 else "↑" if d<0 else "→"
  parts=["🚨 <b>ТОП-ПРОГРУЗ ТОТАЛА</b>",f"⚽ <b>{s.get('home') or '?'} — {s.get('away') or '?'}</b>",f"⏱ {_time_label(s)}",f"📊 <b>{_name(s)}</b>","","<b>БЫЛО → СТАЛО</b>",f"Кэф: <b>{_num(a)} → {_num(b)} {arrow}</b>"]
  if p0 is not None and p1 is not None:parts.append(f"Вероятность: <b>{p0:.0f}% → {p1:.0f}%</b>")
- parts.extend([f"Изменение: <b>{d:+.2f} п.п.</b> за <b>{sec} сек</b>","",_meaning(s,d),"<i>Только тоталы матча ТБ/ТМ · LIVE или старт ≤2ч · топ-5 · один сигнал на матч.</i>"]);return "\n".join(parts)
+ parts.extend([f"Изменение: <b>{d:+.2f} п.п.</b> за <b>{sec} сек</b>","",_meaning(s,d),"",_recommendation(s,d),"<i>Только тоталы матча ТБ/ТМ · кэф от 1.35 · LIVE или старт ≤2ч · топ-5 · один сигнал на матч.</i>"]);return "\n".join(parts)
 def _fetch_live():
  if not market_node_bridge.URL:return []
  try:
@@ -82,7 +93,6 @@ def _pm_rows():
   try:st=float(f.get("start_ts") or 0)
   except Exception:continue
   if 0<st-now<=WINDOW:near.append(f)
- # Cap requests defensively; closest starts first.
  near.sort(key=lambda x:float(x.get("start_ts") or 0));near=near[:20]
  for f in near:
   eid=str(f.get("event_id") or f.get("fs_id") or "")
@@ -103,8 +113,8 @@ def _pm_rows():
 def _mid(s):return str(s.get("key") or f"{s.get('home')}|{s.get('away')}")
 def scan_once():
  global _PRIMED
- live=_fetch_live();prematch=_pm_rows();raw=live+prematch;totals=[s for s in raw if _total(s)];sharp=[s for s in totals if _sharp(s)];signals=[s for s in sharp if _eligible_time(s)]
- log.info("MARKET_TOTAL_FILTER live=%d prematch=%d totals=%d sharp=%d eligible=%d",len(live),len(prematch),len(totals),len(sharp),len(signals))
+ live=_fetch_live();prematch=_pm_rows();raw=live+prematch;totals=[s for s in raw if _total(s)];priced=[s for s in totals if _price_ok(s)];sharp=[s for s in priced if _sharp(s)];signals=[s for s in sharp if _eligible_time(s)]
+ log.info("MARKET_TOTAL_FILTER live=%d prematch=%d totals=%d priced=%d sharp=%d eligible=%d",len(live),len(prematch),len(totals),len(priced),len(sharp),len(signals))
  best={}
  for s in signals:
   k=_mid(s);strength=abs(float(s.get("delta_pp",0) or 0))
