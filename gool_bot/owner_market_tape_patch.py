@@ -10,12 +10,8 @@ _BUTTON="📈 Линия LIVE";_orig_keyboard=tg._main_keyboard;_orig_handle_mes
 def _owner(chat_id):return str(chat_id)==str(tg._owner_chat_id())
 def _main_keyboard():return _orig_keyboard()
 def _owner_keyboard():
- # Keep the normal public keyboard intact, but give the owner a stable 2x2 panel.
  return {"keyboard":[[{"text":"🟢 В игре"},{"text":"📊 Отчёт"}],[{"text":_BUTTON},{"text":"🧠 Анализ"}]],"resize_keyboard":True}
 def _send_reply(chat_id,text,keyboard=True):
- # telegram_subscribers handlers resolve _send_reply dynamically, so this makes
- # every owner reply restore the private button instead of overwriting it with
- # the public three-button keyboard.
  if keyboard and _owner(chat_id):
   if tg._post_message(chat_id,text,_owner_keyboard()):return True
   return tg._post_message(chat_id,text)
@@ -48,18 +44,20 @@ def _market_name(raw, type_id=None, line=None, group_id=None):
  if ti==8:return f"📐 Фора 2 · {ln}"
  return s[:55]+("…" if len(s)>55 else "") if s else "рынок"
 
-def _is_goal_total(m):
- try:return int(m.get("type_id")) in {9,10,11,12,13,14}
- except Exception:return "total" in str(m.get("market") or "").casefold()
-
 def _meaning(delta,name):
  if abs(delta)<.01:return "без заметного движения"
- is_over="ТБ" in name;is_under="ТМ" in name
- if is_over:return "рынок сильнее ждёт голы" if delta>0 else "рынок уходит от голов"
- if is_under:return "рынок сильнее ждёт низ" if delta>0 else "рынок уходит от низа"
+ if "ТБ" in name:return "рынок сильнее ждёт голы" if delta>0 else "рынок уходит от голов"
+ if "ТМ" in name:return "рынок сильнее ждёт низ" if delta>0 else "рынок уходит от низа"
  return "вероятность исхода растёт" if delta>0 else "вероятность исхода падает"
 
-def _market_row(m):
+def _gool_alignment(delta,name):
+ """GOOL is a next-goal signal. Only goal-total markets directly confirm/oppose it."""
+ if abs(delta)<1.5:return "⚪ к GOOL: нейтрально"
+ if "ТБ" in name:return "🟢 к GOOL: ЗА сигнал" if delta>0 else "🔴 к GOOL: ПРОТИВ сигнала"
+ if "ТМ" in name:return "🔴 к GOOL: ПРОТИВ сигнала" if delta>0 else "🟢 к GOOL: ЗА сигнал"
+ return "⚪ к GOOL: рынок не голевой"
+
+def _market_info(m):
  try:delta=float(m.get("delta_pp",0) or 0)
  except Exception:delta=0.0
  dot=str(m.get("dot") or ("🟣" if abs(delta)>=4 else "🟢" if delta>0 else "🔴" if delta<0 else "🟡"))
@@ -68,7 +66,26 @@ def _market_row(m):
  try:odds=f"{float(old):.2f} → {float(new):.2f}" if old is not None and new is not None else ""
  except Exception:odds=""
  strength="ОЧЕНЬ СИЛЬНО" if dot=="🟣" or abs(delta)>=4 else "заметно" if abs(delta)>=1.5 else "слабо"
- return f"{dot} <b>{_safe(name)}</b>" + (f" · кэф <b>{odds}</b>" if odds else "") + f"\n   ↳ Δ {delta:+.2f} п.п. · {strength} · {_safe(_meaning(delta,name))}"
+ return delta,dot,name,odds,strength
+
+def _market_row(m):
+ delta,dot,name,odds,strength=_market_info(m)
+ first=f"{dot} <b>{_safe(name)}</b>" + (f" · кэф <b>{odds}</b>" if odds else "")
+ return first+f"\n   ↳ Δ {delta:+.2f} п.п. · {strength} · {_safe(_meaning(delta,name))}\n   ↳ {_gool_alignment(delta,name)}"
+
+def _recommendation(markets):
+ """Give a compact market-movement pick, not a model guarantee."""
+ candidates=[]
+ for m in markets:
+  delta,dot,name,odds,strength=_market_info(m)
+  if abs(delta)<1.5:continue
+  if "?" in name:continue
+  candidates.append((abs(delta),m,name,delta,odds))
+ if not candidates:return "🎯 <b>Рекомендованная ставка:</b> нет явного движения"
+ _,m,name,delta,odds=max(candidates,key=lambda x:x[0])
+ action=name
+ suffix=f" · текущий кэф {float(m.get('last_odds')):.2f}" if m.get("last_odds") is not None else ""
+ return f"🎯 <b>Рекомендованная ставка по движению:</b> <b>{_safe(action)}</b>{suffix}"
 
 def _tournament_line(row,diag):
  league=str(row.get("league") or row.get("tournament") or diag.get("league") or "").strip()
@@ -85,26 +102,26 @@ def _market_line(row):
  if str(diag.get("match_mode") or "none")=="none":
   lines=[f"⚪ <b>{_safe(home)} — {_safe(away)}</b> · сигнал {entry}' · {score}"]
   if tournament:lines.append(tournament)
-  lines.append("↳ рынок пока не сопоставлен")
+  lines.extend(["↳ рынок пока не сопоставлен","🎯 <b>Рекомендованная ставка:</b> данных пока недостаточно"])
   return "\n".join(lines)
  markets=list(diag.get("top_markets") or [])
- totals=[m for m in markets if _is_goal_total(m)]
- chosen=(totals or markets)[:3]
+ chosen=markets[:3]
  if not chosen:
   chosen=[{"market":diag.get("remote_market"),"delta_pp":diag.get("remote_delta",0),"dot":diag.get("final_dot"),"start_odds":diag.get("remote_start_odds"),"last_odds":diag.get("remote_last_odds")}]
  lines=[f"⚽ <b>{_safe(home)} — {_safe(away)}</b> · сигнал {entry}' · счёт {score}"]
  if tournament:lines.append(tournament)
  for m in chosen:lines.append(_market_row(m))
+ lines.append(_recommendation(chosen))
  return "\n".join(lines)
 
 def _send_market_tape(chat_id):
  if not _owner(chat_id):tg._send_reply(chat_id,"⛔ Линия LIVE доступна только владельцу.");return
  rows=tg._active_signal_rows()
  if not rows:tg._post_message(chat_id,"📈 <b>ЛИНИЯ LIVE</b>\n\nСейчас активных GOOL-сигналов нет.",_owner_keyboard());return
- lines=[f"📈 <b>ЛИНИЯ LIVE · {len(rows)}</b>","<i>До 3 самых сильных движений тоталов по матчам, где GOOL уже дал сигнал.</i>",""]
+ lines=[f"📈 <b>ЛИНИЯ LIVE · {len(rows)}</b>","<i>До 3 самых сильных движений рынка по матчам, где GOOL уже дал сигнал.</i>",""]
  for row in rows[:6]:lines.extend([_market_line(row),""])
  if len(rows)>6:lines.append(f"…ещё {len(rows)-6} активных матчей")
- lines.append("<i>Кэф ↓ на ТБ = рынок сильнее ждёт голы. Кэф ↓ на ТМ = рынок сильнее ждёт низ.</i>")
+ lines.append("<i>🟢/🔴 показывает, поддерживает ли голевой рынок сигнал GOOL. Рекомендация строится только по текущему движению линии, а не гарантирует исход.</i>")
  tg._post_message(chat_id,"\n".join(lines),_owner_keyboard());logger.info("OWNER_MARKET_TAPE sent rows=%d",len(rows))
 
 def _handle_message(message):
@@ -115,4 +132,4 @@ def _handle_message(message):
  if chat_id is not None and _owner(chat_id) and command in {"/start","/menu"}:tg._post_message(chat_id,"👑 <i>Панель владельца</i>",_owner_keyboard())
 
 tg._main_keyboard=_main_keyboard;tg._send_reply=_send_reply;tg._handle_message=_handle_message;tg.send_owner_market_tape=_send_market_tape
-logger.info("Owner-only multi-line market tape with persistent 2x2 owner keyboard enabled")
+logger.info("Owner-only market tape with GOOL alignment and market-movement recommendation enabled")
