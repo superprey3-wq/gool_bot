@@ -1,4 +1,4 @@
-"""On-demand GOOL 2.0 report focused on football-signal quality, not odds."""
+"""On-demand GOOL 2.0 report: compact category stats + recent wins/losses."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,7 +8,6 @@ from multi_engine import FIRST_HALF_GOAL, SECOND_HALF_OVER15
 from signal_journal import all_signals
 
 MOSCOW = ZoneInfo("Europe/Moscow")
-_PENDING = {"", "pending", "wait", "waiting"}
 _WIN = {"+", "win", "won"}
 _LOSS = {"-", "loss", "lost"}
 
@@ -30,11 +29,7 @@ def _today_rows():
 
 def _live_signal_rows(rows):
     aux = {FIRST_HALF_GOAL, SECOND_HALF_OVER15}
-    return [
-        r for r in rows
-        if str(r.get("reason") or "signal") in {"signal", "reentry"}
-        and str(r.get("engine") or "core") not in aux
-    ]
+    return [r for r in rows if str(r.get("reason") or "signal") in {"signal", "reentry"} and str(r.get("engine") or "core") not in aux]
 
 
 def _engine_rows(rows, engine):
@@ -52,18 +47,6 @@ def _state(row):
 
 def _is_pending_entry(row):
     return _state(row) == "pending"
-
-
-def _core_state(row):
-    return _state(row), None
-
-
-def _aux_state(row):
-    return _state(row), None
-
-
-def _market_label(row):
-    return "аналитический сигнал"
 
 
 def _time_to_goal(row):
@@ -96,29 +79,52 @@ def _metrics(rows):
     hit = round(wins / settled * 100) if settled else 0
     goal_times = [x for x in (_time_to_goal(r) for r, s in states if s == "win") if x is not None]
     masters = [x for x in (_master(r) for r, _ in states) if x is not None]
-    return {
-        "states": states,
-        "wins": wins,
-        "losses": losses,
-        "pending": pending,
-        "settled": settled,
-        "hit": hit,
-        "avg_goal_time": sum(goal_times) / len(goal_times) if goal_times else None,
-        "avg_master": sum(masters) / len(masters) if masters else None,
-    }
+    return {"states": states, "wins": wins, "losses": losses, "pending": pending, "settled": settled, "hit": hit,
+            "avg_goal_time": sum(goal_times) / len(goal_times) if goal_times else None,
+            "avg_master": sum(masters) / len(masters) if masters else None}
 
 
-def _summary(title, rows):
+def _result_line(row, mark):
+    minute = row.get("minute")
+    score = row.get("score_at_signal") or "—"
+    result_min = row.get("next_goal_minute") or row.get("result_minute")
+    suffix = f" → гол {result_min}'" if mark == "✅" and result_min else ""
+    return f"{mark} {row.get('home')} — {row.get('away')} | вход {minute}' · {score}{suffix}"
+
+
+def _category(title, rows, extra=None):
     m = _metrics(rows)
-    lines = ["", title, f"Сигналов: <b>{len(rows)}</b> · закрыто: <b>{m['settled']}</b> · ⏳ {m['pending']}"]
-    lines.append(f"✅ подтверждено: <b>{m['wins']}</b> · ❌ не подтверждено: <b>{m['losses']}</b>")
+    lines = ["", title]
+    if extra:
+        lines.append(extra)
+    lines.append(f"Сигналов: <b>{len(rows)}</b> · закрыто: <b>{m['settled']}</b> · ⏳ {m['pending']}")
+    lines.append(f"✅ зашло: <b>{m['wins']}</b> · ❌ не зашло: <b>{m['losses']}</b>")
     if m["settled"]:
-        lines.append(f"🎯 Точность сигнала: <b>{m['hit']}%</b>")
-    if m["avg_goal_time"] is not None:
-        lines.append(f"⏱ Среднее время до подтверждающего гола: <b>{m['avg_goal_time']:.1f} мин</b>")
-    if m["avg_master"] is not None:
-        lines.append(f"🧠 Средний рейтинг модели: <b>{m['avg_master']:.1f}/100</b>")
-    return lines, m
+        lines.append(f"🎯 Точность: <b>{m['hit']}%</b>")
+
+    settled_rows = [(r, s) for r, s in m["states"] if s != "pending"]
+    recent_wins = [r for r, s in settled_rows if s == "win"][-4:]
+    recent_losses = [r for r, s in settled_rows if s == "loss"][-4:]
+    pending_rows = [r for r, s in m["states"] if s == "pending"][-3:]
+
+    lines.append("<b>Последние результаты:</b>")
+    merged = settled_rows[-6:]
+    if merged:
+        for row, state in merged:
+            lines.append(_result_line(row, "✅" if state == "win" else "❌"))
+    else:
+        lines.append("— закрытых сигналов пока нет")
+
+    if recent_losses:
+        lines.append("<b>Последние незашедшие:</b>")
+        for row in recent_losses:
+            lines.append(_result_line(row, "❌"))
+
+    if pending_rows:
+        lines.append("<b>Сейчас ждём:</b>")
+        for row in pending_rows:
+            lines.append(_result_line(row, "⏳"))
+    return lines
 
 
 def build_live_signals_text():
@@ -141,28 +147,11 @@ def build_report_text():
     initial = sum(str(r.get("reason") or "signal") == "signal" for r in core)
     reentries = sum(str(r.get("reason") or "signal") == "reentry" for r in core)
 
-    lines = [
-        "📊 <b>GOOL 2.0 — ОТЧЁТ НА СЕЙЧАС</b>",
-        f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}",
-        "",
-        "🟡 <b>CORE · СИГНАЛ НА ГОЛ</b>",
-        f"Первичных: <b>{initial}</b> · re-entry: <b>{reentries}</b>",
-    ]
-    core_lines, core_m = _summary("", core)
-    lines += core_lines[1:]
-
-    if core:
-        lines.append("<b>Последние CORE:</b>")
-        for row, state in core_m["states"][-8:]:
-            mark = "✅" if state == "win" else "❌" if state == "loss" else "⏳"
-            lines.append(f"{mark} {row.get('home')} — {row.get('away')} | {row.get('minute')}' · {row.get('score_at_signal')}")
-
-    fh_lines, _ = _summary("🔵 <b>1-Й ТАЙМ · ГОЛ 15–25'</b>", fh)
-    lines += fh_lines
-    sh_lines, _ = _summary("🟣 <b>2-Й ТАЙМ · 2+ ГОЛА ПОСЛЕ ПЕРЕРЫВА</b>", sh)
-    lines += sh_lines
-
+    lines = ["📊 <b>GOOL 2.0 — РЕЗУЛЬТАТЫ НА СЕЙЧАС</b>", f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}"]
+    lines += _category("🟡 <b>CORE · СИГНАЛ НА ГОЛ</b>", core, f"Первичных: <b>{initial}</b> · re-entry: <b>{reentries}</b>")
+    lines += _category("🔵 <b>1-Й ТАЙМ · ГОЛ 15–25'</b>", fh)
+    lines += _category("🟣 <b>2-Й ТАЙМ · 2+ ГОЛА ПОСЛЕ ПЕРЕРЫВА</b>", sh)
     if not rows:
         lines += ["", "Сегодня в журнале пока нет сигналов."]
-    lines += ["", "<i>Отчёт оценивает футбольные сигналы GOOL. Коэффициенты и результат ставки в эту статистику не входят.</i>"]
+    lines += ["", "<i>✅ = сигнал подтверждён · ❌ = не подтверждён · ⏳ = ещё в игре.</i>"]
     return "\n".join(lines)
