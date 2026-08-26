@@ -63,18 +63,30 @@ def _market_row(m):
  strength="ОЧЕНЬ СИЛЬНО" if dot=="🟣" or abs(delta)>=4 else "заметно" if abs(delta)>=1.5 else "слабо"
  return f"{dot} <b>{_safe(name)}</b>" + (f" · кэф <b>{odds}</b>" if odds else "") + f"\n   ↳ Δ {delta:+.2f} п.п. · {strength} · {_safe(_meaning(delta,name))}"
 
+def _tournament_line(row,diag):
+ league=str(row.get("league") or row.get("tournament") or diag.get("league") or "").strip()
+ country=str(row.get("country") or diag.get("country") or "").strip()
+ if not league:return ""
+ label=f"{country} · {league}" if country and country.casefold() not in league.casefold() else league
+ return f"🏆 {_safe(label)}"
+
 def _market_line(row):
  home=str(row.get("home") or "?");away=str(row.get("away") or "?");entry=row.get("minute");score=row.get("score_at_signal") or "—"
  try:diag=bridge.diagnostic_for_match(home,away)
  except Exception:logger.exception("OWNER_MARKET_TAPE diag failed for %s - %s",home,away);diag={}
- if str(diag.get("match_mode") or "none")=="none":return f"⚪ <b>{_safe(home)} — {_safe(away)}</b> · сигнал {entry}' · {score}\n↳ рынок пока не сопоставлен"
+ tournament=_tournament_line(row,diag)
+ if str(diag.get("match_mode") or "none")=="none":
+  lines=[f"⚪ <b>{_safe(home)} — {_safe(away)}</b> · сигнал {entry}' · {score}"]
+  if tournament:lines.append(tournament)
+  lines.append("↳ рынок пока не сопоставлен")
+  return "\n".join(lines)
  markets=list(diag.get("top_markets") or [])
- # For GOOL, show several goal-related totals first: e.g. TB 2.5, 3.5, 4.5.
  totals=[m for m in markets if _is_goal_total(m)]
  chosen=(totals or markets)[:3]
  if not chosen:
   chosen=[{"market":diag.get("remote_market"),"delta_pp":diag.get("remote_delta",0),"dot":diag.get("final_dot"),"start_odds":diag.get("remote_start_odds"),"last_odds":diag.get("remote_last_odds")}]
  lines=[f"⚽ <b>{_safe(home)} — {_safe(away)}</b> · сигнал {entry}' · счёт {score}"]
+ if tournament:lines.append(tournament)
  for m in chosen:lines.append(_market_row(m))
  return "\n".join(lines)
 
@@ -96,4 +108,4 @@ def _handle_message(message):
  if chat_id is not None and _owner(chat_id) and command in {"/start","/menu"}:tg._post_message(chat_id,"👑 <i>Панель владельца</i>",_owner_keyboard())
 
 tg._main_keyboard=_main_keyboard;tg._handle_message=_handle_message;tg.send_owner_market_tape=_send_market_tape
-logger.info("Owner-only multi-line market tape enabled")
+logger.info("Owner-only multi-line market tape with tournament enabled")
