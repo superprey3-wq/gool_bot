@@ -31,19 +31,15 @@ def _remote_signal(home,away):
 
 def signal_for_match(home,away):
  local=_ORIG_SIGNAL(home,away);remote=_remote_signal(home,away)
- # If remote has no movement yet, preserve local.
  if remote.delta_pp==0 and remote.dot=="🟡":return local
- # Any verified strong movement remains purple. Direction is kept internally.
  if local.dot=="🟣" or remote.dot=="🟣":
   chosen=remote if abs(remote.delta_pp)>=abs(local.delta_pp) else local
   return bms.MarketSignal("🟣",chosen.delta_pp,True,chosen.direction)
- # Agreement between two IPs is stronger than either node alone.
  if local.direction and remote.direction and local.direction==remote.direction:
   d=(local.delta_pp+remote.delta_pp)/2
   dot="🟢" if local.direction>0 else "🔴"
   if abs(d)>=4:dot="🟣"
   return bms.MarketSignal(dot,round(d,2),local.fast or remote.fast,local.direction)
- # Conflicting independent-IP observations are deliberately neutral.
  if local.direction and remote.direction and local.direction!=remote.direction:
   return bms.MarketSignal("🟡",0.0,False,0)
  return remote if remote.direction else local
@@ -55,16 +51,19 @@ def poll_once():
  if not URL:return 0
  headers={"Authorization":"Bearer "+SECRET} if SECRET else {}
  try:
-  r=requests.get(URL+"/snapshot",headers=headers,timeout=10);r.raise_for_status();body=r.json();events=body.get("events") or {}
+  r=requests.get(URL+"/snapshot",headers=headers,timeout=10)
+  if r.status_code==401:raise RuntimeError("401 unauthorized: MARKET_NODE_SECRET mismatch")
+  r.raise_for_status();body=r.json();events=body.get("events") or {}
   if not isinstance(events,dict):raise RuntimeError("invalid events payload")
   with LOCK:
    REMOTE.clear();REMOTE.update(events)
-  LAST_OK=time.time();LAST_ERROR="";log.info("MARKET_NODE_PULL events=%d age=%.1fs",len(events),max(0.,time.time()-float(body.get("ts") or time.time())));return len(events)
+  LAST_OK=time.time();LAST_ERROR="";age=max(0.,time.time()-float(body.get("ts") or time.time()))
+  log.info("PROGRUZ_ONLINE events=%d age=%.1fs",len(events),age)
+  return len(events)
  except Exception as exc:
-  LAST_ERROR=f"{type(exc).__name__}: {exc}";log.warning("MARKET_NODE_PULL_FAIL %s",LAST_ERROR);return 0
+  LAST_ERROR=f"{type(exc).__name__}: {exc}";log.warning("PROGRUZ_OFFLINE %s",LAST_ERROR);return 0
 
-def health():return {"configured":bool(URL),"last_ok":LAST_OK,"last_error":LAST_ERROR,"events":len(REMOTE)}
+def health():return {"configured":bool(URL),"last_ok":LAST_OK,"last_error":LAST_ERROR,"events":len(REMOTE),"url":URL}
 
-# Existing card patches call bms.dot_for_match dynamically, so one patch point is enough.
 bms.signal_for_match=signal_for_match
 bms.dot_for_match=dot_for_match
