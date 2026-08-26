@@ -1,7 +1,8 @@
 """Lightweight GOOL market node for Bot-Hosting.net (256 MB friendly).
 
 Collects BetB2B/1xBet live prices from a second IP, all priced live selections,
-and today's prematch football fixture list. No Telegram/PIL/heavy analytics.
+and today's prematch football fixture list. Heavy all-market history stays on
+this node; the main GOOL server only pulls compact snapshots/anomalies.
 """
 from __future__ import annotations
 import json,logging,os,re,threading,time
@@ -69,8 +70,7 @@ def _all_markets(event):
     try:line=None if line is None else float(line)
     except Exception:line=None
     name=_txt(row,"N","Name","SN","SelectionName");sel_id=row.get("I") or row.get("ID") or row.get("E") or row.get("PL") or f"{bucket_i}:{row_i}"
-    mkey=f"{period}|G{gid}|T{tid}|P{line}|S{sel_id}"
-    out.append({"key":mkey,"period":period,"group_id":gid,"group":gname,"type_id":tid,"name":name,"line":line,"odds":odd})
+    out.append({"key":f"{period}|G{gid}|T{tid}|P{line}|S{sel_id}","period":period,"group_id":gid,"group":gname,"type_id":tid,"name":name,"line":line,"odds":odd})
     if len(out)>=MAX_MARKETS_PER_EVENT:return out
  return out
 
@@ -82,8 +82,8 @@ def _detail(event):
  return h,a,eid,_main_over(d),_all_markets(d)
 
 def _update_selection(sel,now,item):
- old_offered=bool(sel.get("offered"));old_odds=sel.get("last_odds")
- if not old_offered and sel.get("missing_since") is not None:
+ old_odds=sel.get("last_odds")
+ if not sel.get("offered") and sel.get("missing_since") is not None:
   sel["reopens"]=int(sel.get("reopens",0))+1
   if old_odds and old_odds>1 and item["odds"]>1:sel["last_reopen_delta_pp"]=round((1/item["odds"]-1/old_odds)*100,2)
  sel.update({"offered":True,"missing_since":None,"last_odds":item["odds"],"line":item.get("line"),"period":item.get("period"),"group_id":item.get("group_id"),"group":item.get("group"),"type_id":item.get("type_id"),"name":item.get("name"),"updated":now})
@@ -149,12 +149,49 @@ def collect_prematch_once():
    eid=e.get("I");h=e.get("O1");a=e.get("O2")
    if not eid or not h or not a:continue
    out[str(eid)]={"event_id":eid,"home":h,"away":a,"league":e.get("L") or e.get("LE") or "","country":e.get("CN") or e.get("CO") or "","start_ts":start,"start_local":dt.isoformat(timespec="minutes")}
-  with LOCK:
-   FIXTURES.clear();FIXTURES.update(out)
-  LAST_PREMATCH=time.time();PREMATCH_ERROR="";log.info("PREMATCH_TODAY fixtures=%d date=%s",len(out),today.isoformat())
-  return len(out)
+  with LOCK:FIXTURES.clear();FIXTURES.update(out)
+  LAST_PREMATCH=time.time();PREMATCH_ERROR="";log.info("PREMATCH_TODAY fixtures=%d date=%s",len(out),today.isoformat());return len(out)
  except Exception as exc:
   PREMATCH_ERROR=f"{type(exc).__name__}: {exc}";LAST_PREMATCH=time.time();log.warning("PREMATCH_TODAY_FAIL %s",PREMATCH_ERROR);return 0
+
+def _compact_events():
+ out={}
+ for k,row in STATE.items():
+  out[k]={x:row.get(x) for x in ("home","away","event_id","points","offered","missing_since","suspends","reopens","last_reopen_delta_pp","last_odds","updated")}
+ return out
+
+def _label(sel):
+ name=str(sel.get("name") or "").strip();group=str(sel.get("group") or "").strip();period=str(sel.get("period") or "").strip();line=sel.get("line")
+ base=name or group or f"G{sel.get('group_id')} / T{sel.get('type_id')}"
+ if isinstance(line,(int,float)) and str(line) not in base:base=f"{base} {line:g}"
+ return f"{period} · {base}" if period and period not in {"FT","0"} else base
+
+def _anomalies(now=None):
+ now=now or time.time();out=[]
+ for event_key,row in STATE.items():
+  best=None
+  for market_key,sel in (row.get("markets") or {}).items():
+   pts=[]
+   for raw in sel.get("points") or []:
+    try:ts=float(raw[0]);odd=float(raw[1]);line=None if raw[2] is None else float(raw[2])
+    except Exception:continue
+    if odd>1 and ts>=now-600:pts.append([ts,odd,line])
+   if len(pts)<2:continue
+   first,last=pts[0],pts[-1];elapsed=max(1.,last[0]-first[0]);delta=(1/last[1]-1/first[1])*100;line_move=0.0
+   if first[2] is not None and last[2] is not None:line_move=last[2]-first[2]
+   susp=int(sel.get("suspends",0) or 0);reop=int(sel.get("reopens",0) or 0);rd=float(sel.get("last_reopen_delta_pp",0) or 0);score=0
+   if abs(delta)>=5:score+=2
+   elif abs(delta)>=3:score+=1
+   if abs(delta)>=3 and elapsed<=180:score+=1
+   if abs(line_move)>=0.25:score+=1
+   if susp>=1 and reop>=1:score+=1
+   if susp>=2:score+=1
+   if abs(rd)>=1.5:score+=1
+   if score<3 or (abs(delta)<3 and abs(rd)<1.5 and abs(line_move)<0.25):continue
+   sig={"key":event_key,"market_key":market_key,"home":row.get("home") or "?","away":row.get("away") or "?","event_id":row.get("event_id"),"market":_label(sel),"score":score,"delta_pp":round(delta,2),"elapsed":int(elapsed),"start_odds":round(first[1],3),"last_odds":round(last[1],3),"start_line":first[2],"last_line":last[2],"line_move":round(line_move,2),"suspends":susp,"reopens":reop,"reopen_delta_pp":round(rd,2),"fingerprint":f"{market_key}:{round(last[1],3)}:{last[2]}:{susp}:{reop}","created_ts":now}
+   if best is None or (sig["score"],abs(sig["delta_pp"]),abs(sig["reopen_delta_pp"]),abs(sig["line_move"]))>(best["score"],abs(best["delta_pp"]),abs(best["reopen_delta_pp"]),abs(best["line_move"])):best=sig
+  if best:out.append(best)
+ return out[:80]
 
 def collector():
  while True:
@@ -177,11 +214,15 @@ class Handler(BaseHTTPRequestHandler):
    if not _authorized(self):self._send(401,{"ok":False});return
    with LOCK:data=sorted((dict(v) for v in FIXTURES.values()),key=lambda x:x.get("start_ts",0))
    self._send(200,{"ok":True,"ts":time.time(),"timezone":str(TZ),"count":len(data),"fixtures":data});return
+  if self.path.startswith("/anomalies"):
+   if not _authorized(self):self._send(401,{"ok":False});return
+   with LOCK:data=_anomalies()
+   self._send(200,{"ok":True,"ts":time.time(),"count":len(data),"signals":data});return
   if self.path.startswith("/snapshot"):
    if not _authorized(self):self._send(401,{"ok":False});return
-   with LOCK:data={k:dict(v) for k,v in STATE.items()};fixtures={k:dict(v) for k,v in FIXTURES.items()}
-   self._send(200,{"ok":True,"ts":time.time(),"node":"bot-hosting","events":data,"fixtures_today":fixtures});return
+   with LOCK:data=_compact_events()
+   self._send(200,{"ok":True,"ts":time.time(),"node":"bot-hosting","events":data});return
   self._send(404,{"ok":False})
 def main():
- threading.Thread(target=collector,daemon=True).start();threading.Thread(target=prematch_collector,daemon=True).start();srv=ThreadingHTTPServer(("0.0.0.0",PORT),Handler);log.info("MARKET_NODE_HTTP port=%d interval=%ds prematch=%ds max_events=%d all_markets=%d",PORT,INTERVAL,PREMATCH_INTERVAL,MAX_EVENTS,MAX_MARKETS_PER_EVENT);srv.serve_forever()
+ threading.Thread(target=collector,daemon=True).start();threading.Thread(target=prematch_collector,daemon=True).start();srv=ThreadingHTTPServer(("0.0.0.0",PORT),Handler);log.info("MARKET_NODE_HTTP port=%d interval=%ds prematch=%ds max_events=%d all_markets=%d compact_api=1",PORT,INTERVAL,PREMATCH_INTERVAL,MAX_EVENTS,MAX_MARKETS_PER_EVENT);srv.serve_forever()
 if __name__=="__main__":main()
