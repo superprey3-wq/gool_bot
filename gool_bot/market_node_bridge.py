@@ -63,7 +63,7 @@ def signal_for_match(home,away):
 def dot_for_match(home,away):return bms.card_market_dot(signal_for_match(home,away))
 def diagnostic_for_match(home,away):
  rk,row,mode,similarity=_lookup_remote(home,away);remote=_remote_signal(home,away);local=_ORIG_SIGNAL(home,away);final=signal_for_match(home,away)
- return {"match_mode":mode,"similarity":round(similarity,3),"remote_key":rk if row else "","remote_points":len(row.get("points") or []),"remote_market":row.get("best_market") or "","remote_strength":row.get("market_strength",0),"remote_start_odds":row.get("best_market_start_odds"),"remote_last_odds":row.get("best_market_last_odds") or row.get("last_odds"),"top_markets":list(row.get("top_markets") or []),"local_dot":local.dot,"local_delta":local.delta_pp,"remote_dot":remote.dot,"remote_delta":remote.delta_pp,"final_dot":final.dot,"final_delta":final.delta_pp}
+ return {"match_mode":mode,"similarity":round(similarity,3),"remote_key":rk if row else "","league":row.get("league") or row.get("tournament") or "","country":row.get("country") or "","remote_points":len(row.get("points") or []),"remote_market":row.get("best_market") or "","remote_strength":row.get("market_strength",0),"remote_start_odds":row.get("best_market_start_odds"),"remote_last_odds":row.get("best_market_last_odds") or row.get("last_odds"),"top_markets":list(row.get("top_markets") or []),"local_dot":local.dot,"local_delta":local.delta_pp,"remote_dot":remote.dot,"remote_delta":remote.delta_pp,"final_dot":final.dot,"final_delta":final.delta_pp}
 
 def poll_once():
  global LAST_OK,LAST_ERROR
