@@ -78,6 +78,7 @@ import release_build_patch
 from league_signal_gate import filter_for_multi_engine
 import telegram_subscribers
 import telegram_interactive_live_patch
+import owner_market_tape_patch
 import market_test_signal
 from telegram_subscribers import polling_loop,BUILD_ID
 import production_logging
