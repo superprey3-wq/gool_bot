@@ -15,7 +15,6 @@ import candidate_enrichment_patch
 import scores365_enrichment_patch
 import deep_stats_consensus_patch
 import context_adjustment_patch
-import core_warmup_patch
 import halftime_hazard_patch
 import period_market_patch
 import phase_market_patch
