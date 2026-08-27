@@ -8,6 +8,7 @@ os.environ.setdefault("LIVE_SIGNAL_THRESHOLD","75");os.environ.setdefault("LIVE_
 LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
 import visual_feed_unified_bot
+import late_premarket_alert_filter_patch
 import live_candidate_patch
 import core_warmup_patch
 import halftime_hazard_patch
