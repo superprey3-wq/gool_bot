@@ -7,6 +7,7 @@ import requests
 from live_engine import fetch_summary
 from signal_journal import all_signals,update_signal
 BOT_TOKEN=os.getenv("TELEGRAM_BOT_TOKEN","");CHAT_ID=os.getenv("TELEGRAM_CHAT_ID","");MOSCOW=ZoneInfo("Europe/Moscow")
+PREMATCH_MIN_STRENGTH=float(os.getenv("PREMATCH_MIN_STRENGTH","75"))
 
 def _send(text):
     if not BOT_TOKEN or not CHAT_ID:return False
@@ -41,6 +42,22 @@ def _market_goals(scope,fh,fa,hh,ha):
     if scope=="2-й тайм":return (fh+fa)-(hh+ha)
     return fh+fa
 
+def _first_number(row,keys):
+    for key in keys:
+        if key not in row or row.get(key) is None:continue
+        try:return float(row.get(key))
+        except (TypeError,ValueError):continue
+    return None
+
+def _prematch_visible(row):
+    # A known block value of 0 means the event is fully suppressed. Values 1+
+    # remain eligible. Unknown legacy rows are not destroyed from history.
+    block=_first_number(row,("block_count","blocks","blocking_count","block_level","block_score","block"))
+    if block is not None and block<1:return False
+    strength=_first_number(row,("strength","signal_strength","confidence","rating","score","master"))
+    if strength is not None and strength<PREMATCH_MIN_STRENGTH:return False
+    return True
+
 def main():
     today=datetime.now(MOSCOW).date().isoformat();rows=[]
     for row in all_signals():
@@ -48,9 +65,8 @@ def main():
         except Exception:continue
         if created.date().isoformat()!=today:continue
         kind=row.get("kind")
-        # For LIVE, only actual entry decisions are bets. A goal row is merely a
-        # confirmation that an older entry succeeded; followups are service data.
         if kind=="live" and str(row.get("reason") or "signal") not in {"signal","reentry"}:continue
+        if kind=="prematch" and not _prematch_visible(row):continue
         body=fetch_summary(str(row.get("event_id","")))
         if not body:continue
         fh,fa,hh,ha=_score_from_summary(body)
@@ -72,6 +88,6 @@ def main():
     if pre:
         lines += ["","<b>Прогрузы:</b>"]
         for row,res,score in pre[-16:]:lines.append(f"{'✅' if res in {'+','+½'} else '➖' if res=='ВОЗВРАТ' else '❌'} {row.get('home')} — {row.get('away')} | {row.get('scope')} {row.get('side')} {row.get('line')} → {score} ({res})")
-    lines += ["","<i>Статистика считается только по реальным входам GOOL.</i>"];_send("\n".join(lines));return 0
+    lines += ["",f"<i>Прогрузы: блокировка 0 скрывается; при наличии рейтинга показываются только {PREMATCH_MIN_STRENGTH:.0f}+.</i>","<i>Статистика считается только по реальным входам GOOL.</i>"];_send("\n".join(lines));return 0
 
 if __name__=="__main__":raise SystemExit(main())
