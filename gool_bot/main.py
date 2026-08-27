@@ -9,7 +9,6 @@ LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
 LIVE_CYCLE_TIMEOUT_SECONDS=max(90,int(os.getenv("LIVE_CYCLE_TIMEOUT_SECONDS","180")))
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
 import visual_feed_unified_bot
-import late_premarket_alert_filter_patch
 import live_candidate_patch
 import core_warmup_patch
 import halftime_hazard_patch
@@ -31,6 +30,9 @@ import fast_goal_watch
 import multi_engine_runtime
 from telegram_subscribers import polling_loop
 import production_logging
+# IMPORTANT: this must remain the final runtime patch so no later Telegram
+# module can replace or bypass the TOP-load outbound guard.
+import late_premarket_alert_filter_patch
 
 async def health_server():
     port=int(os.getenv("PORT","3000"))
