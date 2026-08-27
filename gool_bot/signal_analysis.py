@@ -30,8 +30,8 @@ def _bucket_minute(m):
 
 def _bucket_rating(v):
     if v is None:return "нет данных"
-    if v<70:return "60–69"
-    if v<80:return "70–79"
+    if v<75:return "<75 legacy"
+    if v<80:return "75–79"
     if v<90:return "80–89"
     return "90+"
 
@@ -84,13 +84,22 @@ def _clv_lines(items):
             lines.append(f"• CLV {sec}s: <b>{avg:+.2f} pp</b> в среднем · положительный {pos}/{len(vals)}")
     return lines
 
+def _next_goal_lines(rows):
+    known=[]
+    for r in rows:
+        v=str(r.get("signal_result") or r.get("result") or "").strip().lower()
+        if v in {"win","won","+"}:known.append(True)
+        elif v in {"loss","lost","-"}:known.append(False)
+    if not known:return []
+    hits=sum(known);return [f"⚽ Next-goal diagnostic: <b>{hits}/{len(known)} · {round(hits/len(known)*100)}%</b>","<i>Это качество прогноза следующего гола, не ROI выбранного рынка.</i>"]
+
 def _engine_section(title,rows):
     items=_settled(rows,_aux_state);lines=["",title]
     if not items:return lines+["• Пока нет закрытых входов."]
     lines.append(_summary_line("Итого",items))
     lines += [""]+_fmt_groups("По минуте входа",_groups(items,lambda r:_bucket_minute(r.get("minute"))),["1–20'","21–40'","41–60'","61–74'","75+'"]) 
     ratings=_groups(items,lambda r:_bucket_rating(_num(r,"strategy_score","master")))
-    if ratings:lines += [""]+_fmt_groups("По рейтингу стратегии",ratings,["60–69","70–79","80–89","90+","нет данных"])
+    if ratings:lines += [""]+_fmt_groups("По рейтингу стратегии",ratings,["<75 legacy","75–79","80–89","90+","нет данных"])
     return lines
 
 def build_analysis_text():
@@ -100,10 +109,13 @@ def build_analysis_text():
     lines=["🧠 <b>GOOL 2.0 — АНАЛИЗ ЗА ВСЁ ВРЕМЯ</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🟡 <b>GOOL CORE · AUDITABLE MARKET RESULTS</b>"]
     if core:
         lines.append(_summary_line("Итого",core))
+        masters=[_num(r,"master") for r,_,_ in core];masters=[x for x in masters if x is not None]
+        if masters:lines.append(f"⭐ Средний MASTER закрытых входов: <b>{sum(masters)/len(masters):.1f}/100</b>")
+        lines += _next_goal_lines([r for r,_,_ in core])
         primary=[x for x in core if str(x[0].get("reason") or "signal")=="signal"];reentry=[x for x in core if str(x[0].get("reason") or "signal")=="reentry"]
         lines += ["","♻️ <b>Первичный vs re-entry</b>",_summary_line("Первичные",primary),_summary_line("После гола",reentry)]
         lines += [""]+_fmt_groups("⏱ По минуте входа",_groups(core,lambda r:_bucket_minute(r.get("minute"))),["1–20'","21–40'","41–60'","61–74'","75+'"]) 
-        lines += [""]+_fmt_groups("⭐ По MASTER",_groups(core,lambda r:_bucket_rating(_num(r,"master"))),["60–69","70–79","80–89","90+","нет данных"])
+        lines += [""]+_fmt_groups("⭐ По MASTER",_groups(core,lambda r:_bucket_rating(_num(r,"master"))),["<75 legacy","75–79","80–89","90+","нет данных"])
         lines += [""]+_fmt_groups("🎯 По выбранному рынку",_groups(core,_market_type))
         edges=_groups(core,lambda r:_bucket_edge(_num(r.get("primary") or {},"selector_edge","value_edge")))
         if edges:lines += [""]+_fmt_groups("📐 По value edge",edges,["<6 pp","6–9.9 pp","10–14.9 pp","15+ pp","нет данных"])
@@ -118,5 +130,5 @@ def build_analysis_text():
     fh=[r for r in all_rows if str(r.get("engine") or "")==FIRST_HALF_GOAL];sh=[r for r in all_rows if str(r.get("engine") or "")==SECOND_HALF_OVER15]
     lines += _engine_section("🔵 <b>ГОЛ В 1-М ТАЙМЕ · СИГНАЛ 15–25'</b>",fh)
     lines += _engine_section("🟣 <b>ТБ1.5 ВО 2-М ТАЙМЕ · РЕШЕНИЕ В ПЕРЕРЫВЕ</b>",sh)
-    lines += ["","<i>Win/ROI CORE считаются только по сохранённой конкретной ставке. Next-goal confirmation больше не подменяет результат рынка.</i>"]
+    lines += ["","<i>Win/ROI CORE считаются только по сохранённой конкретной ставке. Next-goal diagnostic показан отдельно и не подменяет результат рынка.</i>"]
     return "\n".join(lines)
