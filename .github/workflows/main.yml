@@ -35,9 +35,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MIN_MINUTES_TO_KICKOFF: "2"
           MAX_MINUTES_TO_KICKOFF: "9"
-          MIN_BOOKMAKERS: "3"
-          MIN_CONSENSUS: "0.65"
-          MIN_MEDIAN_DROP: "8.0"
-          MAX_SIGNALS_PER_MATCH: "4"
+          MIN_BOOKMAKERS: "4"
+          MIN_CONSENSUS: "0.75"
+          MIN_MEDIAN_DROP: "10.0"
+          MAX_SIGNALS_PER_MATCH: "1"
         run: |
           python prematch_scanner.py
