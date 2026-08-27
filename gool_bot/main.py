@@ -29,6 +29,7 @@ import market_math_patch
 import gool_xg_consensus
 import odds_nonblocking_patch
 import telegram_signal_filter_patch
+import strict_signal_policy_patch
 import telegram_image_signal_patch
 import analytics_card_fallback_patch
 import entry_sync_failopen_patch
@@ -39,6 +40,7 @@ import signal_journal_runtime_patch
 import core_goal_signal_patch
 import goal_reset_patch
 import core_primary_reconcile
+import core_report_truth_patch
 import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
