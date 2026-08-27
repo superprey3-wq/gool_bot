@@ -1,12 +1,28 @@
-"""Owner-only sharp full-match total alerts: LIVE + starts within two hours."""
+"""Owner-only sharp full-match total alerts: LIVE + starts within two hours.
+
+Also stores each delivered alert, enriches it with GOOL/Flashscore LIVE minute+score,
+and settles the recommended total after the match disappears from LIVE.
+"""
 from __future__ import annotations
-import logging,re,threading,time,requests
+import json,logging,os,re,threading,time,requests
+from pathlib import Path
 import market_node_bridge,telegram_subscribers
 from prematch_market_lab import fetch_odds,normalize_odds
 log=logging.getLogger("market_test_signal")
-_LOCK=threading.Lock();_ALERTED=set();_BASELINE=set();_PRIMED=False;TOP_MATCHES=5;WINDOW=7200
+_LOCK=threading.RLock();_ALERTED=set();_BASELINE=set();_PRIMED=False;TOP_MATCHES=5;WINDOW=7200
 _PM_LAST=0.0;_PM_INTERVAL=60;_PM_STATE={};MIN_RECOMMENDED_ODD=1.35
+_LIVE_CTX={};_LAST_LIVE_CTX=0.0
 
+def _store_path():
+ root=Path(os.getenv("RUNTIME_DATA_DIR","/data" if Path("/data").exists() else "."));root.mkdir(parents=True,exist_ok=True);return root/"market_total_alerts.json"
+def _load_store():
+ try:
+  p=_store_path();d=json.loads(p.read_text("utf-8")) if p.exists() else {};return d if isinstance(d,dict) else {}
+ except Exception:return {}
+def _save_store(d):
+ try:
+  p=_store_path();tmp=p.with_suffix(".tmp");tmp.write_text(json.dumps(d,ensure_ascii=False,separators=(",",":")),"utf-8");os.replace(tmp,p)
+ except Exception as e:log.warning("MARKET_TOTAL_STORE_FAIL %s",e)
 def _num(v,d=2):
  try:return f"{float(v):.{d}f}"
  except Exception:return "—"
@@ -40,6 +56,20 @@ def _sharp(s):
 def _price_ok(s):
  try:return float(s.get("last_odds") or 0)>=MIN_RECOMMENDED_ODD
  except Exception:return False
+def _norm(x):return " ".join(re.sub(r"[^a-z0-9]+"," ",str(x or "").lower()).split())
+def _ctx_for(s):
+ fid=str(s.get("fs_id") or s.get("event_id") or "")
+ with _LOCK:
+  if fid and fid in _LIVE_CTX:return dict(_LIVE_CTX[fid])
+  h,a=_norm(s.get("home")),_norm(s.get("away"))
+  for c in _LIVE_CTX.values():
+   if _norm(c.get("home"))==h and _norm(c.get("away"))==a:return dict(c)
+ return {}
+def _enrich(s):
+ x=dict(s);c=_ctx_for(s)
+ if c:
+  x.setdefault("fs_id",c.get("event_id"));x["minute"]=c.get("minute");x["score_at_alert"]=f"{c.get('home_score',0)}:{c.get('away_score',0)}";x["league"]=c.get("league") or x.get("league")
+ return x
 def _eligible_time(s):
  status=str(s.get("status") or s.get("state") or "").casefold()
  if any(x in status for x in ("finished","final","ended")):return False
@@ -64,16 +94,18 @@ def _meaning(s,d):
  if _is_over(s):return "🟢 рынок резко сильнее ждёт голы" if d>0 else "🔴 рынок резко уходит от голов"
  return "🔴 рынок резко сильнее ждёт низ" if d>0 else "🟢 рынок резко уходит от низа"
 def _recommendation(s,d):
- # Positive delta = probability of the displayed side is growing. Negative
- # delta = displayed side is weakening, so direction points to the opposite
- # total. We only print an opposite recommendation without inventing its odds.
  if d>0:return f"🎯 <b>Рекомендованная ставка:</b> <b>{_name(s)}</b> · текущий кэф {_num(s.get('last_odds'))}"
- return f"🎯 <b>Рекомендованное направление:</b> <b>{_opposite_name(s)}</b>\n<i>Кэф противоположной стороны в этом автосигнале не получен — не подставляю выдуманное значение.</i>"
+ return f"🎯 <b>Рекомендованное направление:</b> <b>{_opposite_name(s)}</b>\n<i>Кэф противоположной стороны не получен — не подставляю выдуманное значение.</i>"
 def _message(s):
- d=float(s.get("delta_pp",0) or 0);a=s.get("start_odds");b=s.get("last_odds");p0=_prob(a);p1=_prob(b);sec=max(1,int(s.get("elapsed",0) or 0));arrow="↓" if d>0 else "↑" if d<0 else "→"
- parts=["🚨 <b>ТОП-ПРОГРУЗ ТОТАЛА</b>",f"⚽ <b>{s.get('home') or '?'} — {s.get('away') or '?'}</b>",f"⏱ {_time_label(s)}",f"📊 <b>{_name(s)}</b>","","<b>БЫЛО → СТАЛО</b>",f"Кэф: <b>{_num(a)} → {_num(b)} {arrow}</b>"]
+ s=_enrich(s);d=float(s.get("delta_pp",0) or 0);a=s.get("start_odds");b=s.get("last_odds");p0=_prob(a);p1=_prob(b);sec=max(1,int(s.get("elapsed",0) or 0));arrow="↓" if d>0 else "↑" if d<0 else "→"
+ head=f"⏱ {_time_label(s)}"+(f" · счёт <b>{s.get('score_at_alert')}</b>" if s.get("score_at_alert") else "")
+ parts=["🚨 <b>ТОП-ПРОГРУЗ ТОТАЛА</b>",f"⚽ <b>{s.get('home') or '?'} — {s.get('away') or '?'}</b>",head]
+ if s.get("league"):parts.append(f"🏆 {s.get('league')}")
+ parts.extend([f"📊 <b>{_name(s)}</b>","","<b>БЫЛО → СТАЛО</b>",f"Кэф: <b>{_num(a)} → {_num(b)} {arrow}</b>"])
  if p0 is not None and p1 is not None:parts.append(f"Вероятность: <b>{p0:.0f}% → {p1:.0f}%</b>")
- parts.extend([f"Изменение: <b>{d:+.2f} п.п.</b> за <b>{sec} сек</b>","",_meaning(s,d),"",_recommendation(s,d),"<i>Только тоталы матча ТБ/ТМ · кэф от 1.35 · LIVE или старт ≤2ч · топ-5 · один сигнал на матч.</i>"]);return "\n".join(parts)
+ parts.append(f"Изменение: <b>{d:+.2f} п.п.</b> за <b>{sec} сек</b>")
+ parts.append(f"🔒 Блокировок рынка: <b>{int(s.get('suspends',0) or 0)}</b> · reopen: <b>{int(s.get('reopens',0) or 0)}</b>")
+ parts.extend(["",_meaning(s,d),"",_recommendation(s,d),"<i>Только тоталы матча ТБ/ТМ · кэф от 1.35 · LIVE или старт ≤2ч · топ-5 · один сигнал на матч.</i>"]);return "\n".join(parts)
 def _fetch_live():
  if not market_node_bridge.URL:return []
  try:
@@ -108,9 +140,48 @@ def _pm_rows():
    key=f"{eid}|{market}|{sel}|{line}|{q.get('bookmaker_id')}";prev=_PM_STATE.get(key);_PM_STATE[key]=(now,odd)
    if not prev or now-prev[0]<20:continue
    delta=(1/odd-1/prev[1])*100;elapsed=int(now-prev[0])
-   out.append({"key":"pm:"+eid,"market_key":key,"home":f.get("home"),"away":f.get("away"),"event_id":eid,"market":f"TOTAL {sel}","selection":sel,"last_line":float(line),"start_odds":prev[1],"last_odds":odd,"delta_pp":round(delta,2),"elapsed":elapsed,"start_ts":float(f.get("start_ts") or 0),"status":"prematch"})
+   out.append({"key":"pm:"+eid,"market_key":key,"home":f.get("home"),"away":f.get("away"),"event_id":eid,"fs_id":eid,"league":f.get("league"),"market":f"TOTAL {sel}","selection":sel,"last_line":float(line),"start_odds":prev[1],"last_odds":odd,"delta_pp":round(delta,2),"elapsed":elapsed,"start_ts":float(f.get("start_ts") or 0),"status":"prematch","suspends":0,"reopens":0})
  log.info("MARKET_PREMATCH_SCAN fixtures=%d movements=%d",len(near),len(out));return out
-def _mid(s):return str(s.get("key") or f"{s.get('home')}|{s.get('away')}")
+def _mid(s):return str(s.get("fs_id") or s.get("key") or f"{s.get('home')}|{s.get('away')}")
+def _recommended_side(s):
+ d=float(s.get("delta_pp",0) or 0);over=_is_over(s);return "over" if (over and d>0) or ((not over) and d<0) else "under"
+def _record_alert(s):
+ x=_enrich(s);rid=_mid(x);d=_load_store();rows=d.setdefault("alerts",{});now=int(time.time())
+ rows[rid]={"id":rid,"event_id":str(x.get("fs_id") or x.get("event_id") or ""),"home":x.get("home"),"away":x.get("away"),"league":x.get("league"),"created_ts":now,"minute":x.get("minute"),"score_at_alert":x.get("score_at_alert"),"line":x.get("last_line"),"side":_recommended_side(x),"shown_market":_name(x),"recommended_market":_name(x) if float(x.get("delta_pp",0) or 0)>0 else _opposite_name(x),"odd":x.get("last_odds") if float(x.get("delta_pp",0) or 0)>0 else None,"delta_pp":x.get("delta_pp"),"suspends":int(x.get("suspends",0) or 0),"reopens":int(x.get("reopens",0) or 0),"status":"tracking","last_seen_ts":now,"last_score":x.get("score_at_alert")}
+ _save_store(d)
+def _settle(side,line,score):
+ try:h,a=map(int,str(score).split(":",1));total=h+a;ln=float(line)
+ except Exception:return "unknown"
+ if total==ln:return "push"
+ return "win" if (side=="over" and total>ln) or (side=="under" and total<ln) else "loss"
+def update_live_context(live):
+ global _LAST_LIVE_CTX
+ now=time.time();ctx={}
+ for m in live or []:
+  eid=str(getattr(m,"event_id","") or "")
+  if not eid:continue
+  ctx[eid]={"event_id":eid,"home":getattr(m,"home",""),"away":getattr(m,"away",""),"league":getattr(m,"league","") or getattr(m,"tournament",""),"minute":getattr(m,"minute",0),"home_score":int(getattr(m,"home_score",0) or 0),"away_score":int(getattr(m,"away_score",0) or 0)}
+ with _LOCK:_LIVE_CTX.clear();_LIVE_CTX.update(ctx);_LAST_LIVE_CTX=now
+ d=_load_store();changed=False
+ for r in (d.get("alerts") or {}).values():
+  if not isinstance(r,dict) or r.get("status")!="tracking":continue
+  eid=str(r.get("event_id") or "");c=ctx.get(eid)
+  if c:
+   r["last_seen_ts"]=int(now);r["last_score"]=f"{c['home_score']}:{c['away_score']}";changed=True;continue
+  last=float(r.get("last_seen_ts",0) or 0)
+  if last and now-last>=600 and r.get("last_score"):
+   res=_settle(r.get("side"),r.get("line"),r.get("last_score"));r.update({"status":"settled" if res!="unknown" else "unknown","result":res,"final_score":r.get("last_score"),"settled_ts":int(now)});changed=True
+ if changed:_save_store(d)
+def build_results_text():
+ d=_load_store();rows=[x for x in (d.get("alerts") or {}).values() if isinstance(x,dict)];rows.sort(key=lambda x:int(x.get("created_ts",0) or 0));settled=[r for r in rows if r.get("result") in ("win","loss","push")];w=sum(r.get("result")=="win" for r in settled);l=sum(r.get("result")=="loss" for r in settled);p=sum(r.get("result")=="push" for r in settled);dec=w+l;acc=round(100*w/dec,1) if dec else 0
+ lines=["📊 <b>ИТОГИ ПРОГРУЗОВ</b>",f"Закрыто: <b>{len(settled)}</b> · ✅ {w} · ❌ {l} · ↩️ {p}"+(f" · точность <b>{acc}%</b>" if dec else ""),""]
+ for r in settled[-10:][::-1]:
+  mark="✅" if r.get("result")=="win" else "❌" if r.get("result")=="loss" else "↩️";od=f" @ {float(r['odd']):.2f}" if r.get("odd") else "";entry=(f" · {r.get('minute')}' · {r.get('score_at_alert')}" if r.get("minute") else "")
+  lines.append(f"{mark} <b>{r.get('home')} — {r.get('away')}</b>{entry}\n   🎯 {r.get('recommended_market')}{od} · итог <b>{r.get('final_score') or '—'}</b> · 🔒 {r.get('suspends',0)}")
+ tracking=sum(r.get("status")=="tracking" for r in rows)
+ if tracking:lines.extend(["",f"⏳ Сейчас отслеживается: <b>{tracking}</b>"])
+ if not rows:lines.append("Пока сохранённых автопрогрузов нет.")
+ return "\n".join(lines)
 def scan_once():
  global _PRIMED
  live=_fetch_live();prematch=_pm_rows();raw=live+prematch;totals=[s for s in raw if _total(s)];priced=[s for s in totals if _price_ok(s)];sharp=[s for s in priced if _sharp(s)];signals=[s for s in sharp if _eligible_time(s)]
@@ -130,7 +201,7 @@ def scan_once():
    if k in _BASELINE or k in _ALERTED:continue
    _ALERTED.add(k)
   ok=telegram_subscribers._post_message(owner,_message(s))
-  if ok:sent+=1;log.info("MARKET_TOTAL_TOP5_SENT match=%s market=%s delta=%+.2f",k,_name(s),float(s.get("delta_pp",0) or 0))
+  if ok:_record_alert(s);sent+=1;log.info("MARKET_TOTAL_TOP5_SENT match=%s market=%s delta=%+.2f",k,_name(s),float(s.get("delta_pp",0) or 0))
   else:
    with _LOCK:_ALERTED.discard(k)
  return sent
