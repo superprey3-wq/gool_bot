@@ -2,14 +2,18 @@
 
 Only strong, repeat-confirmed market moves are allowed through. LIVE alerts are
 strictly time-gated to avoid natural end-game repricing being treated as steam.
+The guard is applied both to the normal visual sender and to any direct
+requests.post(.../sendMessage) path inside this process.
 """
 from __future__ import annotations
 import logging, os, re
+import requests
 import visual_feed_unified_bot as vf
 
 logger=logging.getLogger("smart_topload_alert_filter")
 _orig_send_text=vf._send_text
 _orig_send_text_to_chat=vf._send_text_to_chat
+_orig_requests_post=requests.post
 
 _TOP_MARKER="ТОП-ПРОГРУЗ ТОТАЛА"
 _LIVE_MINUTE_RE=re.compile(r"\bLIVE\s*·\s*(\d{1,3})'",re.IGNORECASE)
@@ -28,6 +32,11 @@ LATE_MIN_REOPEN=int(os.getenv("TOPLOAD_LATE_MIN_REOPEN","3"))
 LATE_MIN_MOVE_PP=float(os.getenv("TOPLOAD_LATE_MIN_MOVE_PP","10.0"))
 STRONG_MOVE_PP=float(os.getenv("TOPLOAD_STRONG_MOVE_PP","10.0"))
 
+class _SuppressedResponse:
+ status_code=200
+ ok=True
+ text='{"ok":true,"result":{"message_id":0}}'
+ def json(self):return {"ok":True,"result":{"message_id":0}}
 
 def _decision(text):
  text=str(text or "")
@@ -38,50 +47,55 @@ def _decision(text):
  try: move=float(c.group(1).replace(",",".")) if c else None
  except ValueError: move=None
  magnitude=abs(move) if move is not None else None
-
- # Unknown evidence is fail-closed for TOP-load alerts.
  if blocks is None or reopen is None or magnitude is None:
-  logger.info("TOP_LOAD_SUPPRESS reason=missing_evidence blocks=%s reopen=%s move=%s",blocks,reopen,move)
-  return "SUPPRESS",text
+  logger.info("TOP_LOAD_SUPPRESS reason=missing_evidence blocks=%s reopen=%s move=%s",blocks,reopen,move);return "SUPPRESS",text
  if blocks<MIN_BLOCKS:
-  logger.info("TOP_LOAD_SUPPRESS reason=blocks blocks=%d min=%d",blocks,MIN_BLOCKS)
-  return "SUPPRESS",text
+  logger.info("TOP_LOAD_SUPPRESS reason=blocks blocks=%d min=%d",blocks,MIN_BLOCKS);return "SUPPRESS",text
  if reopen<MIN_REOPEN:
-  logger.info("TOP_LOAD_SUPPRESS reason=reopen reopen=%d min=%d",reopen,MIN_REOPEN)
-  return "SUPPRESS",text
+  logger.info("TOP_LOAD_SUPPRESS reason=reopen reopen=%d min=%d",reopen,MIN_REOPEN);return "SUPPRESS",text
  if magnitude<MIN_MOVE_PP:
-  logger.info("TOP_LOAD_SUPPRESS reason=weak_move move=%.2f min=%.2f",magnitude,MIN_MOVE_PP)
-  return "SUPPRESS",text
-
+  logger.info("TOP_LOAD_SUPPRESS reason=weak_move move=%.2f min=%.2f",magnitude,MIN_MOVE_PP);return "SUPPRESS",text
  if minute is not None:
   if minute>MAX_LIVE_MINUTE:
-   logger.info("TOP_LOAD_SUPPRESS reason=late_live minute=%d max=%d",minute,MAX_LIVE_MINUTE)
-   return "SUPPRESS",text
+   logger.info("TOP_LOAD_SUPPRESS reason=late_live minute=%d max=%d",minute,MAX_LIVE_MINUTE);return "SUPPRESS",text
   if minute>=LATE_LIVE_FROM and (blocks<LATE_MIN_BLOCKS or reopen<LATE_MIN_REOPEN or magnitude<LATE_MIN_MOVE_PP):
-   logger.info("TOP_LOAD_SUPPRESS reason=late_weak minute=%d blocks=%d reopen=%d move=%.2f",minute,blocks,reopen,magnitude)
-   return "SUPPRESS",text
-
- # A move against one side is not proof that the opposite side is value.
+   logger.info("TOP_LOAD_SUPPRESS reason=late_weak minute=%d blocks=%d reopen=%d move=%.2f",minute,blocks,reopen,magnitude);return "SUPPRESS",text
  if _NO_OPPOSITE in text:
   text=_RECOMMEND_RE.sub("🧭 Рыночное направление: \\1",text)
   text=text.replace(_NO_OPPOSITE+" — не подставляю выдуманное значение.","⚠️ VALUE НЕ ПОДТВЕРЖДЁН: коэффициент противоположной стороны не получен. Это наблюдение за рынком, не готовая ставка.")
-
  label="CONFIRMED STEAM" if magnitude>=STRONG_MOVE_PP and blocks>=4 and reopen>=3 else "STRONG MOVE"
  if f"🧠 Статус: {label}" not in text:text=text.replace(_TOP_MARKER,_TOP_MARKER+f"\n🧠 Статус: {label}",1)
  return "PASS",text
-
 
 def _send_text(text):
  action,text=_decision(text)
  if action=="SUPPRESS":return False
  return _orig_send_text(text)
 
-
 def _send_text_to_chat(token,chat_id,text):
  action,text=_decision(text)
  if action=="SUPPRESS":return False
  return _orig_send_text_to_chat(token,chat_id,text)
 
+def _guarded_post(url,*args,**kwargs):
+ if "api.telegram.org" in str(url) and "/sendMessage" in str(url):
+  payload=kwargs.get("json")
+  if isinstance(payload,dict) and isinstance(payload.get("text"),str) and _TOP_MARKER in payload["text"]:
+   action,new_text=_decision(payload["text"])
+   if action=="SUPPRESS":
+    logger.info("TOP_LOAD_HTTP_SUPPRESS direct requests.post sendMessage")
+    return _SuppressedResponse()
+   payload=dict(payload);payload["text"]=new_text;kwargs["json"]=payload
+  data=kwargs.get("data")
+  if isinstance(data,dict) and isinstance(data.get("text"),str) and _TOP_MARKER in data["text"]:
+   action,new_text=_decision(data["text"])
+   if action=="SUPPRESS":
+    logger.info("TOP_LOAD_HTTP_SUPPRESS direct requests.post sendMessage(data)")
+    return _SuppressedResponse()
+   data=dict(data);data["text"]=new_text;kwargs["data"]=data
+ return _orig_requests_post(url,*args,**kwargs)
+
 vf._send_text=_send_text
 vf._send_text_to_chat=_send_text_to_chat
-logger.info("SMART_TOPLOAD_GATE enabled max_live=%d late_from=%d blocks=%d reopen=%d move=%.1f",MAX_LIVE_MINUTE,LATE_LIVE_FROM,MIN_BLOCKS,MIN_REOPEN,MIN_MOVE_PP)
+requests.post=_guarded_post
+logger.info("SMART_TOPLOAD_GATE enabled max_live=%d late_from=%d blocks=%d reopen=%d move=%.1f http_guard=on",MAX_LIVE_MINUTE,LATE_LIVE_FROM,MIN_BLOCKS,MIN_REOPEN,MIN_MOVE_PP)
