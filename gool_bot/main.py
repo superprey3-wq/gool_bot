@@ -8,7 +8,6 @@ os.environ.setdefault("LIVE_SIGNAL_THRESHOLD","75");os.environ.setdefault("LIVE_
 LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
 import visual_feed_unified_bot
-import late_premarket_alert_filter_patch
 import xg_proxy_patch
 import live_only_recommendation_patch
 import live_candidate_patch
@@ -51,6 +50,8 @@ import live_button_emergency_patch
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop
 import production_logging
+# Must remain the final runtime patch so no later Telegram layer can bypass it.
+import late_premarket_alert_filter_patch
 async def run_live():
  try:
   started=time.monotonic();live=await visual_feed_unified_bot.unified_bot.discover_live_matches();discovery=time.monotonic()-started
