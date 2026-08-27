@@ -4,7 +4,8 @@ Auxiliary strategies next to CORE:
 1) FIRST_HALF_GOAL observes the match from kickoff and may signal at 15'-25'.
 2) SECOND_HALF_OVER15 decides at half-time for Over 1.5 goals in the 2nd half.
 
-Clock time can strengthen evidence but never create it.
+Clock time can strengthen evidence but never create it.  The auxiliary engines are
+intentionally stricter than CORE because their historical hit rates are lower.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -46,7 +47,8 @@ def time_weight(minute:int,engine:str)->float:
     return 1.0+0.18*progress
 
 def trend_score(d:Mapping[str,float],minute:int=0,engine:str=CORE)->float:
-    raw=(float(d.get("xg",0))*36+float(d.get("xgot",0))*22+float(d.get("shots",0))*4.5+float(d.get("shots_on_target",0))*11+float(d.get("big_chances",0))*18+float(d.get("corners",0))*2.5+float(d.get("shots_inside_box",0))*3+float(d.get("touches_box",0))*.85)
+    # Chance quality (xG/xGOT/big chances/SOT) deliberately dominates raw volume.
+    raw=(float(d.get("xg",0))*40+float(d.get("xgot",0))*25+float(d.get("shots",0))*3.5+float(d.get("shots_on_target",0))*13+float(d.get("big_chances",0))*21+float(d.get("corners",0))*2+float(d.get("shots_inside_box",0))*4+float(d.get("touches_box",0))*.75)
     return round(max(0.0,min(100.0,raw*time_weight(minute,engine))),1)
 
 def cooldown_ready(current_minute:int,last_goal_minute:int|None)->bool:return last_goal_minute is None or int(current_minute)-int(last_goal_minute)>=POST_GOAL_COOLDOWN_MINUTES
@@ -61,12 +63,21 @@ def first_half_goal(minute:int,d:Mapping[str,float],last_goal_minute:int|None=No
     if minute<FH_SIGNAL_FROM:return EngineDecision(FIRST_HALF_GOAL,False,score,"collecting from kickoff")
     if minute>FH_SIGNAL_TO:return EngineDecision(FIRST_HALF_GOAL,False,score,"first-half entry window closed at 25'")
     if not cooldown_ready(minute,last_goal_minute):return EngineDecision(FIRST_HALF_GOAL,False,score,"post-goal cooldown")
-    evidence=sum((d.get("xg",0)>=.18,d.get("xgot",0)>=.15,d.get("shots",0)>=2,d.get("shots_on_target",0)>=1,d.get("big_chances",0)>=1,d.get("touches_box",0)>=5))
-    needed=3 if minute>=22 else 2
-    return EngineDecision(FIRST_HALF_GOAL,score>=64 and evidence>=needed,score,f"kickoff trend evidence={evidence}/{needed}; time_weight={time_weight(minute,FIRST_HALF_GOAL):.3f}; timing={float(timing_bonus or 0):+.1f}")
+
+    xg=float(d.get("xg",0) or 0);xgot=float(d.get("xgot",0) or 0);shots=float(d.get("shots",0) or 0);sot=float(d.get("shots_on_target",0) or 0);big=float(d.get("big_chances",0) or 0);inside=float(d.get("shots_inside_box",0) or 0);touches=float(d.get("touches_box",0) or 0)
+    # Require both quality and sustained pressure. Possession/corners alone never qualify.
+    quality=(xg>=.32 or xgot>=.28 or big>=1 or sot>=2)
+    pressure=(shots>=4 and (inside>=2 or touches>=8))
+    evidence=sum((xg>=.32,xgot>=.28,shots>=4,sot>=2,big>=1,inside>=2,touches>=8))
+    needed=4 if minute>=22 else 3
+    eligible=score>=74 and quality and pressure and evidence>=needed
+    return EngineDecision(FIRST_HALF_GOAL,eligible,score,f"kickoff trend quality={int(quality)} pressure={int(pressure)} evidence={evidence}/{needed}; xG={xg:.2f}; SOT={sot:.0f}; box={inside:.0f}; timing={float(timing_bonus or 0):+.1f}")
 
 def second_half_over15(stats:Mapping[str,object],timing_bonus:float=0)->EngineDecision:
     xg=_total(stats,"xg");xgot=_total(stats,"xgot");shots=_total(stats,"shots");sot=_total(stats,"shots_on_target");big=_total(stats,"big_chances");inside=_total(stats,"shots_inside_box");touches=_total(stats,"touches_box");corners=_total(stats,"corners")
-    raw=xg*20+xgot*14+shots*1.35+sot*4.5+big*8+inside*1.2+touches*.28+corners*.8;score=_adjust(min(100.0,raw),timing_bonus)
-    evidence=sum((xg>=1.15,xgot>=.85,shots>=12,sot>=4,big>=2,inside>=6,touches>=20,corners>=4))
-    return EngineDecision(SECOND_HALF_OVER15,score>=70 and evidence>=4,score,f"1H evidence={evidence}; xG={xg:.2f}; SOT={sot:.0f}; timing={float(timing_bonus or 0):+.1f}")
+    raw=xg*23+xgot*16+shots*1.1+sot*5.5+big*10+inside*1.5+touches*.25+corners*.6;score=_adjust(min(100.0,raw),timing_bonus)
+    quality=(xg>=1.35 or xgot>=1.05 or big>=3) and sot>=4
+    pressure=shots>=13 and inside>=7 and touches>=22
+    evidence=sum((xg>=1.35,xgot>=1.05,shots>=13,sot>=5,big>=2,inside>=7,touches>=22,corners>=5))
+    eligible=score>=78 and quality and pressure and evidence>=5
+    return EngineDecision(SECOND_HALF_OVER15,eligible,score,f"1H quality={int(quality)} pressure={int(pressure)} evidence={evidence}/5; xG={xg:.2f}; xGOT={xgot:.2f}; SOT={sot:.0f}; big={big:.0f}; box={inside:.0f}; timing={float(timing_bonus or 0):+.1f}")
