@@ -11,7 +11,7 @@ import unified_bot
 from live_engine import fetch_stats,fetch_summary,parse_stats,parse_goal_timeline
 from signal_journal import add_signal,all_signals,update_signal
 from telegram_subscribers import get_subscribers
-from multi_engine import FIRST_HALF_GOAL,SECOND_HALF_OVER15,delta,first_half_goal,second_half_over15,snapshot
+from multi_engine import FIRST_HALF_GOAL,SECOND_HALF_OVER15,delta,first_half_goal,second_half_over15,snapshot,halftime_context
 from multi_engine_card import render_engine_card
 from robust_goal_cooldown_patch import active as persistent_goal_cooldown
 from goal_timing import context as timing_context
@@ -50,7 +50,8 @@ def _send_all(match,engine,score,d,odd,result=None):
 def _journal_key(engine,eid):return f"engine:{engine}:{eid}"
 def _record(match,engine,score,d,market):
  primary=_primary(engine,market,score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15"
- row={"journal_version":6,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"reason":reason,"result":"pending","signal_result":"pending","stake_units":1.0}
+ row={"journal_version":7,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"reason":reason,"result":"pending","signal_result":"pending","stake_units":1.0}
+ if engine==SECOND_HALF_OVER15 and isinstance(d.get("_score_context"),dict):row["score_context"]=d["_score_context"]
  if primary:row.update({"odd":primary["odd"],"primary":primary,"market_status":primary["market_status"],"odds_display_only":True})
  else:row.update({"odd":None,"primary":None,"market_status":"NO_PRICE","odds_display_only":True})
  return add_signal(row,_journal_key(engine,match.event_id))
@@ -98,7 +99,7 @@ def scan_engines(live):
    if not body:continue
    stats=parse_stats(body)
    if not stats:continue
-   timing=timing_context(m,SECOND_HALF_OVER15);dec=second_half_over15(stats,timing.get("bonus",0));d=snapshot(stats);d["_timing"]=timing
+   timing=timing_context(m,SECOND_HALF_OVER15);score_ctx=halftime_context(stats,int(getattr(m,"home_score",0) or 0),int(getattr(m,"away_score",0) or 0));dec=second_half_over15(stats,timing.get("bonus",0),score_ctx);d=snapshot(stats);d["_timing"]=timing;d["_score_context"]=score_ctx
    if not dec.eligible:continue
    c["ht_eligible"]+=1;market=_ht_market(m)
   else:continue
