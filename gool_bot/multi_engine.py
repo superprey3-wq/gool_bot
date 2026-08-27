@@ -33,6 +33,10 @@ def _total(stats:Mapping,key:str)->float:
     try:a,b=stats.get(key,(0,0));return float(a)+float(b)
     except Exception:return 0.0
 
+def _sides(stats:Mapping,key:str)->tuple[float,float]:
+    try:a,b=stats.get(key,(0,0));return float(a),float(b)
+    except Exception:return 0.0,0.0
+
 def snapshot(stats:Mapping)->dict[str,float]:return {k:round(_total(stats,k),3) for k in TREND_KEYS}
 
 def delta(stats:Mapping,baseline:Mapping|None)->dict[str,float]:
@@ -47,7 +51,6 @@ def time_weight(minute:int,engine:str)->float:
     return 1.0+0.18*progress
 
 def trend_score(d:Mapping[str,float],minute:int=0,engine:str=CORE)->float:
-    # Chance quality (xG/xGOT/big chances/SOT) deliberately dominates raw volume.
     raw=(float(d.get("xg",0))*40+float(d.get("xgot",0))*25+float(d.get("shots",0))*3.5+float(d.get("shots_on_target",0))*13+float(d.get("big_chances",0))*21+float(d.get("corners",0))*2+float(d.get("shots_inside_box",0))*4+float(d.get("touches_box",0))*.75)
     return round(max(0.0,min(100.0,raw*time_weight(minute,engine))),1)
 
@@ -63,9 +66,7 @@ def first_half_goal(minute:int,d:Mapping[str,float],last_goal_minute:int|None=No
     if minute<FH_SIGNAL_FROM:return EngineDecision(FIRST_HALF_GOAL,False,score,"collecting from kickoff")
     if minute>FH_SIGNAL_TO:return EngineDecision(FIRST_HALF_GOAL,False,score,"first-half entry window closed at 25'")
     if not cooldown_ready(minute,last_goal_minute):return EngineDecision(FIRST_HALF_GOAL,False,score,"post-goal cooldown")
-
     xg=float(d.get("xg",0) or 0);xgot=float(d.get("xgot",0) or 0);shots=float(d.get("shots",0) or 0);sot=float(d.get("shots_on_target",0) or 0);big=float(d.get("big_chances",0) or 0);inside=float(d.get("shots_inside_box",0) or 0);touches=float(d.get("touches_box",0) or 0)
-    # Require both quality and sustained pressure. Possession/corners alone never qualify.
     quality=(xg>=.32 or xgot>=.28 or big>=1 or sot>=2)
     pressure=(shots>=4 and (inside>=2 or touches>=8))
     evidence=sum((xg>=.32,xgot>=.28,shots>=4,sot>=2,big>=1,inside>=2,touches>=8))
@@ -73,11 +74,47 @@ def first_half_goal(minute:int,d:Mapping[str,float],last_goal_minute:int|None=No
     eligible=score>=74 and quality and pressure and evidence>=needed
     return EngineDecision(FIRST_HALF_GOAL,eligible,score,f"kickoff trend quality={int(quality)} pressure={int(pressure)} evidence={evidence}/{needed}; xG={xg:.2f}; SOT={sot:.0f}; box={inside:.0f}; timing={float(timing_bonus or 0):+.1f}")
 
-def second_half_over15(stats:Mapping[str,object],timing_bonus:float=0)->EngineDecision:
+def halftime_context(stats:Mapping[str,object],home_score:int,away_score:int)->dict[str,object]:
+    """Score-state + in-match strength proxy for the 2H engine.
+
+    We deliberately call this a proxy, not a pre-match rating.  It uses first-half
+    chance quality and pressure by side.  A true favourite/underdog flag can be
+    layered on later when reliable pre-match prices are present.
+    """
+    hxg,axg=_sides(stats,"xg");hsot,asot=_sides(stats,"shots_on_target");hbig,abig=_sides(stats,"big_chances");hbox,abox=_sides(stats,"shots_inside_box")
+    hpower=hxg*3.2+hsot*.9+hbig*1.6+hbox*.22
+    apower=axg*3.2+asot*.9+abig*1.6+abox*.22
+    gap=hpower-apower
+    if abs(gap)<1.1:strong="balanced"
+    else:strong="home" if gap>0 else "away"
+    margin=int(home_score)-int(away_score)
+    bonus=0.0;tag="balanced_score"
+    if margin==0:
+        bonus=3.0;tag="draw_open"
+    elif abs(margin)==1:
+        leader="home" if margin>0 else "away";trailer="away" if margin>0 else "home"
+        if strong==trailer:
+            bonus=6.0;tag="stronger_team_trailing"
+        elif strong==leader:
+            bonus=0.5;tag="stronger_team_leads_narrow"
+        else:
+            bonus=2.0;tag="one_goal_game"
+    else:
+        leader="home" if margin>0 else "away"
+        if strong==leader:
+            bonus=-8.0;tag="strong_team_comfortable_lead"
+        else:
+            bonus=-3.0;tag="two_goal_margin"
+    return {"strong_side":strong,"home_power":round(hpower,2),"away_power":round(apower,2),"score_margin":margin,"bonus":bonus,"tag":tag}
+
+def second_half_over15(stats:Mapping[str,object],timing_bonus:float=0,score_context:Mapping[str,object]|None=None)->EngineDecision:
     xg=_total(stats,"xg");xgot=_total(stats,"xgot");shots=_total(stats,"shots");sot=_total(stats,"shots_on_target");big=_total(stats,"big_chances");inside=_total(stats,"shots_inside_box");touches=_total(stats,"touches_box");corners=_total(stats,"corners")
-    raw=xg*23+xgot*16+shots*1.1+sot*5.5+big*10+inside*1.5+touches*.25+corners*.6;score=_adjust(min(100.0,raw),timing_bonus)
+    context_bonus=float((score_context or {}).get("bonus",0) or 0)
+    raw=xg*23+xgot*16+shots*1.1+sot*5.5+big*10+inside*1.5+touches*.25+corners*.6;score=_adjust(min(100.0,raw),float(timing_bonus or 0)+context_bonus)
     quality=(xg>=1.35 or xgot>=1.05 or big>=3) and sot>=4
     pressure=shots>=13 and inside>=7 and touches>=22
     evidence=sum((xg>=1.35,xgot>=1.05,shots>=13,sot>=5,big>=2,inside>=7,touches>=22,corners>=5))
-    eligible=score>=78 and quality and pressure and evidence>=5
-    return EngineDecision(SECOND_HALF_OVER15,eligible,score,f"1H quality={int(quality)} pressure={int(pressure)} evidence={evidence}/5; xG={xg:.2f}; xGOT={xgot:.2f}; SOT={sot:.0f}; big={big:.0f}; box={inside:.0f}; timing={float(timing_bonus or 0):+.1f}")
+    tag=str((score_context or {}).get("tag") or "no_score_context")
+    stricter=tag=="strong_team_comfortable_lead"
+    eligible=score>=(84 if stricter else 78) and quality and pressure and evidence>=(6 if stricter else 5)
+    return EngineDecision(SECOND_HALF_OVER15,eligible,score,f"1H quality={int(quality)} pressure={int(pressure)} evidence={evidence}/{6 if stricter else 5}; xG={xg:.2f}; xGOT={xgot:.2f}; SOT={sot:.0f}; big={big:.0f}; box={inside:.0f}; timing={float(timing_bonus or 0):+.1f}; score_ctx={tag} {context_bonus:+.1f}")
