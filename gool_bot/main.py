@@ -26,6 +26,7 @@ from league_signal_gate import filter_for_multi_engine
 import telegram_subscribers,subscriber_persistence_patch,telegram_interactive_live_patch,owner_market_tape_patch,market_test_signal,market_total_results_telegram_patch,market_spike_signal,market_recommendation_results,market_results_telegram_patch
 from telegram_subscribers import polling_loop,BUILD_ID
 import production_logging
+import market_test_signal_strict_patch
 _mem("imports_done")
 
 async def run_live():
