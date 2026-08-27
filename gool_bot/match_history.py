@@ -6,7 +6,7 @@ from live_engine import _feed
 
 @dataclass
 class PastMatch:
-    home:str;away:str;home_goals:int;away_goals:int;competition:str="";timestamp:int=0
+    home:str;away:str;home_goals:int;away_goals:int;competition:str="";timestamp:int=0;event_id:str=""
     @property
     def total(self)->int:return self.home_goals+self.away_goals
 
@@ -24,6 +24,16 @@ def _fields(record:str)->dict[str,str]:
 
 def _norm(value:str)->str:return " ".join((value or "").replace("*","").lower().split())
 
+def _event_id(fields:dict[str,str])->str:
+    # Flashscore uses AA for event id. Some H2H payloads wrap the first field,
+    # so also scan values conservatively for the usual 8-char event token.
+    direct=str(fields.get("AA") or "").strip()
+    if len(direct)==8 and direct.isalnum():return direct
+    for value in fields.values():
+        v=str(value or "").strip()
+        if len(v)==8 and v.isalnum():return v
+    return ""
+
 def _past(fields:dict[str,str])->PastMatch|None:
     if fields.get("AC") not in {"3","36","37"}:return None
     try:hg=int(float(fields.get("KU","")));ag=int(float(fields.get("KT","")))
@@ -32,7 +42,7 @@ def _past(fields:dict[str,str])->PastMatch|None:
     if not home or not away:return None
     try:ts=int(float(fields.get("KC","0") or 0))
     except (TypeError,ValueError):ts=0
-    return PastMatch(home,away,hg,ag,fields.get("KF",""),ts)
+    return PastMatch(home,away,hg,ag,fields.get("KF",""),ts,_event_id(fields))
 
 def fetch_match_history(event_id:str,home:str,away:str,limit:int=5)->HistoryContext:
     body=_feed(f"df_hh_1_{event_id}")
