@@ -133,19 +133,39 @@ def _summary_lines(title,rows,state_fn):
     return lines,m
 
 
+def _core_quality_lines(rows):
+    masters=[];goal_known=[]
+    for r in rows:
+        try:
+            v=float(r.get("master"))
+            masters.append(v)
+        except (TypeError,ValueError):pass
+        s=str(r.get("signal_result") or "").strip().lower()
+        if s in {"win","won","+"}:goal_known.append(True)
+        elif s in {"loss","lost","-"}:goal_known.append(False)
+    lines=[]
+    if masters:
+        lines.append(f"⭐ Средний MASTER: <b>{sum(masters)/len(masters):.1f}/100</b> · 80+: <b>{sum(x>=80 for x in masters)}/{len(masters)}</b>")
+    if goal_known:
+        hits=sum(goal_known);lines.append(f"⚽ Next-goal diagnostic: <b>{hits}/{len(goal_known)} · {round(hits/len(goal_known)*100)}%</b>")
+        lines.append("<i>Next-goal — диагностика прогноза, не результат конкретной ставки.</i>")
+    return lines
+
+
 def build_report_text()->str:
     rows=_today_rows();core_rows=_live_signal_rows(rows);fh_rows=_engine_rows(rows,FIRST_HALF_GOAL);sh_rows=_engine_rows(rows,SECOND_HALF_OVER15)
     initial=sum(1 for r in core_rows if str(r.get("reason") or "signal")=="signal");reentries=sum(1 for r in core_rows if str(r.get("reason") or "signal")=="reentry")
-    lines=["📊 <b>GOOL 2.0 — ОТЧЁТ НА СЕЙЧАС</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🟡 <b>GOOL CORE · РЕАЛЬНЫЙ РЫНОК</b>",f"Первичных: <b>{initial}</b> · re-entry: <b>{reentries}</b>"]
-    core_lines,core_m=_summary_lines("",core_rows,_core_state);lines+=core_lines[1:]
+    lines=["📊 <b>GOOL 2.0 — УМНЫЙ ОТЧЁТ НА СЕЙЧАС</b>",f"🗓 {datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M')}","","🟡 <b>GOOL CORE · РЕАЛЬНЫЙ РЫНОК</b>",f"Первичных: <b>{initial}</b> · re-entry: <b>{reentries}</b>"]
+    core_lines,core_m=_summary_lines("",core_rows,_core_state);lines+=core_lines[1:];lines+=_core_quality_lines(core_rows)
     if core_rows:
         lines.append("<b>Последние CORE-входы:</b>")
         for r,state,pnl in core_m["states"][-8:]:
             mark="✅" if state=="win" else "❌" if state=="loss" else "↩️" if state=="push" else "⏳"
             odd=(r.get("primary") or {}).get("odd") or r.get("odd");odd_txt=f" @{float(odd):.2f}" if odd else ""
-            lines.append(f"{mark} {r.get('home')} — {r.get('away')} | {r.get('minute')}' · {_market_label(r)}{odd_txt}"+(f" · {float(pnl):+.2f}u" if pnl is not None else ""))
+            master=r.get("master");master_txt=f" · M{float(master):.0f}" if master is not None else ""
+            lines.append(f"{mark} {r.get('home')} — {r.get('away')} | {r.get('minute')}' · {_market_label(r)}{odd_txt}{master_txt}"+(f" · {float(pnl):+.2f}u" if pnl is not None else ""))
     fh_lines,_=_summary_lines("🔵 <b>1-Й ТАЙМ · ГОЛ 15–25'</b>",fh_rows,_aux_state);lines+=fh_lines
     sh_lines,_=_summary_lines("🟣 <b>2-Й ТАЙМ · ТБ1.5 В ПЕРЕРЫВЕ</b>",sh_rows,_aux_state);lines+=sh_lines
     if not rows:lines += ["","Сегодня в журнале пока нет сигналов."]
-    lines += ["","<i>CORE считается по сохранённой конкретной ставке и PnL, а не по факту любого следующего гола.</i>"]
+    lines += ["","<i>CORE ROI считается только по сохранённой конкретной ставке. Сила сигнала и факт следующего гола показаны отдельно, чтобы не завышать результативность.</i>"]
     return "\n".join(lines)
