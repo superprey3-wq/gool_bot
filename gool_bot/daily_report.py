@@ -5,6 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import requests
 from live_engine import fetch_summary
+from market_settlement import settle_primary
 from signal_journal import all_signals,update_signal
 BOT_TOKEN=os.getenv("TELEGRAM_BOT_TOKEN","");CHAT_ID=os.getenv("TELEGRAM_CHAT_ID","");MOSCOW=ZoneInfo("Europe/Moscow")
 PREMATCH_MIN_STRENGTH=float(os.getenv("PREMATCH_MIN_STRENGTH","75"))
@@ -50,8 +51,6 @@ def _first_number(row,keys):
     return None
 
 def _prematch_visible(row):
-    # A known block value of 0 means the event is fully suppressed. Values 1+
-    # remain eligible. Unknown legacy rows are not destroyed from history.
     block=_first_number(row,("block_count","blocks","blocking_count","block_level","block_score","block"))
     if block is not None and block<1:return False
     strength=_first_number(row,("strength","signal_strength","confidence","rating","score","master"))
@@ -69,18 +68,21 @@ def main():
         if kind=="prematch" and not _prematch_visible(row):continue
         body=fetch_summary(str(row.get("event_id","")))
         if not body:continue
-        fh,fa,hh,ha=_score_from_summary(body)
+        fh,fa,hh,ha=_score_from_summary(body);final_score=f"{fh}:{fa}"
         if fh+fa==0 and row.get("score_at_signal") not in {"0:0",None}:continue
         if kind=="prematch":
-            goals=_market_goals(str(row.get("scope","Матч")),fh,fa,hh,ha);result=_settle_total(str(row.get("side","ТБ")),float(row.get("line",0)),goals);update_signal(row["dedupe_key"],result=result,final_score=f"{fh}:{fa}");rows.append((row,result,f"{fh}:{fa}"))
+            goals=_market_goals(str(row.get("scope","Матч")),fh,fa,hh,ha);result=_settle_total(str(row.get("side","ТБ")),float(row.get("line",0)),goals);update_signal(row["dedupe_key"],result=result,final_score=final_score);rows.append((row,result,final_score))
         elif kind=="live":
             try:sh,sa=map(int,str(row.get("score_at_signal","0:0")).split(":"))
             except Exception:sh=sa=0
-            next_goal=(fh+fa)>(sh+sa);primary=row.get("primary") or {};bet_result=_settle_total("ТБ",float(primary.get("line",0)),fh+fa) if primary else "—";result="+" if next_goal else "-";update_signal(row["dedupe_key"],result=result,bet_result=bet_result,final_score=f"{fh}:{fa}");rows.append((row,result,f"{fh}:{fa}"))
+            next_goal=(fh+fa)>(sh+sa);result="+" if next_goal else "-";settlement=settle_primary(row.get("primary"),final_score) or {};fields={"result":result,"signal_result":"win" if next_goal else "loss","final_score":final_score}
+            if settlement:
+                fields.update({"bet_result":settlement.get("result"),"bet_pnl_units":settlement.get("pnl_units"),"bet_settled_market":settlement.get("settled_market"),"bet_settled_line":settlement.get("settled_line"),"bet_settled_odd":settlement.get("settled_odd")})
+            update_signal(row["dedupe_key"],**{k:v for k,v in fields.items() if v is not None});rows.append((row,result,final_score))
     live=[x for x in rows if x[0].get("kind")=="live"];pre=[x for x in rows if x[0].get("kind")=="prematch"]
     lp=sum(1 for _,r,_ in live if r=="+");lm=sum(1 for _,r,_ in live if r=="-");pp=sum(1 for _,r,_ in pre if r in {"+","+½"});pm=sum(1 for _,r,_ in pre if r in {"-","-½"})
     initial=sum(1 for row,_,_ in live if str(row.get("reason") or "signal")=="signal");reentries=sum(1 for row,_,_ in live if str(row.get("reason") or "signal")=="reentry")
-    lines=[f"📊 <b>ИТОГИ GOOL BOT — {datetime.now(MOSCOW).strftime('%d.%m.%Y')}</b>","","🔴 <b>LIVE</b>",f"Всего реальных входов: <b>{len(live)}</b>",f"↳ Первичных: <b>{initial}</b> · повторных: <b>{reentries}</b>",f"✅ Зашло: <b>{lp}</b>",f"❌ Не зашло: <b>{lm}</b>","ℹ️ Гол-подтверждения и служебные обновления не считаются отдельными сигналами.","",f"🔥 <b>ПРЕДМАТЧЕВЫЕ ПРОГРУЗЫ</b>",f"✅ Зашли: <b>{pp}</b>",f"❌ Не зашли: <b>{pm}</b>",f"Всего рассчитано: {len(pre)}"]
+    lines=[f"📊 <b>ИТОГИ GOOL BOT — {datetime.now(MOSCOW).strftime('%d.%m.%Y')}</b>","","🔴 <b>LIVE</b>",f"Всего реальных входов: <b>{len(live)}</b>",f"↳ Первичных: <b>{initial}</b> · повторных: <b>{reentries}</b>",f"✅ Следующий гол был: <b>{lp}</b>",f"❌ Следующего гола не было: <b>{lm}</b>","ℹ️ Результат конкретной LIVE-ставки хранится отдельно в bet_result/bet_pnl_units.","",f"🔥 <b>ПРЕДМАТЧЕВЫЕ ПРОГРУЗЫ</b>",f"✅ Зашли: <b>{pp}</b>",f"❌ Не зашли: <b>{pm}</b>",f"Всего рассчитано: {len(pre)}"]
     if live:
         lines += ["","<b>LIVE-входы:</b>"]
         for row,res,score in live[-12:]:
@@ -88,6 +90,6 @@ def main():
     if pre:
         lines += ["","<b>Прогрузы:</b>"]
         for row,res,score in pre[-16:]:lines.append(f"{'✅' if res in {'+','+½'} else '➖' if res=='ВОЗВРАТ' else '❌'} {row.get('home')} — {row.get('away')} | {row.get('scope')} {row.get('side')} {row.get('line')} → {score} ({res})")
-    lines += ["",f"<i>Прогрузы: блокировка 0 скрывается; при наличии рейтинга показываются только {PREMATCH_MIN_STRENGTH:.0f}+.</i>","<i>Статистика считается только по реальным входам GOOL.</i>"];_send("\n".join(lines));return 0
+    lines += ["",f"<i>Прогрузы: блокировка 0 скрывается; при наличии рейтинга показываются только {PREMATCH_MIN_STRENGTH:.0f}+.</i>","<i>LIVE: факт следующего гола и результат выбранного рынка считаются раздельно.</i>"];_send("\n".join(lines));return 0
 
 if __name__=="__main__":raise SystemExit(main())
