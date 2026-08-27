@@ -10,6 +10,8 @@ logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(messa
 
 # Core pipeline
 import visual_feed_unified_bot
+# Final outbound guard for goal_v2 / TOP-load alerts from the auxiliary server.
+import late_premarket_alert_filter_patch
 import live_candidate_patch
 import core_warmup_patch
 import halftime_hazard_patch
