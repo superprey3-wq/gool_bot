@@ -12,6 +12,7 @@ from live_engine import fetch_stats,fetch_summary,parse_stats,parse_goal_timelin
 from signal_journal import add_signal,all_signals,update_signal
 from telegram_subscribers import get_subscribers
 from multi_engine import FIRST_HALF_GOAL,SECOND_HALF_OVER15,delta,first_half_goal,second_half_over15,snapshot,halftime_context
+from first_half_team_context import context as first_half_context
 from multi_engine_card import render_engine_card
 from robust_goal_cooldown_patch import active as persistent_goal_cooldown
 from goal_timing import context as timing_context
@@ -50,7 +51,8 @@ def _send_all(match,engine,score,d,odd,result=None):
 def _journal_key(engine,eid):return f"engine:{engine}:{eid}"
 def _record(match,engine,score,d,market):
  primary=_primary(engine,market,score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15"
- row={"journal_version":7,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"reason":reason,"result":"pending","signal_result":"pending","stake_units":1.0}
+ row={"journal_version":8,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"reason":reason,"result":"pending","signal_result":"pending","stake_units":1.0}
+ if engine==FIRST_HALF_GOAL and isinstance(d.get("_team_context"),dict):row["team_context"]=d["_team_context"]
  if engine==SECOND_HALF_OVER15 and isinstance(d.get("_score_context"),dict):row["score_context"]=d["_score_context"]
  if primary:row.update({"odd":primary["odd"],"primary":primary,"market_status":primary["market_status"],"odds_display_only":True})
  else:row.update({"odd":None,"primary":None,"market_status":"NO_PRICE","odds_display_only":True})
@@ -75,7 +77,7 @@ def _settle_active(live_by):
 def _fh_market(m):return best_consensus(first_half_next_total(m.event_id,m.home,m.away,int(m.home_score)+int(m.away_score)))
 def _ht_market(m):return best_consensus(second_half_market(m.event_id,m.home,m.away))
 def scan_engines(live):
- state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();c={"live":len(live),"fh_seen":0,"fh_eligible":0,"ht_seen":0,"ht_eligible":0,"duplicate":0,"exposure":0,"priced":0,"unpriced":0,"sent":0}
+ state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();c={"live":len(live),"fh_seen":0,"fh_eligible":0,"fh_context_veto":0,"ht_seen":0,"ht_eligible":0,"duplicate":0,"exposure":0,"priced":0,"unpriced":0,"sent":0}
  for m in live:
   minute=int(getattr(m,"minute",0) or 0);is_ht=bool(getattr(m,"is_halftime",False))
   if 0<=minute<=25 and not is_ht:
@@ -89,7 +91,9 @@ def scan_engines(live):
    if minute<15:continue
    baseline=s["snaps"][0].get("stats") if s["snaps"] else {};d=delta(stats,baseline);goals=parse_goal_timeline(fetch_summary(m.event_id));last=_last_goal(goals)
    if persistent_goal_cooldown(m.event_id,minute):last=minute
-   timing=timing_context(m,FIRST_HALF_GOAL);d["_timing"]=timing;dec=first_half_goal(minute,d,last,timing.get("bonus",0))
+   timing=timing_context(m,FIRST_HALF_GOAL);team_ctx=first_half_context(str(m.event_id),str(m.home),str(m.away));d["_timing"]=timing;d["_team_context"]=team_ctx
+   if bool(team_ctx.get("veto")):c["fh_context_veto"]+=1;continue
+   dec=first_half_goal(minute,d,last,float(timing.get("bonus",0) or 0)+float(team_ctx.get("bonus",0) or 0))
    if not dec.eligible:continue
    c["fh_eligible"]+=1;engine=FIRST_HALF_GOAL;market=_fh_market(m)
   elif is_ht:
