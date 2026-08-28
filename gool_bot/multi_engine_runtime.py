@@ -1,7 +1,7 @@
 """Production runtime for GOOL auxiliary LIVE strategies.
 
 FIRST_HALF_GOAL collects evidence from kickoff and may signal at 15'-25'.
-SECOND_HALF_OVER15 decides at half-time from the complete first-half sample.
+SECOND_HALF_OVER15 analyses the completed first half at HT / 47'-50'.
 Odds are display-only and never gate an analytically eligible signal.
 """
 from __future__ import annotations
@@ -51,9 +51,11 @@ def _send_all(match,engine,score,d,odd,result=None):
 def _journal_key(engine,eid):return f"engine:{engine}:{eid}"
 def _record(match,engine,score,d,market):
  primary=_primary(engine,market,score);reason="first_half_goal" if engine==FIRST_HALF_GOAL else "second_half_over15"
- row={"journal_version":8,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"reason":reason,"result":"pending","signal_result":"pending","stake_units":1.0}
+ row={"journal_version":9,"kind":"live","engine":engine,"event_id":match.event_id,"home":match.home,"away":match.away,"league":match.league,"minute":match.minute,"score_at_signal":f"{match.home_score}:{match.away_score}","strategy_score":score,"trend_delta":d,"reason":reason,"result":"pending","signal_result":"pending","stake_units":1.0}
  if engine==FIRST_HALF_GOAL and isinstance(d.get("_team_context"),dict):row["team_context"]=d["_team_context"]
- if engine==SECOND_HALF_OVER15 and isinstance(d.get("_score_context"),dict):row["score_context"]=d["_score_context"]
+ if engine==SECOND_HALF_OVER15:
+  if isinstance(d.get("_score_context"),dict):row["score_context"]=d["_score_context"]
+  if isinstance(d.get("_history_context"),dict):row["history_context"]=d["_history_context"]
  if primary:row.update({"odd":primary["odd"],"primary":primary,"market_status":primary["market_status"],"odds_display_only":True})
  else:row.update({"odd":None,"primary":None,"market_status":"NO_PRICE","odds_display_only":True})
  return add_signal(row,_journal_key(engine,match.event_id))
@@ -76,8 +78,20 @@ def _settle_active(live_by):
    elif int(getattr(m,"minute",0) or 0)>=90:update_signal(key,result="loss",signal_result="loss",final_score=f"{m.home_score}:{m.away_score}",result_minute=int(m.minute));_send_all(m,engine,float(row.get("strategy_score",0) or 0),d,odd,"loss")
 def _fh_market(m):return best_consensus(first_half_next_total(m.event_id,m.home,m.away,int(m.home_score)+int(m.away_score)))
 def _ht_market(m):return best_consensus(second_half_market(m.event_id,m.home,m.away))
+def _history_2h(m):
+ """Reuse team-history analysis already present in GOOL; it may support but never manufacture a 2H signal."""
+ try:
+  from match_history import fetch_match_history,analyse_history
+  a=analyse_history(fetch_match_history(m.event_id,m.home,m.away,limit=5)) or {}
+  valid=[x for x in (a.get("home",{}),a.get("away",{}),a.get("h2h",{})) if isinstance(x,dict) and x.get("n",0)]
+  avg=float(a.get("historical_avg_total",0) or 0)
+  over25=sum(float(x.get("over25",0) or 0) for x in valid)/len(valid) if valid else 0.0
+  bonus=max(-4.0,min(7.0,(avg-2.5)*3.0+(over25-.5)*8.0)) if valid else 0.0
+  return {"available":bool(valid),"avg_total":round(avg,2),"over25":round(over25,3),"samples":sum(int(x.get("n",0) or 0) for x in valid),"bonus":round(bonus,1)}
+ except Exception as exc:
+  logger.info("2H_HISTORY_UNAVAILABLE %s: %s",m.event_id,exc);return {"available":False,"bonus":0.0}
 def scan_engines(live):
- state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();c={"live":len(live),"fh_seen":0,"fh_eligible":0,"fh_context_veto":0,"ht_seen":0,"ht_eligible":0,"duplicate":0,"exposure":0,"priced":0,"unpriced":0,"sent":0}
+ state=_load();live_by={str(m.event_id):m for m in live};now=time.time();_settle_active(live_by);journal=all_signals();c={"live":len(live),"fh_seen":0,"fh_eligible":0,"fh_context_veto":0,"ht_seen":0,"ht_window":0,"ht_eligible":0,"ht_reject":0,"duplicate":0,"exposure":0,"priced":0,"unpriced":0,"sent":0}
  for m in live:
   minute=int(getattr(m,"minute",0) or 0);is_ht=bool(getattr(m,"is_halftime",False))
   if 0<=minute<=25 and not is_ht:
@@ -96,15 +110,16 @@ def scan_engines(live):
    dec=first_half_goal(minute,d,last,float(timing.get("bonus",0) or 0)+float(team_ctx.get("bonus",0) or 0))
    if not dec.eligible:continue
    c["fh_eligible"]+=1;engine=FIRST_HALF_GOAL;market=_fh_market(m)
-  elif is_ht:
-   c["ht_seen"]+=1;engine=SECOND_HALF_OVER15
+  elif is_ht or 47<=minute<=50:
+   c["ht_seen"]+=1;c["ht_window"]+=1;engine=SECOND_HALF_OVER15
    if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):c["duplicate"]+=1;continue
    body=fetch_stats(m.event_id)
    if not body:continue
    stats=parse_stats(body)
    if not stats:continue
-   timing=timing_context(m,SECOND_HALF_OVER15);score_ctx=halftime_context(stats,int(getattr(m,"home_score",0) or 0),int(getattr(m,"away_score",0) or 0));dec=second_half_over15(stats,timing.get("bonus",0),score_ctx);d=snapshot(stats);d["_timing"]=timing;d["_score_context"]=score_ctx
-   if not dec.eligible:continue
+   timing=timing_context(m,SECOND_HALF_OVER15);score_ctx=halftime_context(stats,int(getattr(m,"home_score",0) or 0),int(getattr(m,"away_score",0) or 0));hist=_history_2h(m);dec=second_half_over15(stats,float(timing.get("bonus",0) or 0)+float(hist.get("bonus",0) or 0),score_ctx);d=snapshot(stats);d["_timing"]=timing;d["_score_context"]=score_ctx;d["_history_context"]=hist;d["_analysis_minute"]=minute
+   logger.info("2H_DECISION %s %s-%s minute=%s score=%.1f eligible=%s history=%s reason=%s",m.event_id,m.home,m.away,minute,dec.score,dec.eligible,hist,dec.reason)
+   if not dec.eligible:c["ht_reject"]+=1;continue
    c["ht_eligible"]+=1;market=_ht_market(m)
   else:continue
   if any(r.get("engine")==engine and str(r.get("event_id"))==str(m.event_id) for r in journal):c["duplicate"]+=1;continue
