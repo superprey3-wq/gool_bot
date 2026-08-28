@@ -27,7 +27,14 @@ def _records():
  except Exception:return []
  if not isinstance(d,dict):return []
  ts=d.get("ts") or d.get("timestamp") or d.get("updated_ts")
+ # Collector writes ISO-8601 timestamps; numeric timestamps are also supported.
  if isinstance(ts,(int,float)) and time.time()-float(ts)>MAX_STATE_AGE:return []
+ # v6 collector stores normalized odds under lsapp.records. Keep legacy top-level
+ # keys as fallback for older state files.
+ lsapp=d.get("lsapp")
+ if isinstance(lsapp,dict):
+  rows=lsapp.get("records")
+  if isinstance(rows,list):return rows
  for key in ("records","market_records","odds","normalized_odds"):
   rows=d.get(key)
   if isinstance(rows,list):return rows
@@ -36,7 +43,6 @@ def _records():
 def _team(v):
  s=unicodedata.normalize("NFKD",str(v or "")).encode("ascii","ignore").decode().lower()
  s=s.replace("&"," and ")
- # Harmless source decorations; keep youth/reserve/gender markers because they distinguish teams.
  s=re.sub(r"\b(fc|cf|sc|afc|fk|club|football|soccer)\b"," ",s)
  s=re.sub(r"[^a-z0-9]+"," ",s)
  return " ".join(s.split())
@@ -46,35 +52,27 @@ def _sim(a,b):
  if not a or not b:return 0.0
  if a==b:return 1.0
  ta=set(a.split());tb=set(b.split())
- jac=len(ta&tb)/max(1,len(ta|tb))
- seq=SequenceMatcher(None,a,b).ratio()
+ jac=len(ta&tb)/max(1,len(ta|tb));seq=SequenceMatcher(None,a,b).ratio()
  return max(jac,seq)
 
 def _score_tuple(v):
- try:
-  a,b=str(v or "").split(":",1);return int(a),int(b)
+ try:a,b=str(v or "").split(":",1);return int(a),int(b)
  except Exception:return None
 
 def _event_match(raw,m):
- """Return (matched, source, confidence). Never swap home/away automatically."""
- eid=str(getattr(m,"event_id","") or "")
- rid=str(raw.get("event_id") or "")
+ eid=str(getattr(m,"event_id","") or "");rid=str(raw.get("event_id") or "")
  if eid and rid and eid==rid:return True,"event_id",1.0
  mh,ma=str(getattr(m,"home","") or ""),str(getattr(m,"away","") or "")
  rh,ra=str(raw.get("home") or ""),str(raw.get("away") or "")
  if not mh or not ma or not rh or not ra:return False,"none",0.0
  nh,na,nrh,nra=_team(mh),_team(ma),_team(rh),_team(ra)
- if nh==nrh and na==nra:
-  source="teams_exact";conf=1.0
+ if nh==nrh and na==nra:source="teams_exact";conf=1.0
  else:
   hs,as_=_sim(mh,rh),_sim(ma,ra);conf=(hs+as_)/2.0
-  # Both sides must be individually convincing to avoid cross-match contamination.
   if hs<0.78 or as_<0.78 or conf<0.86:return False,"none",conf
   source="teams_fuzzy"
- # If both feeds expose a score, a contradiction is a hard reject. A one-goal lag is tolerated.
  rs=_score_tuple(raw.get("score"));ms=(int(getattr(m,"home_score",0) or 0),int(getattr(m,"away_score",0) or 0))
- if rs is not None and sum(rs)>0 and sum(ms)>0:
-  if abs(rs[0]-ms[0])+abs(rs[1]-ms[1])>1:return False,"score_conflict",conf
+ if rs is not None and sum(rs)>0 and sum(ms)>0 and abs(rs[0]-ms[0])+abs(rs[1]-ms[1])>1:return False,"score_conflict",conf
  return True,source,conf
 
 def _norm_side(market,side):
@@ -84,34 +82,25 @@ def _norm_side(market,side):
  return s
 
 def _normalize(raw):
- market=str(raw.get("market") or raw.get("market_raw") or "").upper()
- aliases={"HOME_DRAW_AWAY":"1X2","OVER_UNDER":"TOTAL","BOTH_TEAMS_TO_SCORE":"BTTS","DRAW_NO_BET":"DNB"}
- market=aliases.get(market,market)
+ market=str(raw.get("market") or raw.get("market_raw") or "").upper();aliases={"HOME_DRAW_AWAY":"1X2","OVER_UNDER":"TOTAL","BOTH_TEAMS_TO_SCORE":"BTTS","DRAW_NO_BET":"DNB"};market=aliases.get(market,market)
  if market not in {"1X2","TOTAL","ASIAN_HANDICAP","BTTS","DOUBLE_CHANCE","DNB"}:return None
  odd=_f(raw.get("odd"));side=_norm_side(market,raw.get("side") or raw.get("selection"))
  if not odd or odd<=1.01 or not side:return None
- flow=raw.get("flow") or {};pct=_f(flow.get("delta_pct"),0.0) or 0.0
- movement=max(-12.0,min(12.0,-pct*4.0));status="PRIMARY"
+ flow=raw.get("flow") or {};pct=_f(flow.get("delta_pct"),0.0) or 0.0;movement=max(-12.0,min(12.0,-pct*4.0));status="PRIMARY"
  if flow.get("reversal"):status="REVERSAL"
  elif pct<=-0.6 and flow.get("persistence"):status="CONFIRMED_MONEY_FLOW"
- return {"scope":str(raw.get("scope") or "FULL_TIME").upper(),"market_type":market,"market":market,
-         "selection":side,"line":_f(raw.get("line")),"odd":odd,"bookmaker":raw.get("bookmaker"),
-         "movement_score":movement,"movement_status":status,"flow":flow,"source":"monkey_market_state"}
+ return {"scope":str(raw.get("scope") or "FULL_TIME").upper(),"market_type":market,"market":market,"selection":side,"line":_f(raw.get("line")),"odd":odd,"bookmaker":raw.get("bookmaker"),"movement_score":movement,"movement_status":status,"flow":flow,"source":"monkey_market_state"}
 
 def _group_key(r):return (r.get("scope"),r.get("market_type"),r.get("line"))
 def _best_rows(match):
- records=_records();matched=[];sources={}
- # Pass 1: exact event id. If present, never mix it with a name fallback.
- eid=str(getattr(match,"event_id","") or "")
- exact=[raw for raw in records if str(raw.get("event_id") or "")==eid]
- candidates=exact
+ records=_records();matched=[];sources={};eid=str(getattr(match,"event_id","") or "")
+ exact=[raw for raw in records if str(raw.get("event_id") or "")==eid];candidates=exact
  if exact:sources["event_id"]=len(exact)
  else:
   candidates=[]
   for raw in records:
    ok,src,conf=_event_match(raw,match)
-   if ok:
-    candidates.append(raw);sources[src]=sources.get(src,0)+1
+   if ok:candidates.append(raw);sources[src]=sources.get(src,0)+1
  for raw in candidates:
   r=_normalize(raw)
   if r and r["scope"]=="FULL_TIME":matched.append(r)
@@ -175,8 +164,7 @@ def evaluate_match(m):
  eid=str(m.event_id);now=time.time()
  if bbe._pending(eid) or (eid in bbe._ACTIVE and now-bbe._ACTIVE[eid]<bbe.COOLDOWN):return False
  rows,match_src,raw_n=_best_rows(m)
- if not rows:
-  log.info("BEST_BET_STATE %s rows=0 match=%s raw=%d teams=%s--%s",eid,match_src,raw_n,m.home,m.away);return False
+ if not rows:log.info("BEST_BET_STATE %s rows=0 match=%s raw=%d teams=%s--%s",eid,match_src,raw_n,m.home,m.away);return False
  try:
   body=fetch_stats(eid);stats=parse_stats(body) if body else {}
   if not stats:return False
@@ -190,10 +178,8 @@ def evaluate_match(m):
   x=bbe._rank(r,m,p,hist)
   if x:ranked.append(x)
  ranked.sort(key=lambda x:x["score"],reverse=True)
- if not ranked:
-  log.info("BEST_BET_STATE %s rows=%d ranked=0 match=%s history=%s",eid,len(rows),match_src,hist);return False
- b=ranked[0]
- log.info("BEST_BET_STATE %s rows=%d ranked=%d match=%s best=%s score=%.1f live=%.1f history=%.1f edge=%+.1f flow=%.1f status=%s",eid,len(rows),len(ranked),match_src,b["name"],b["score"],b["confidence"],b["history_score"],b["edge"],b["market_score"],b["status"])
+ if not ranked:log.info("BEST_BET_STATE %s rows=%d ranked=0 match=%s history=%s",eid,len(rows),match_src,hist);return False
+ b=ranked[0];log.info("BEST_BET_STATE %s rows=%d ranked=%d match=%s best=%s score=%.1f live=%.1f history=%.1f edge=%+.1f flow=%.1f status=%s",eid,len(rows),len(ranked),match_src,b["name"],b["score"],b["confidence"],b["history_score"],b["edge"],b["market_score"],b["status"])
  if b["score"]<bbe.MIN_SCORE or b["suspicious"]:return False
  if not bbe._record(m,b):return False
  sent=bbe._send(bbe.render_entry(m,b,ranked[1:4]),f"🏆 GOOL BEST BET • {b['name']} @ {b['odd']:.2f} • {b['score']:.0f}/100")
@@ -202,4 +188,4 @@ def evaluate_match(m):
 
 if not hasattr(bbe,"_legacy_model_probability"):bbe._legacy_model_probability=bbe.model_probability
 bbe.evaluate_match=evaluate_match
-log.info("BEST BET broad market-state input active | safe event-id + team fallback | 1X2+TOTAL+AH+BTTS+DC+DNB | state=%s",STATE)
+log.info("BEST BET broad market-state input active | nested lsapp.records + safe matching | 1X2+TOTAL+AH+BTTS+DC+DNB | state=%s",STATE)
