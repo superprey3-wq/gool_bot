@@ -6,6 +6,7 @@ ROOT=Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
 os.environ.setdefault("LIVE_SIGNAL_THRESHOLD","75");os.environ.setdefault("LIVE_COOLDOWN_MINUTES","12")
 LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
+REMOTE_BESTBET_ONLY=str(os.getenv("GOOL_REMOTE_BEST_BET_ONLY","1")).strip().lower() not in {"0","false","no","off"}
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
 import visual_feed_unified_bot
 import xg_proxy_patch
@@ -46,27 +47,23 @@ import report_journal_detail_patch
 import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
-# Prevent live journal settlement from racing ahead of the green confirmation card.
 import core_goal_delivery_reliability_patch
 import core_live_stats_reliability_patch
 import multi_engine_runtime
 import live_button_patch
 import live_button_emergency_patch
-# Recover nearest sane LIVE total when the exact goal-relative line is absent.
 import best_bet_input_reliability_patch
 import best_bet_engine
 import best_bet_consensus_patch
-# Do not let an invisible failed Telegram send lock BEST BET as pending.
 import best_bet_delivery_reliability_patch
 import best_bet_diagnostics_patch
 import runtime_resource_guard
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop
 import production_logging
-# Must remain the final runtime patch so no later Telegram layer can bypass it.
 import late_premarket_alert_filter_patch
-# Relay only high-strength market flow from the dedicated MonkeyBytes collector.
 import remote_strong_proguz_patch
+import remote_best_bet_relay
 runtime_resource_guard.log_startup()
 async def run_live():
  try:
@@ -76,10 +73,10 @@ async def run_live():
   await visual_feed_unified_bot.unified_bot.scan_live_once()
   engine_live=await asyncio.to_thread(filter_for_multi_engine,live)
   await asyncio.to_thread(multi_engine_runtime.scan_engines,engine_live)
-  best_sent=await asyncio.to_thread(best_bet_engine.scan,engine_live)
+  best_sent=0 if REMOTE_BESTBET_ONLY else await asyncio.to_thread(best_bet_engine.scan,engine_live)
   await asyncio.to_thread(core_primary_reconcile.reconcile,live)
   await asyncio.to_thread(clv_tracker.sample,live)
-  logger.info("GOOL_CYCLE_DONE live=%d aux=%d best=%d settled=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),best_sent,best_settled,discovery,time.monotonic()-started)
+  logger.info("GOOL_CYCLE_DONE live=%d aux=%d best_local=%d settled=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),best_sent,best_settled,discovery,time.monotonic()-started)
  except Exception:logger.exception("LIVE scan failed; runner will continue")
 async def status_loop():
  while True:
@@ -92,7 +89,7 @@ async def resource_loop():
   logger.info("RESOURCE_WATCH rss=%.1fMB available=%.1fMB load_ratio=%.2f status=%s",s['rss_mb'],s['mem_available_mb'],s['load_ratio'],reason)
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");resources=asyncio.create_task(resource_loop(),name="resource-watch")
- logger.info("GOOL LIVE | CORE+1H+2H | BEST BET=on+fairvalue+flow+consensus+input-recovery+delivery-safe | strong_proguz_relay=on | goal-card-race-fix=on | resource_guard=on")
+ logger.info("GOOL LIVE | CORE+1H+2H | BEST BET=Monkey relay | strong_proguz_relay=on | goal-card-race-fix=on | resource_guard=on")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
