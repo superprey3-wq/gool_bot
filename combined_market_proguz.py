@@ -1,57 +1,51 @@
-"""MonkeyBytes runtime: GOOL Market Server + PROGRUZ + BEST BET."""
+"""MonkeyBytes runtime: restored lightweight PROGRUZ + remote BEST BET.
+
+The Flashscore/LSApp JSON state is the critical path again. Optional persistence
+and BEST BET cannot stop the live collector/feed. Every child is restarted in
+place instead of taking the whole Monkey server offline.
+"""
 from __future__ import annotations
 import os,signal,subprocess,sys,time,urllib.request
 from pathlib import Path
 HOME=Path(os.getenv("GOOL_HOME","/home/container"));BESTBET_DIR=HOME/"bestbet_runtime"
 REPO="https://github.com/superprey3-wq/gool_bot.git";BESTBET_BRANCH="main"
-COLLECTOR=HOME/"browser_market_node.py";ALL_COLLECTOR=HOME/"browser_market_all.py";PREMATCH=HOME/"prematch_market_node.py";FEED=HOME/"strong_proguz_feed.py";STORE=HOME/"market_store.py";STORE_BRIDGE=HOME/"market_store_bridge.py"
+LIVE=HOME/"browser_market_all.py";COLLECTOR=HOME/"browser_market_node.py";FEED=HOME/"strong_proguz_feed.py";STORE=HOME/"market_store.py";BRIDGE=HOME/"market_store_bridge.py"
 RAW_BASE="https://raw.githubusercontent.com/superprey3-wq/gool_bot/browser-market-node/"
-def run(cmd,cwd=None,check=True):
- print("GOOL COMBINED exec:"," ".join(map(str,cmd)),flush=True);return subprocess.run(cmd,cwd=str(cwd) if cwd else None,check=check)
+def run(cmd,cwd=None,check=True):print("GOOL exec:"," ".join(map(str,cmd)),flush=True);return subprocess.run(cmd,cwd=str(cwd) if cwd else None,check=check)
 def sync_repo(path,branch):
  if (path/".git").exists():run(["git","fetch","origin",branch],cwd=path);run(["git","reset","--hard",f"origin/{branch}"],cwd=path)
- else:
-  if path.exists():import shutil;shutil.rmtree(path,ignore_errors=True)
-  run(["git","clone","--depth","1","--branch",branch,REPO,str(path)])
-def sync_bestbet():sync_repo(BESTBET_DIR,BESTBET_BRANCH)
+ else:run(["git","clone","--depth","1","--branch",branch,REPO,str(path)])
 def sync_asset(name,path):
- try:
-  data=urllib.request.urlopen(RAW_BASE+name,timeout=20).read();path.write_bytes(data);print(f"GOOL asset synced {name} bytes={len(data)}",flush=True)
- except Exception as e:
-  print(f"GOOL asset sync failed {name}: {e}",flush=True)
-  if not path.exists():raise
-def install_requirements():
- seen=set()
- for req in (HOME/"requirements-browser-node.txt",BESTBET_DIR/"requirements.txt",BESTBET_DIR/"gool_bot"/"requirements.txt"):
-  if req.exists() and str(req.resolve()) not in seen:seen.add(str(req.resolve()));run([sys.executable,"-m","pip","install","--user","-r",str(req)])
-def child_env():
- env=os.environ.copy();env.setdefault("PYTHONUNBUFFERED","1");env.setdefault("GOOL_MARKET_STATE",str(HOME/"market_node_state.json"));env.setdefault("GOOL_MARKET_HISTORY",str(HOME/"market_node_history_v6.json"));env.setdefault("GOOL_MARKET_DB",str(HOME/"gool_market.sqlite3"));env.setdefault("GOOL_MARKET_STORE_POLL","5");env.setdefault("GOOL_MARKET_DB_RETENTION_SECONDS","21600");env.setdefault("GOOL_MARKET_ALL_MAX_EVENTS","250");env.setdefault("GOOL_MARKET_ALL_MAX_RECORDS","30000");env.setdefault("GOOL_MARKET_ALL_PER_EVENT","300");env.setdefault("GOOL_PREMATCH_STATE",str(HOME/"prematch_market_state.json"));env.setdefault("GOOL_PREMATCH_POLL_SECONDS","420");env.setdefault("GOOL_PREMATCH_MAX_FIXTURES","140");env.setdefault("GOOL_PREMATCH_ODDS_EVENTS","60");env.setdefault("GOOL_STRONG_MIN_SCORE","80");env.setdefault("GOOL_REMOTE_BEST_BET_STATE",str(HOME/"remote_best_bet_state.json"));env.setdefault("GOOL_REMOTE_BEST_BET_POLL_SECONDS","75");env.setdefault("SIGNAL_JOURNAL_FILE",str(HOME/"remote_best_bet_journal.json"));return env
-def start(script,env,cwd=HOME):
- if not script.exists():raise FileNotFoundError(script)
- return subprocess.Popen([sys.executable,"-u",str(script)],cwd=str(cwd),env=env)
-def start_bestbet(env):return start(BESTBET_DIR/"gool_bot"/"best_bet_remote_worker.py",env,BESTBET_DIR/"gool_bot")
+ data=urllib.request.urlopen(RAW_BASE+name,timeout=20).read();path.write_bytes(data);print(f"GOOL asset {name} bytes={len(data)}",flush=True)
+def env():
+ e=os.environ.copy();e.setdefault("PYTHONUNBUFFERED","1");e.setdefault("GOOL_MARKET_STATE",str(HOME/"market_node_state.json"));e.setdefault("GOOL_MARKET_HISTORY",str(HOME/"market_node_history_v6.json"));e.setdefault("GOOL_MARKET_MAX_EVENTS","60");e.setdefault("GOOL_MARKET_ODDS_EVENTS","12");e.setdefault("GOOL_MARKET_MAX_RECORDS","1800");e.setdefault("GOOL_MARKET_PER_EVENT","260");e.setdefault("GOOL_STRONG_MIN_SCORE","80");e.setdefault("GOOL_REMOTE_BEST_BET_STATE",str(HOME/"remote_best_bet_state.json"));e.setdefault("GOOL_REMOTE_BEST_BET_POLL_SECONDS","75");e.setdefault("GOOL_MARKET_DB",str(HOME/"gool_market.sqlite3"));return e
+def start(script,e,cwd=HOME):return subprocess.Popen([sys.executable,"-u",str(script)],cwd=str(cwd),env=e)
 def stop(p):
  if p and p.poll() is None:
-  try:p.terminate();p.wait(timeout=8)
+  try:p.terminate();p.wait(timeout=6)
   except Exception:
    try:p.kill()
    except Exception:pass
 def main():
- print("GOOL MONKEY MARKET-SERVER+PROGRUZ+BEST-BET starting",flush=True)
- sync_bestbet()
- for name,path in (("browser_market_node.py",COLLECTOR),("browser_market_all.py",ALL_COLLECTOR),("prematch_market_node.py",PREMATCH),("strong_proguz_feed.py",FEED),("market_store.py",STORE),("market_store_bridge.py",STORE_BRIDGE)):sync_asset(name,path)
- install_requirements();env=child_env();live=start(ALL_COLLECTOR,env);prematch=start(PREMATCH,env);store=start(STORE_BRIDGE,env);bestbet=start_bestbet(env);feed=start(FEED,env);print(f"GOOL MONKEY ONLINE live={live.pid} prematch={prematch.pid} store={store.pid} bestbet={bestbet.pid} feed={feed.pid} sqlite=on strong>=80",flush=True)
+ print("GOOL MONKEY restoring proven PROGRUZ pipeline",flush=True)
+ sync_repo(BESTBET_DIR,BESTBET_BRANCH)
+ for n,p in (("browser_market_node.py",COLLECTOR),("browser_market_all.py",LIVE),("strong_proguz_feed.py",FEED),("market_store.py",STORE),("market_store_bridge.py",BRIDGE)):sync_asset(n,p)
+ e=env();spec={"live":(LIVE,HOME),"feed":(FEED,HOME),"store":(BRIDGE,HOME),"bestbet":(BESTBET_DIR/"gool_bot"/"best_bet_remote_worker.py",BESTBET_DIR/"gool_bot")};procs={k:start(*v,e) for k,v in spec.items()}
+ print("GOOL MONKEY ONLINE stable-live=on proguz=on bestbet=on sqlite=aux",flush=True)
  stopping=False
  def sig(*_):
   nonlocal stopping;stopping=True
  signal.signal(signal.SIGTERM,sig);signal.signal(signal.SIGINT,sig)
  try:
   while not stopping:
-   for name,p,script,cwd in (("live",live,ALL_COLLECTOR,HOME),("prematch",prematch,PREMATCH,HOME),("store",store,STORE_BRIDGE,HOME),("bestbet",bestbet,BESTBET_DIR/"gool_bot"/"best_bet_remote_worker.py",BESTBET_DIR/"gool_bot"),("feed",feed,FEED,HOME)):
+   for name,p in list(procs.items()):
     if p.poll() is not None:
-     print(f"GOOL MONKEY {name} exited rc={p.returncode}; supervisor restart required",flush=True);return
+     print(f"GOOL child {name} exited rc={p.returncode}; restarting in 5s",flush=True);time.sleep(5)
+     script,cwd=spec[name]
+     try:procs[name]=start(script,e,cwd);print(f"GOOL child {name} restarted pid={procs[name].pid}",flush=True)
+     except Exception as exc:print(f"GOOL child {name} restart failed: {exc}",flush=True)
    time.sleep(3)
  finally:
-  for p in (feed,bestbet,store,prematch,live):stop(p)
+  for p in procs.values():stop(p)
   print("GOOL MONKEY stopped",flush=True)
 if __name__=="__main__":main()
