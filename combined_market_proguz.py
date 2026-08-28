@@ -30,7 +30,8 @@ def main():
  print("GOOL MONKEY restoring proven PROGRUZ pipeline",flush=True)
  sync_repo(BESTBET_DIR,BESTBET_BRANCH)
  for n,p in (("browser_market_node.py",COLLECTOR),("browser_market_all.py",LIVE),("strong_proguz_feed.py",FEED),("market_store.py",STORE),("market_store_bridge.py",BRIDGE)):sync_asset(n,p)
- e=env();spec={"live":(LIVE,HOME),"feed":(FEED,HOME),"store":(BRIDGE,HOME),"bestbet":(BESTBET_DIR/"gool_bot"/"best_bet_remote_worker.py",BESTBET_DIR/"gool_bot")};procs={k:start(*v,e) for k,v in spec.items()}
+ e=env();spec={"live":(LIVE,HOME),"feed":(FEED,HOME),"store":(BRIDGE,HOME),"bestbet":(BESTBET_DIR/"gool_bot"/"best_bet_remote_worker.py",BESTBET_DIR/"gool_bot")}
+ procs={name:start(script,e,cwd) for name,(script,cwd) in spec.items()}
  print("GOOL MONKEY ONLINE stable-live=on proguz=on bestbet=on sqlite=aux",flush=True)
  stopping=False
  def sig(*_):
