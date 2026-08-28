@@ -27,10 +27,7 @@ def _records():
  except Exception:return []
  if not isinstance(d,dict):return []
  ts=d.get("ts") or d.get("timestamp") or d.get("updated_ts")
- # Collector writes ISO-8601 timestamps; numeric timestamps are also supported.
  if isinstance(ts,(int,float)) and time.time()-float(ts)>MAX_STATE_AGE:return []
- # v6 collector stores normalized odds under lsapp.records. Keep legacy top-level
- # keys as fallback for older state files.
  lsapp=d.get("lsapp")
  if isinstance(lsapp,dict):
   rows=lsapp.get("records")
@@ -160,6 +157,14 @@ def _fair_probs(rows):
   else:
    for x in grp:x["market_fair_prob"]=1.0/x["odd"];x["pair_confirmed"]=False
 
+def _rank_market(row,m,p,hist):
+ """Call the production ranker using its current 4-argument contract."""
+ try:
+  return bbe._rank(row,m,p,hist)
+ except TypeError as exc:
+  if "positional arguments" not in str(exc):raise
+  return bbe._rank(row,m,p)
+
 def evaluate_match(m):
  eid=str(m.event_id);now=time.time()
  if bbe._pending(eid) or (eid in bbe._ACTIVE and now-bbe._ACTIVE[eid]<bbe.COOLDOWN):return False
@@ -175,7 +180,7 @@ def evaluate_match(m):
   try:r["gool_model_prob"]=_model_probability(r,m,stats)
   except Exception:r["gool_model_prob"]=None
   if r.get("gool_model_prob") is None:continue
-  x=bbe._rank(r,m,p,hist)
+  x=_rank_market(r,m,p,hist)
   if x:ranked.append(x)
  ranked.sort(key=lambda x:x["score"],reverse=True)
  if not ranked:log.info("BEST_BET_STATE %s rows=%d ranked=0 match=%s history=%s",eid,len(rows),match_src,hist);return False
@@ -188,4 +193,4 @@ def evaluate_match(m):
 
 if not hasattr(bbe,"_legacy_model_probability"):bbe._legacy_model_probability=bbe.model_probability
 bbe.evaluate_match=evaluate_match
-log.info("BEST BET broad market-state input active | nested lsapp.records + safe matching | 1X2+TOTAL+AH+BTTS+DC+DNB | state=%s",STATE)
+log.info("BEST BET broad market-state input active | nested lsapp.records + rank compatibility | 1X2+TOTAL+AH+BTTS+DC+DNB | state=%s",STATE)
