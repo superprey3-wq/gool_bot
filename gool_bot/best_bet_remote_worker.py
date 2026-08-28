@@ -1,8 +1,8 @@
 """Headless BEST BET worker for the MonkeyBytes market node.
 
-Runs the same independent BEST BET analysis as main, but captures approved bets
-into a small JSON feed instead of sending Telegram directly. The primary GOOL
-server can relay the feed with its existing subscribers/token.
+Runs the independent BEST BET analysis on Monkey market-state data and captures
+approved bets into a small JSON feed instead of sending Telegram directly. The
+primary GOOL server relays the feed with its existing subscribers/token.
 """
 from __future__ import annotations
 import asyncio,json,logging,os,sys,time
@@ -39,6 +39,8 @@ import best_bet_input_reliability_patch
 import best_bet_engine as bbe
 import best_bet_consensus_patch
 import best_bet_delivery_reliability_patch
+# Final input layer: consume Monkey's normalized 1X2/TOTAL/AH/BTTS/DC/DNB state.
+import best_bet_market_state_patch
 
 _last_capture=None
 
