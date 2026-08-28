@@ -47,33 +47,44 @@ import fast_goal_watch
 import multi_engine_runtime
 import live_button_patch
 import live_button_emergency_patch
+import best_bet_engine
+import best_bet_consensus_patch
+import runtime_resource_guard
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop
 import production_logging
 # Must remain the final runtime patch so no later Telegram layer can bypass it.
 import late_premarket_alert_filter_patch
+runtime_resource_guard.log_startup()
 async def run_live():
  try:
   started=time.monotonic();live=await visual_feed_unified_bot.unified_bot.discover_live_matches();discovery=time.monotonic()-started
+  best_settled=await asyncio.to_thread(best_bet_engine.update_results,live)
   score_sync_patch.reuse_once(live)
   await visual_feed_unified_bot.unified_bot.scan_live_once()
   engine_live=await asyncio.to_thread(filter_for_multi_engine,live)
   await asyncio.to_thread(multi_engine_runtime.scan_engines,engine_live)
+  best_sent=await asyncio.to_thread(best_bet_engine.scan,engine_live)
   await asyncio.to_thread(core_primary_reconcile.reconcile,live)
   await asyncio.to_thread(clv_tracker.sample,live)
-  logger.info("GOOL_CYCLE_DONE live=%d aux=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),discovery,time.monotonic()-started)
+  logger.info("GOOL_CYCLE_DONE live=%d aux=%d best=%d settled=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),best_sent,best_settled,discovery,time.monotonic()-started)
  except Exception:logger.exception("LIVE scan failed; runner will continue")
 async def status_loop():
  while True:
   await asyncio.sleep(live_status_heartbeat.STATUS_INTERVAL_SECONDS)
   try:await asyncio.to_thread(live_status_heartbeat.send_heartbeat)
   except Exception:logger.exception("LIVE heartbeat failed; runner will continue")
+async def resource_loop():
+ while True:
+  await asyncio.sleep(30);ok,s,reason=runtime_resource_guard.allow_optional()
+  logger.info("RESOURCE_WATCH rss=%.1fMB available=%.1fMB load_ratio=%.2f status=%s",s['rss_mb'],s['mem_available_mb'],s['load_ratio'],reason)
 async def main():
- poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch")
- logger.info("GOOL LIVE | analytics drive signals: Flashscore + history/H2H + GOAL API + FotMob + 365Scores + xG context | odds optional metadata only")
+ poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");resources=asyncio.create_task(resource_loop(),name="resource-watch")
+ logger.info("GOOL LIVE | CORE+1H+2H | BEST BET=on+fairvalue+flow+consensus | resource_guard=on")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
  finally:
-  poller.cancel();heartbeat.cancel();goal_watch.cancel();await asyncio.gather(poller,heartbeat,goal_watch,return_exceptions=True)
+  for task in (poller,heartbeat,goal_watch,resources):task.cancel()
+  await asyncio.gather(poller,heartbeat,goal_watch,resources,return_exceptions=True)
 if __name__=="__main__":asyncio.run(main())
