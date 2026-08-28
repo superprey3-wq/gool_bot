@@ -42,6 +42,7 @@ import core_goal_signal_patch
 import goal_reset_patch
 import core_primary_reconcile
 import core_report_truth_patch
+import report_journal_detail_patch
 import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
@@ -50,6 +51,7 @@ import live_button_patch
 import live_button_emergency_patch
 import best_bet_engine
 import best_bet_consensus_patch
+import best_bet_diagnostics_patch
 import runtime_resource_guard
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop
