@@ -33,13 +33,15 @@ async def run_live():
  try:
   _mem("cycle_start");started=time.monotonic();live=await visual_feed_unified_bot.unified_bot.discover_live_matches();discovery=time.monotonic()-started
   await asyncio.to_thread(market_test_signal.update_live_context,live)
+  best_settled=await asyncio.to_thread(best_bet_engine.update_results,live);_mem("after_best_bet_results")
+  if best_settled:logger.info("BEST_BET results_sent=%d",best_settled)
   _mem("after_discovery");await asyncio.to_thread(market_recommendation_results.update_from_live,live);score_sync_patch.reuse_once(live);_mem("after_score_sync")
   await visual_feed_unified_bot.unified_bot.scan_live_once();_mem("after_scan_live_once");engine_live=await asyncio.to_thread(filter_for_multi_engine,live);_mem("after_filter_multi_engine")
   await asyncio.to_thread(multi_engine_runtime.scan_engines,engine_live);_mem("after_multi_engine")
   best_sent=await asyncio.to_thread(best_bet_engine.scan,engine_live);_mem("after_best_bet")
   if best_sent:logger.info("BEST_BET batch_sent=%d",best_sent)
   await asyncio.to_thread(core_primary_reconcile.reconcile,live);_mem("after_reconcile");await asyncio.to_thread(clv_tracker.sample,live);_mem("after_clv")
-  logger.info("GOOL_CYCLE_DONE live=%d aux=%d best=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),best_sent,discovery,time.monotonic()-started)
+  logger.info("GOOL_CYCLE_DONE live=%d aux=%d best=%d settled=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),best_sent,best_settled,discovery,time.monotonic()-started)
  except Exception:logger.exception("LIVE scan failed; runner will continue")
 async def status_loop():
  while True:
@@ -75,7 +77,7 @@ async def memory_watchdog():
  while True:await asyncio.sleep(MEMORY_DIAG_SECONDS);_mem("watchdog")
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");betb2b=asyncio.create_task(betb2b_loop(),name="betb2b-market-sampler");marketnode=asyncio.create_task(market_node_loop(),name="remote-market-node");markettest=asyncio.create_task(market_test_loop(),name="market-test-signal");memwatch=asyncio.create_task(memory_watchdog(),name="memory-watchdog")
- logger.info("GOOL LIVE | build=%s | live-only primary | remote_market_node=%s | BEST BET=on | owner total alerts=on",BUILD_ID,bool(market_node_bridge.URL));_mem("main_started")
+ logger.info("GOOL LIVE | build=%s | live-only primary | remote_market_node=%s | BEST BET=on+results | owner total alerts=on",BUILD_ID,bool(market_node_bridge.URL));_mem("main_started")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
