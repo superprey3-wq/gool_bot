@@ -1,9 +1,4 @@
-"""Send actionable GOOL LIVE events as infographic PNG cards.
-
-CORE result cards are market-aware: a new goal is only a trigger to re-check the selected
-primary market. BTTS, team totals and match totals are announced as wins only when that
-exact bet is fully won. VAR confirmation remains mandatory.
-"""
+"""Send actionable GOOL LIVE events as infographic PNG cards."""
 from __future__ import annotations
 import asyncio,copy,logging,math,re,requests,threading,time
 import live_candidate_patch as lc
@@ -17,7 +12,7 @@ from signal_card_archive import save_entry_card
 from signal_journal import all_signals
 from market_settlement import fully_won_now
 logger=logging.getLogger("telegram_image_signal_patch")
-_orig_send=lc._send;_GOAL_CANDIDATES={};_GOAL_LOCK=threading.Lock();GOAL_CONFIRM_MIN_SECONDS=40;GOAL_CONFIRM_RETRIES=3;GOAL_CONFIRM_RETRY_SECONDS=20;ENTRY_REFRESH_RETRIES=2;ENTRY_REFRESH_RETRY_SECONDS=2;_PENDING_VALUES={"","pending","wait","waiting"}
+_orig_send=lc._send;_GOAL_CANDIDATES={};_GOAL_LOCK=threading.Lock();_ENTRY_LOCK=threading.Lock();_ENTRY_SENT=set();GOAL_CONFIRM_MIN_SECONDS=40;GOAL_CONFIRM_RETRIES=3;GOAL_CONFIRM_RETRY_SECONDS=20;ENTRY_REFRESH_RETRIES=2;ENTRY_REFRESH_RETRY_SECONDS=2;_PENDING_VALUES={"","pending","wait","waiting"}
 def _score_tuple(value):
  try:a,b=str(value).split(":",1);return int(a),int(b)
  except:return 0,0
@@ -35,6 +30,23 @@ def _pending_row(event_id):
   if best is None or int(r.get("created_ts",0) or 0)>=int(best.get("created_ts",0) or 0):best=r
  return best
 def _has_pending_entry(event_id):return _pending_row(event_id) is not None
+def _already_sent_entry(event_id):
+ eid=str(event_id or "")
+ if not eid:return True
+ with _ENTRY_LOCK:
+  if eid in _ENTRY_SENT:return True
+ try:
+  state=unified_bot._load_sent()
+  if state.get(f"CORE_ENTRY:{eid}"):return True
+ except Exception:pass
+ return False
+def _mark_sent_entry(event_id):
+ eid=str(event_id or "")
+ if not eid:return
+ with _ENTRY_LOCK:_ENTRY_SENT.add(eid)
+ try:
+  state=unified_bot._load_sent();state[f"CORE_ENTRY:{eid}"]={"ts":int(time.time())};unified_bot._save_sent(state)
+ except Exception:logger.exception("Could not persist CORE entry lock %s",eid)
 def _display_probabilities(match,master,xg):
  minute=int(getattr(match,"minute",0) or 0);full_remaining=49.0 if getattr(match,"is_halftime",False) else max(0.0,94.0-minute);m=max(0.0,min(100.0,float(master or 0)));rate=(2.7/90.0)*(0.45+1.35*m/100.0);engine_lambda=max(0.0,rate*full_remaining);lam=engine_lambda;sources=int((xg or {}).get("sources",0) or 0);xg_lambda=float((xg or {}).get("lambda",0) or 0)
  if sources>=2 and xg_lambda>0:weight=0.35 if sources>=3 else 0.25;lam=engine_lambda*(1.0-weight)+xg_lambda*weight
@@ -45,15 +57,13 @@ def _primary_label(primary):
  if not isinstance(primary,dict):return "ВЫБРАННАЯ СТАВКА"
  kind=str(primary.get("market_type") or primary.get("market") or "TOTAL_OVER").upper();line=primary.get("line");team=str(primary.get("team_name") or "КОМАНДЫ")
  if kind=="BTTS":return "ОБЕ ЗАБЬЮТ — ДА"
- if kind=="TEAM_TOTAL_HOME" or kind=="TEAM_TOTAL_AWAY":return f"ИТБ {team} {float(line):g}"
+ if kind in {"TEAM_TOTAL_HOME","TEAM_TOTAL_AWAY"}:return f"ИТБ {team} {float(line):g}"
  if line is not None:return f"ТБ {float(line):g}"
  return kind
 def _compact_fallback(m,recs,kind,master,xg):
  primary=(recs or [None])[0]
  if kind=="goal":return f"✅ <b>СТАВКА ЗАШЛА</b>\n\n⚽ <b>{m.home} — {m.away}</b>\n⏱ {m.minute}' | <b>{m.home_score}:{m.away_score}</b>\n🎯 {_primary_label(primary)}"
- probs=_display_probabilities(m,master,xg);lines=["🔥 <b>СИГНАЛ — МОЖНО ЗАХОДИТЬ</b>","",f"⚽ <b>{m.home} — {m.away}</b>",f"⏱ {m.minute}' | <b>{m.home_score}:{m.away_score}</b>"];best=next((r for r in (recs or []) if r.get("best_concrete_bet")),None) or next((r for r in (recs or []) if r.get("best_bet")),None)
- if best:lines.append(f"⭐ <b>{_primary_label(best)}</b> @ <b>{float(best.get('odd',0)):.2f}</b>")
- lines.append(f"🧠 Рейтинг: <b>{float(master or 0):.0f}/100</b>");return "\n".join(lines)
+ lines=["🔥 <b>СИГНАЛ — МОЖНО ЗАХОДИТЬ</b>","",f"⚽ <b>{m.home} — {m.away}</b>",f"⏱ {m.minute}' | <b>{m.home_score}:{m.away_score}</b>",f"🧠 Рейтинг: <b>{float(master or 0):.0f}/100</b>"];return "\n".join(lines)
 def _send_text_to_chat(token,chat_id,text):
  try:r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage",json={"chat_id":str(chat_id),"text":text,"parse_mode":"HTML","disable_web_page_preview":True},timeout=20);return r.ok
  except requests.RequestException:return False
@@ -93,6 +103,14 @@ def _fresh_live_match(event_id):
   except Exception as exc:box["error"]=exc
  t=threading.Thread(target=worker,daemon=True);t.start();t.join(12)
  return None if t.is_alive() or box.get("error") else box.get("match")
+def _merge_live_fields(dst,src):
+ for name in ("minute","home_score","away_score","is_halftime","league"):
+  if hasattr(src,name):setattr(dst,name,getattr(src,name))
+ # Preserve/refresh live statistics when discovery actually carries them.
+ for name in ("stats","raw_stats","statistics","xg","xgot","shots","shots_on_target"):
+  val=getattr(src,name,None)
+  if val not in (None,{},[]):setattr(dst,name,copy.deepcopy(val))
+ return dst
 def _sync_entry_match(match):
  fresh=None
  for attempt in range(ENTRY_REFRESH_RETRIES):
@@ -100,7 +118,7 @@ def _sync_entry_match(match):
   if fresh is not None:break
   if attempt+1<ENTRY_REFRESH_RETRIES:time.sleep(ENTRY_REFRESH_RETRY_SECONDS)
  if fresh is None:return None
- synced=copy.copy(match);synced.minute=int(getattr(fresh,"minute",0) or 0);synced.home_score=int(getattr(fresh,"home_score",0) or 0);synced.away_score=int(getattr(fresh,"away_score",0) or 0);synced.is_halftime=bool(getattr(fresh,"is_halftime",False));return synced
+ return _merge_live_fields(copy.copy(match),fresh)
 def _confirm_goal_worker(event_id):
  time.sleep(GOAL_CONFIRM_MIN_SECONDS)
  for attempt in range(GOAL_CONFIRM_RETRIES):
@@ -110,7 +128,7 @@ def _confirm_goal_worker(event_id):
   if not row:
    with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
    return
-  before=tuple(candidate["before"]);target=tuple(candidate["after"])
+  target=tuple(candidate.get("after") or (0,0))
   try:
    body=fetch_summary(event_id)
    if not body:raise RuntimeError("empty summary")
@@ -124,17 +142,11 @@ def _confirm_goal_worker(event_id):
    with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
    return
   primary=row.get("primary")
-  # Critical: a goal is NOT automatically a win. Re-check the exact selected market.
   if not fully_won_now(primary,f"{current[0]}:{current[1]}"):
-   logger.info("PRIMARY_NOT_WON_YET %s market=%s score=%s",event_id,_primary_label(primary),current)
    with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
    return
-  fresh=_fresh_live_match(event_id);m=copy.copy(fresh or candidate["match"]);m.home_score,m.away_score=current;p=candidate["pressure"];master=candidate["master"];recs=[copy.deepcopy(primary)] if isinstance(primary,dict) else candidate["recs"]
-  if not _has_pending_entry(event_id):
-   with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
-   return
-  delivered=_send_photo_all(m,p,recs,"goal",master)
-  if delivered:_close_confirmed_entry(event_id,current,int(getattr(m,"minute",0) or 0))
+  fresh=_fresh_live_match(event_id);m=_merge_live_fields(copy.copy(candidate["match"]),fresh) if fresh else copy.copy(candidate["match"]);m.home_score,m.away_score=current;p=candidate["pressure"];master=candidate["master"];recs=[copy.deepcopy(primary)] if isinstance(primary,dict) else candidate["recs"]
+  if _has_pending_entry(event_id) and _send_photo_all(m,p,recs,"goal",master):_close_confirmed_entry(event_id,current,int(getattr(m,"minute",0) or 0))
   with _GOAL_LOCK:_GOAL_CANDIDATES.pop(event_id,None)
   return
 def _schedule_goal_confirmation(m,p,recs,master):
@@ -144,9 +156,7 @@ def _schedule_goal_confirmation(m,p,recs,master):
  if sum(current)<=sum(previous):return False
  with _GOAL_LOCK:
   existing=_GOAL_CANDIDATES.get(event_id)
-  if existing:
-   if sum(current)>sum(tuple(existing.get("after") or (0,0))):existing["after"]=current;existing["match"]=copy.copy(m)
-   return True
+  if existing:return True
   _GOAL_CANDIDATES[event_id]={"before":previous,"after":current,"match":copy.copy(m),"pressure":p,"recs":list(recs or []),"master":master,"ts":time.time()}
  threading.Thread(target=_confirm_goal_worker,args=(event_id,),daemon=True).start();return True
 def _send(m,p,recs,text):
@@ -159,7 +169,13 @@ def _send(m,p,recs,text):
   except ValueError:pass
  if master is None:master=float(getattr(p,"score",0) or 0)
  if kind=="goal":_schedule_goal_confirmation(m,p,recs,master);return False
+ eid=str(getattr(m,"event_id","") or "")
+ if _already_sent_entry(eid):
+  logger.info("CORE_ENTRY_DUPLICATE_BLOCKED event=%s",eid);return False
  synced=_sync_entry_match(m)
  if synced is None:return False
- return bool(_send_photo_all(synced,p,recs,"entry",master))
+ delivered=bool(_send_photo_all(synced,p,recs,"entry",master))
+ if delivered:_mark_sent_entry(eid)
+ return delivered
 lc._send=_send
+logger.info("CORE card patch | one-entry-per-event | fresh-live-fields")
