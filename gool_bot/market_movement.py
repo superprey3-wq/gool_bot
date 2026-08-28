@@ -1,11 +1,11 @@
 """Lightweight multi-source money-flow scoring for GOOL.
 
 Adds breadth, velocity, persistence, reversal and event-reset semantics while
-keeping a bounded in-memory history. No browser/database/new dependency.
+keeping a strictly bounded in-memory history. No browser/database/new dependency.
 """
 from __future__ import annotations
 import time
-_HISTORY={};_MAX_POINTS=8;_TTL=1800
+_HISTORY={};_MAX_POINTS=8;_TTL=1800;_MAX_KEYS=400
 
 def _f(v,d=0.):
  try:return float(v)
@@ -25,18 +25,21 @@ def _reset_if_needed(key,score,minute):
  if not h:return
  if score is not None and h.get("score") is not None and str(score)!=str(h.get("score")):_HISTORY.pop(key,None);return
  if minute is not None and h.get("minute") is not None and int(minute)<int(h.get("minute")):_HISTORY.pop(key,None)
+def _evict_if_needed():
+ if len(_HISTORY)<_MAX_KEYS:return
+ oldest=sorted(_HISTORY,key=lambda k:((_HISTORY[k].get("points") or [(0,{})])[-1][0]))[:max(1,len(_HISTORY)-_MAX_KEYS+1)]
+ for k in oldest:_HISTORY.pop(k,None)
 def _remember(row,event_id=None,score=None,minute=None):
- key=_row_key(row,event_id);_reset_if_needed(key,score,minute);now=time.time();prices=row.get("source_prices") or [];snap={_src(sp,i):_odd(sp) for i,sp in enumerate(prices) if _odd(sp)>1};h=_HISTORY.setdefault(key,{"points":[],"score":score,"minute":minute});h["score"]=score;h["minute"]=minute;h["points"].append((now,snap));h["points"]=h["points"][-_MAX_POINTS:];return h
+ key=_row_key(row,event_id);_reset_if_needed(key,score,minute);now=time.time();prices=row.get("source_prices") or [];snap={_src(sp,i):_odd(sp) for i,sp in enumerate(prices) if _odd(sp)>1}
+ if key not in _HISTORY:_evict_if_needed()
+ h=_HISTORY.setdefault(key,{"points":[],"score":score,"minute":minute});h["score"]=score;h["minute"]=minute;h["points"].append((now,snap));h["points"]=h["points"][-_MAX_POINTS:];return h
 
 def score_row(row:dict,event_id=None,score=None,minute=None)->dict:
  prices=row.get("source_prices") or [];toward=against=0;drops=[]
  for sp in prices:
   d,p=_dir(sp);drops.append(p);toward+=int(d=="toward" and p>=0.5);against+=int(d=="against" and p<=-0.5)
  n=len(prices);strongest=max(drops) if drops else 0.;weakest=min(drops) if drops else 0.;h=_remember(row,event_id,score,minute);pts=h.get("points") or []
- # Breadth: share of sources aligned with the move.
- breadth=(toward/max(1,n))*100 if n else 0.
- # Velocity: use first/last observed price per source when snapshots are available.
- velocity=0.;reversal=0.;persistent=0
+ breadth=(toward/max(1,n))*100 if n else 0.;velocity=0.;reversal=0.;persistent=0
  if len(pts)>=2:
   t0,s0=pts[0];t1,s1=pts[-1];dt=max(1.,t1-t0);moves=[]
   for src,o0 in s0.items():
@@ -44,7 +47,6 @@ def score_row(row:dict,event_id=None,score=None,minute=None)->dict:
    if o0>1 and o1 and o1>1:moves.append((o0-o1)/o0*100)
   if moves:
    mean=sum(moves)/len(moves);velocity=max(-100.,min(100.,mean*60/dt*10));persistent=sum(1 for x in moves if x>=.5)
-   # If the latest snapshot has moved back materially from best previous price, mark reversal.
    for src,o1 in s1.items():
     hist=[s.get(src) for _,s in pts[:-1] if s.get(src)]
     if hist:
