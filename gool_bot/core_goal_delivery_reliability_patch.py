@@ -1,14 +1,14 @@
-"""Guarantee CORE goal-card delivery before live reconciliation closes the journal row.
+"""Guarantee CORE goal-card delivery without confirming a goal that happened before entry.
 
-Previously core_primary_reconcile could mark a live CORE row WIN immediately after a
-score change. The confirmation worker then woke up, found no pending row, and skipped
-the green card. Route live score growth through the existing VAR-safe fast goal watcher
-instead. Final/disappeared-match settlement remains unchanged.
+A live score increase may reflect a score/journal sync lag.  Never use the current
+match minute as the goal minute: fetch the summary, extract the actual last goal
+minute, and only schedule confirmation when that goal is strictly after ENTRY.
 """
 from __future__ import annotations
 import logging,time
 import core_primary_reconcile as cpr
 import fast_goal_watch
+import score_sync_patch
 from daily_report import _score_from_summary
 from live_engine import fetch_summary
 from signal_journal import all_signals,update_signal
@@ -31,17 +31,27 @@ def reconcile(live)->int:
             fh,fa=int(m.home_score),int(m.away_score)
             if fh+fa<=sh+sa:
                 continue
-            # Critical: do NOT settle here. Schedule the same confirmation path that
-            # sends the green card; that worker marks the journal only after VAR-safe
-            # verification. This removes the journal-vs-card race.
-            scheduled=fast_goal_watch._schedule_direct(row,(fh,fa),int(getattr(m,"minute",0) or 0))
+            # A list-score ahead of the journal is NOT enough proof of a new goal.
+            # Read the summary and use the actual last-goal minute.  This prevents a
+            # pre-entry goal from being confirmed one minute after a freshly sent signal.
+            try:
+                body=fetch_summary(eid)
+                current,goal_minute=score_sync_patch._summary_state(body)
+            except Exception as exc:
+                log.info("CORE_GOAL_VERIFY_FAILED %s: %s",eid,exc);continue
+            if current is None or sum(current)<=sh+sa:
+                continue
+            if not fast_goal_watch._goal_is_after_entry(row,goal_minute):
+                log.warning("CORE_STALE_GOAL_NOT_CONFIRMED %s entry=%s score=%s current=%s goal_minute=%s",eid,row.get("minute"),row.get("score_at_signal"),current,goal_minute)
+                continue
+            scheduled=fast_goal_watch._schedule_direct(row,current,goal_minute)
             if scheduled:
-                log.info("CORE_GOAL_CARD_QUEUED_BEFORE_SETTLE %s %s:%s",eid,fh,fa)
+                log.info("CORE_GOAL_CARD_QUEUED_BEFORE_SETTLE %s %s:%s goal=%s'",eid,current[0],current[1],goal_minute)
             else:
-                log.warning("CORE_GOAL_CARD_QUEUE_FAILED %s %s:%s; keeping pending",eid,fh,fa)
+                log.warning("CORE_GOAL_CARD_QUEUE_FAILED %s %s:%s; keeping pending",eid,current[0],current[1])
             continue
 
-        # Match disappeared: keep the previous conservative final-settlement path.
+        # Match disappeared: keep the conservative final-settlement path.
         age=now-float(row.get("created_ts",0) or 0)
         if age<12*60:
             continue
@@ -62,4 +72,4 @@ def reconcile(live)->int:
     return fixed
 
 cpr.reconcile=reconcile
-log.info("CORE goal delivery reliability active | live WIN settles only through confirmation card path")
+log.info("CORE goal delivery reliability active | stale pre-entry goals rejected")
