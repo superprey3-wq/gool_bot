@@ -1,7 +1,7 @@
-"""Track LSApp CLV for exact CORE full-time match-total primary markets.
+"""Track exact LIVE total CLV for CORE and BEST BET journal rows.
 
-BTTS/team-total CLV is intentionally skipped until those exact market feeds are
-sampled by identifier; matching them to a same-number match total would be false.
+Uses the same Flashscore/LSApp event+scope+line+selection. Other market families
+stay fail-closed until exact identifier-safe feeds are available.
 """
 from __future__ import annotations
 import logging,time,statistics
@@ -9,15 +9,16 @@ from live_odds import fetch_live_odds
 from signal_journal import all_signals,update_signal
 logger=logging.getLogger("clv_tracker")
 def _same_market_odd(entries,primary):
- kind=str(primary.get("market_type") or primary.get("market") or "TOTAL_OVER").upper()
- if kind not in {"TOTAL","TOTAL_OVER","OVER_UNDER","OVER"}:return None
- try:scope=str(primary["scope"]);line=float(primary["line"])
+ kind=str(primary.get("market_type") or primary.get("market") or "TOTAL_OVER").upper();sel=str(primary.get("selection") or "").upper()
+ if kind not in {"TOTAL","TOTAL_OVER","OVER_UNDER","OVER","TOTAL_UNDER","UNDER"}:return None
+ side="UNDER" if kind in {"TOTAL_UNDER","UNDER"} or sel in {"UNDER","U"} else "OVER"
+ try:scope=str(primary.get("scope") or "FULL_TIME");line=float(primary["line"])
  except (KeyError,TypeError,ValueError):return None
  prices=[]
  for entry in entries or []:
   if str(entry.get("bettingType") or "")!="OVER_UNDER" or str(entry.get("bettingScope") or "FULL_TIME")!=scope:continue
   for item in entry.get("odds") or []:
-   if str(item.get("selection") or "").upper()!="OVER" or item.get("active") is False:continue
+   if str(item.get("selection") or "").upper()!=side or item.get("active") is False:continue
    try:
     if abs(float((item.get("handicap") or {}).get("value"))-line)>1e-9:continue
     odd=float(item.get("value"))
