@@ -1,4 +1,4 @@
-"""GOOL Market Server HTTP feed: persistent PROGRUZ + remote BEST BET."""
+"""GOOL Market Server HTTP feed: LIVE TOTAL OVER/UNDER PROGRUZ + remote BEST BET."""
 from __future__ import annotations
 import json,os,statistics,time,sqlite3
 from collections import defaultdict
@@ -28,16 +28,32 @@ def _records():
   for k in ("records","market_records","odds","normalized_odds"):
    if isinstance(d.get(k),list):rows=d[k];break
  return rows,"json" if rows else "none",None
+def _is_total(r):
+ m=str(r.get("market") or r.get("betting_type") or "").upper().replace("-","_").replace(" ","_")
+ return m in {"TOTAL","OVER_UNDER","OU","O/U"} or "OVER_UNDER" in m or m.endswith("TOTAL")
+def _ou_side(r):
+ s=str(r.get("side") or r.get("selection") or r.get("name") or "").upper().strip()
+ if s in {"OVER","O","ТБ","TB"} or s.startswith("OVER "):return "OVER"
+ if s in {"UNDER","U","ТМ","TM"} or s.startswith("UNDER "):return "UNDER"
+ return ""
+def _is_live(r):
+ st=str(r.get("status") or r.get("match_status") or "").upper().strip()
+ if st in {"FT","FINISHED","ENDED","NOT_STARTED","SCHEDULED","NS"}:return False
+ if st in {"LIVE","1H","2H","HT","HALFTIME","BREAK","IN_PLAY","INPLAY"}:return True
+ # Collector records for active matches may carry minute/score instead of a canonical status.
+ return bool(r.get("score") or r.get("minute") or r.get("live"))
 def strong_rows():
- records,source,meta=_records();groups=defaultdict(list)
+ records,source,meta=_records();groups=defaultdict(list);total_live=0
  for r in records:
-  if not isinstance(r,dict):continue
-  f=r.get("flow") or {};pct=f.get("delta_pct")
+  if not isinstance(r,dict) or not _is_total(r) or not _is_live(r):continue
+  side=_ou_side(r)
+  if not side:continue
+  total_live+=1;f=r.get("flow") or {};pct=f.get("delta_pct")
   try:pct=float(pct)
   except Exception:continue
   if pct>=-.6 or bool(f.get("reversal")):continue
-  key=(str(r.get("event_id") or ""),str(r.get("market") or ""),str(r.get("scope") or ""),str(r.get("line") if r.get("line") is not None else ""),str(r.get("side") or ""))
-  if key[0] and key[1] and key[4]:groups[key].append(r)
+  key=(str(r.get("event_id") or ""),"TOTAL",str(r.get("scope") or "FULL_TIME"),str(r.get("line") if r.get("line") is not None else ""),side)
+  if key[0] and key[3]:groups[key].append(r)
  out=[]
  for key,rows in groups.items():
   books={str(x.get("bookmaker") or x.get("bookmaker_id") or "") for x in rows if x.get("bookmaker") or x.get("bookmaker_id")};pcts=[];persist=0
@@ -48,8 +64,8 @@ def strong_rows():
   if len(books)<2 or not pcts:continue
   med=statistics.median(pcts);best=min(pcts);score=round(min(100,55+min(18,len(books)*4)+min(15,abs(med)*4)+min(10,persist*3)),1)
   if score<MIN_SCORE:continue
-  r=rows[0];out.append({"id":"|".join(key),"event_id":key[0],"home":r.get("home") or "","away":r.get("away") or "","score_live":r.get("score") or "","status":r.get("status") or "","market":key[1],"scope":key[2],"line":r.get("line"),"side":key[4],"odd":r.get("odd"),"books":len(books),"median_delta_pct":round(med,3),"best_delta_pct":round(best,3),"persistent_books":persist,"strength":score,"source":source,"ts":time.time()})
- out.sort(key=lambda x:(x["strength"],x["books"],abs(x["median_delta_pct"])),reverse=True);return out[:20],source,meta,len(records)
+  r=rows[0];out.append({"id":"|".join(key),"event_id":key[0],"home":r.get("home") or "","away":r.get("away") or "","score_live":r.get("score") or "","status":r.get("status") or "","market":"TOTAL","scope":key[2],"line":r.get("line"),"side":key[4],"odd":r.get("odd"),"books":len(books),"median_delta_pct":round(med,3),"best_delta_pct":round(best,3),"persistent_books":persist,"strength":score,"source":source,"ts":time.time()})
+ out.sort(key=lambda x:(x["strength"],x["books"],abs(x["median_delta_pct"])),reverse=True);return out[:20],source,meta,len(records),total_live
 def best_bet_payload():
  d=_load(BEST_STATE);sig=d.get("signal") if isinstance(d,dict) else None;return {"ok":True,"ts":time.time(),"worker_ts":d.get("ts") if isinstance(d,dict) else None,"live":d.get("live",0) if isinstance(d,dict) else 0,"sent":d.get("sent",0) if isinstance(d,dict) else 0,"signal":sig if isinstance(sig,dict) else None}
 class H(BaseHTTPRequestHandler):
@@ -59,11 +75,11 @@ class H(BaseHTTPRequestHandler):
    self.send_response(404);self.end_headers();return
   if path=="/bestbet":body=best_bet_payload()
   else:
-   strong,source,meta,n=strong_rows()
-   if path=="/health":body={"ok":True,"ts":time.time(),"market_source":source,"market_records":n,"snapshot":meta,"db":str(DB),"best_bet_state_exists":BEST_STATE.exists()}
-   elif path=="/markets":body={"ok":True,"ts":time.time(),"source":source,"records":n,"snapshot":meta}
-   else:body={"ok":True,"ts":time.time(),"market_source":source,"market_records":n,"strong":strong,"best_bet":best_bet_payload().get("signal")}
+   strong,source,meta,n,total_live=strong_rows()
+   if path=="/health":body={"ok":True,"ts":time.time(),"mode":"LIVE_TOTAL_OU","market_source":source,"market_records":n,"live_total_rows":total_live,"snapshot":meta,"db":str(DB),"best_bet_state_exists":BEST_STATE.exists()}
+   elif path=="/markets":body={"ok":True,"ts":time.time(),"mode":"LIVE_TOTAL_OU","source":source,"records":n,"live_total_rows":total_live,"snapshot":meta}
+   else:body={"ok":True,"ts":time.time(),"mode":"LIVE_TOTAL_OU","market_source":source,"market_records":n,"live_total_rows":total_live,"strong":strong,"best_bet":best_bet_payload().get("signal")}
   raw=json.dumps(body,ensure_ascii=False).encode();self.send_response(200);self.send_header("Content-Type","application/json; charset=utf-8");self.send_header("Content-Length",str(len(raw)));self.end_headers();self.wfile.write(raw)
  def log_message(self,fmt,*args):return
 if __name__=="__main__":
- print(f"GOOL_MARKET_SERVER feed starting port={PORT} strong>={MIN_SCORE} sqlite={DB}",flush=True);ThreadingHTTPServer((HOST,PORT),H).serve_forever()
+ print(f"GOOL_MARKET_SERVER LIVE TOTAL O/U feed port={PORT} strong>={MIN_SCORE} sqlite={DB}",flush=True);ThreadingHTTPServer((HOST,PORT),H).serve_forever()
