@@ -1,10 +1,4 @@
-"""MonkeyBytes runtime: market collectors + lightweight PROGRUZ feed + BEST BET.
-
-The old full live-only-quant bot is intentionally NOT started here. PROGRUZ is
-computed from browser_market_node state by strong_proguz_feed; Telegram delivery
-remains on the main GOOL host. This avoids duplicating the full GOOL runtime and
-keeps Monkey CPU comfortably below its 150% quota.
-"""
+"""MonkeyBytes runtime: market collectors + lightweight PROGRUZ feed + BEST BET."""
 from __future__ import annotations
 import os,signal,subprocess,sys,time,urllib.request
 from pathlib import Path
@@ -43,7 +37,8 @@ def stop(p):
    try:p.kill()
    except Exception:pass
 def main():
- print("GOOL MONKEY MARKET+PROGRUZ+BEST_BET starting",flush=True);sync_bestbet();sync_asset("browser_market_all.py",ALL_COLLECTOR);sync_asset("prematch_market_node.py",PREMATCH);sync_asset("strong_proguz_feed.py",FEED);install_requirements();env=child_env();live=start(ALL_COLLECTOR,env);prematch=start(PREMATCH,env);bestbet=start_bestbet(env);feed=start(FEED,env);print(f"GOOL MONKEY ONLINE live_pid={live.pid} prematch_pid={prematch.pid} bestbet_pid={bestbet.pid} feed_pid={feed.pid} strong>=80 odds_scope=ALL_LIVE",flush=True)
+ print("GOOL MONKEY MARKET+PROGRUZ+BEST_BET starting",flush=True)
+ sync_bestbet();sync_asset("browser_market_node.py",COLLECTOR);sync_asset("browser_market_all.py",ALL_COLLECTOR);sync_asset("prematch_market_node.py",PREMATCH);sync_asset("strong_proguz_feed.py",FEED);install_requirements();env=child_env();live=start(ALL_COLLECTOR,env);prematch=start(PREMATCH,env);bestbet=start_bestbet(env);feed=start(FEED,env);print(f"GOOL MONKEY ONLINE live_pid={live.pid} prematch_pid={prematch.pid} bestbet_pid={bestbet.pid} feed_pid={feed.pid} strong>=80 odds_scope=ALL_LIVE",flush=True)
  stopping=False
  def sig(*_):
   nonlocal stopping;stopping=True
