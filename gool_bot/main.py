@@ -56,6 +56,8 @@ import live_button_emergency_patch
 import best_bet_input_reliability_patch
 import best_bet_engine
 import best_bet_consensus_patch
+# Do not let an invisible failed Telegram send lock BEST BET as pending.
+import best_bet_delivery_reliability_patch
 import best_bet_diagnostics_patch
 import runtime_resource_guard
 from league_signal_gate import filter_for_multi_engine
@@ -90,7 +92,7 @@ async def resource_loop():
   logger.info("RESOURCE_WATCH rss=%.1fMB available=%.1fMB load_ratio=%.2f status=%s",s['rss_mb'],s['mem_available_mb'],s['load_ratio'],reason)
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");resources=asyncio.create_task(resource_loop(),name="resource-watch")
- logger.info("GOOL LIVE | CORE+1H+2H | BEST BET=on+fairvalue+flow+consensus+input-recovery | strong_proguz_relay=on | goal-card-race-fix=on | resource_guard=on")
+ logger.info("GOOL LIVE | CORE+1H+2H | BEST BET=on+fairvalue+flow+consensus+input-recovery+delivery-safe | strong_proguz_relay=on | goal-card-race-fix=on | resource_guard=on")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
