@@ -1,4 +1,4 @@
-"""Read-only strong market-flow feed for the main GOOL bot."""
+"""Read-only MonkeyBytes feed for strong market flow + remote BEST BET."""
 from __future__ import annotations
 import json, os, statistics, time
 from collections import defaultdict
@@ -6,12 +6,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 STATE=Path(os.getenv("GOOL_MARKET_STATE","/home/container/market_node_state.json"))
+BEST_STATE=Path(os.getenv("GOOL_REMOTE_BEST_BET_STATE","/home/container/remote_best_bet_state.json"))
 HOST="0.0.0.0"; PORT=int(os.getenv("GOOL_STRONG_FEED_PORT",os.getenv("SERVER_PORT","5056")))
 MIN_SCORE=float(os.getenv("GOOL_STRONG_MIN_SCORE","80"))
 
-def _load():
+def _load(path=STATE):
  try:
-  d=json.loads(STATE.read_text(encoding="utf-8")); return d if isinstance(d,dict) else {}
+  d=json.loads(path.read_text(encoding="utf-8")); return d if isinstance(d,dict) else {}
  except Exception:return {}
 
 def _records(d):
@@ -47,15 +48,23 @@ def strong_rows():
  out.sort(key=lambda x:(x["strength"],x["books"],abs(x["median_delta_pct"])),reverse=True)
  return out[:20]
 
+def best_bet_payload():
+ d=_load(BEST_STATE)
+ sig=d.get("signal") if isinstance(d,dict) else None
+ return {"ok":True,"ts":time.time(),"worker_ts":d.get("ts") if isinstance(d,dict) else None,"live":d.get("live",0) if isinstance(d,dict) else 0,"sent":d.get("sent",0) if isinstance(d,dict) else 0,"signal":sig if isinstance(sig,dict) else None}
+
 class H(BaseHTTPRequestHandler):
  def do_GET(self):
-  if self.path.split("?",1)[0] not in ("/","/strong","/health"):
+  path=self.path.split("?",1)[0]
+  if path not in ("/","/strong","/bestbet","/health"):
    self.send_response(404);self.end_headers();return
-  body={"ok":True,"ts":time.time(),"strong":strong_rows()} if not self.path.startswith("/health") else {"ok":True,"ts":time.time(),"state_exists":STATE.exists()}
+  if path=="/health":body={"ok":True,"ts":time.time(),"state_exists":STATE.exists(),"best_bet_state_exists":BEST_STATE.exists()}
+  elif path=="/bestbet":body=best_bet_payload()
+  else:body={"ok":True,"ts":time.time(),"strong":strong_rows(),"best_bet":best_bet_payload().get("signal")}
   raw=json.dumps(body,ensure_ascii=False).encode()
   self.send_response(200);self.send_header("Content-Type","application/json; charset=utf-8");self.send_header("Content-Length",str(len(raw)));self.end_headers();self.wfile.write(raw)
  def log_message(self,fmt,*args):return
 
 if __name__=="__main__":
- print(f"GOOL_STRONG_FEED starting port={PORT} min_strength={MIN_SCORE}",flush=True)
+ print(f"GOOL_MONKEY_FEED starting port={PORT} strong>={MIN_SCORE} bestbet=on",flush=True)
  ThreadingHTTPServer((HOST,PORT),H).serve_forever()
