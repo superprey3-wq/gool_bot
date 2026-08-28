@@ -64,7 +64,7 @@ def _source_summary(ctx):
  if ctx.get('history'):names.append('Form/H2H')
  return names
 def _source_label(names):
- aliases={'Flashscore':'FS','GOAL API':'GOAL','FotMob':'FotMob','365Scores':'365','Form/H2H':'H2H'}
+ aliases={'Flashscore':'FS','GOAL API':'G','FotMob':'FM','365Scores':'365','Form/H2H':'H2H'}
  return ' · '.join(aliases.get(x,x) for x in names)
 def _reason(p,probs):
  st=_stats(p);ctx=_ctx(p);sc=ctx.get('strategies') or {};shots=sum(_pair(st,'shots'));sot=sum(_pair(st,'shots_on_target'));xg=sum(_pair(st,'xg'));reasons=[]
@@ -76,14 +76,22 @@ def _reason(p,probs):
  if pgoal:reasons.append(f'Вероятность ещё одного гола ≈ {pgoal}%.')
  return reasons[:4] or ['Сигнал сформирован LIVE-моделью, формой и независимой проверкой.']
 def render_signal_card(match:Any,pressure:Any,recs:list[dict[str,Any]]|None=None,kind='entry',master=None,probabilities=None)->bytes:
- win=kind=='goal';accent=GREEN if win else GOLD;H=860 if win else 1280;img=Image.new('RGBA',(W,H),BG+(255,));d=ImageDraw.Draw(img)
+ win=kind=='goal';accent=GREEN if win else GOLD;H=900 if win else 1280;img=Image.new('RGBA',(W,H),BG+(255,));d=ImageDraw.Draw(img)
  d.rounded_rectangle((24,20,W-24,112),24,fill=PANEL,outline=accent,width=2);d.text((52,36),'GOOL CORE 2.0',font=_font(36,True),fill=accent);d.text((52,78),'LIVE FOOTBALL • MULTI-SOURCE ANALYSIS',font=_font(16,True),fill=TEXT);d.rounded_rectangle((830,38,1028,93),16,outline=accent,width=2);d.text((862,53),'GOAL' if win else 'ENTRY',font=_font(20,True),fill=accent)
  hn,an=_logos(getattr(match,'event_id',''));_badge(img,d,180,282,_dl(hn),match.home,accent);_badge(img,d,900,282,_dl(an),match.away,accent);d.rounded_rectangle((390,202,690,365),28,fill=(9,19,31),outline=accent,width=3);_center(d,f'{match.home_score} : {match.away_score}',242,_font(66,True),TEXT);_center(d,'ПЕРЕРЫВ' if getattr(match,'is_halftime',False) else f"{match.minute}'",318,_font(27,True),accent)
  for x,n in ((180,match.home),(900,match.away)):
   f=_fit(d,n,330,30);b=d.textbbox((0,0),n,font=f);d.text((x-(b[2]-b[0])/2,383),n,font=f,fill=TEXT)
  _center(d,getattr(match,'league','') or 'LIVE FOOTBALL',434,_fit(d,getattr(match,'league','') or 'LIVE FOOTBALL',850,22,False),MUTED)
  if win:
-  d.rounded_rectangle((70,520,1010,720),28,fill=(8,25,24),outline=GREEN,width=3);_center(d,'✓ СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ',555,_fit(d,'✓ СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ',850,38,True),GREEN);_center(d,'Модель ожидала продолжение голевой активности',620,_font(23,True),TEXT);footer=795
+  before=str(getattr(match,'entry_score','') or getattr(match,'score_at_signal','') or '')
+  after=f'{match.home_score}:{match.away_score}'
+  d.rounded_rectangle((70,505,1010,760),28,fill=(8,25,24),outline=GREEN,width=3)
+  _center(d,'✓ СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ',535,_fit(d,'✓ СИГНАЛ ПОДТВЕРЖДЁН — ГОЛ',850,38,True),GREEN)
+  if before:_center(d,f'{before}  →  {after}',610,_font(42,True),TEXT)
+  else:_center(d,after,610,_font(42,True),TEXT)
+  goal_min=int(getattr(match,'goal_minute',0) or getattr(match,'minute',0) or 0)
+  if goal_min:_center(d,f'Гол после входа • {goal_min}\'',674,_font(22,True),GREEN)
+  _center(d,'Прогноз на продолжение голевой активности подтверждён',716,_fit(d,'Прогноз на продолжение голевой активности подтверждён',850,21,False),MUTED);footer=835
  else:
   probs=probabilities or {};rating=int(round(float(master if master is not None else getattr(pressure,'score',0) or 0)));ctx=_ctx(pressure);sc=ctx.get('strategies') or {};sources=_source_summary(ctx);st=_stats(pressure);xg=sum(_pair(st,'xg'));xgot=sum(_pair(st,'xgot'));shots=sum(_pair(st,'shots'));sot=sum(_pair(st,'shots_on_target'))
   d.rounded_rectangle((55,480,1025,670),25,fill=PANEL2,outline=GOLD,width=2);d.text((85,505),'⚽ СИГНАЛ: ОЖИДАЕМ ГОЛ',font=_font(25,True),fill=GOLD);d.text((85,554),'Устойчивое продолжение голевой активности',font=_fit(d,'Устойчивое продолжение голевой активности',690,25,True),fill=TEXT);d.text((85,606),'LIVE-статистика + форма + независимая проверка',font=_fit(d,'LIVE-статистика + форма + независимая проверка',690,17,False),fill=MUTED);d.text((835,505),'GOOL',font=_font(16,True),fill=MUTED);d.text((825,540),f'{rating}/100',font=_font(39,True),fill=GOLD)
