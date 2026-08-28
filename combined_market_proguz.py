@@ -1,10 +1,10 @@
-"""MonkeyBytes runtime: market collectors + lightweight PROGRUZ feed + BEST BET."""
+"""MonkeyBytes runtime: GOOL Market Server + PROGRUZ + BEST BET."""
 from __future__ import annotations
 import os,signal,subprocess,sys,time,urllib.request
 from pathlib import Path
 HOME=Path(os.getenv("GOOL_HOME","/home/container"));BESTBET_DIR=HOME/"bestbet_runtime"
 REPO="https://github.com/superprey3-wq/gool_bot.git";BESTBET_BRANCH="main"
-COLLECTOR=HOME/"browser_market_node.py";ALL_COLLECTOR=HOME/"browser_market_all.py";PREMATCH=HOME/"prematch_market_node.py";FEED=HOME/"strong_proguz_feed.py"
+COLLECTOR=HOME/"browser_market_node.py";ALL_COLLECTOR=HOME/"browser_market_all.py";PREMATCH=HOME/"prematch_market_node.py";FEED=HOME/"strong_proguz_feed.py";STORE=HOME/"market_store.py";STORE_BRIDGE=HOME/"market_store_bridge.py"
 RAW_BASE="https://raw.githubusercontent.com/superprey3-wq/gool_bot/browser-market-node/"
 def run(cmd,cwd=None,check=True):
  print("GOOL COMBINED exec:"," ".join(map(str,cmd)),flush=True);return subprocess.run(cmd,cwd=str(cwd) if cwd else None,check=check)
@@ -25,7 +25,7 @@ def install_requirements():
  for req in (HOME/"requirements-browser-node.txt",BESTBET_DIR/"requirements.txt",BESTBET_DIR/"gool_bot"/"requirements.txt"):
   if req.exists() and str(req.resolve()) not in seen:seen.add(str(req.resolve()));run([sys.executable,"-m","pip","install","--user","-r",str(req)])
 def child_env():
- env=os.environ.copy();env.setdefault("PYTHONUNBUFFERED","1");env.setdefault("GOOL_MARKET_STATE",str(HOME/"market_node_state.json"));env.setdefault("GOOL_MARKET_HISTORY",str(HOME/"market_node_history_v6.json"));env.setdefault("GOOL_MARKET_ALL_MAX_EVENTS","250");env.setdefault("GOOL_MARKET_ALL_MAX_RECORDS","30000");env.setdefault("GOOL_MARKET_ALL_PER_EVENT","300");env.setdefault("GOOL_PREMATCH_STATE",str(HOME/"prematch_market_state.json"));env.setdefault("GOOL_PREMATCH_POLL_SECONDS","420");env.setdefault("GOOL_PREMATCH_MAX_FIXTURES","140");env.setdefault("GOOL_PREMATCH_ODDS_EVENTS","60");env.setdefault("GOOL_STRONG_MIN_SCORE","80");env.setdefault("GOOL_REMOTE_BEST_BET_STATE",str(HOME/"remote_best_bet_state.json"));env.setdefault("GOOL_REMOTE_BEST_BET_POLL_SECONDS","75");env.setdefault("SIGNAL_JOURNAL_FILE",str(HOME/"remote_best_bet_journal.json"));return env
+ env=os.environ.copy();env.setdefault("PYTHONUNBUFFERED","1");env.setdefault("GOOL_MARKET_STATE",str(HOME/"market_node_state.json"));env.setdefault("GOOL_MARKET_HISTORY",str(HOME/"market_node_history_v6.json"));env.setdefault("GOOL_MARKET_DB",str(HOME/"gool_market.sqlite3"));env.setdefault("GOOL_MARKET_STORE_POLL","5");env.setdefault("GOOL_MARKET_DB_RETENTION_SECONDS","21600");env.setdefault("GOOL_MARKET_ALL_MAX_EVENTS","250");env.setdefault("GOOL_MARKET_ALL_MAX_RECORDS","30000");env.setdefault("GOOL_MARKET_ALL_PER_EVENT","300");env.setdefault("GOOL_PREMATCH_STATE",str(HOME/"prematch_market_state.json"));env.setdefault("GOOL_PREMATCH_POLL_SECONDS","420");env.setdefault("GOOL_PREMATCH_MAX_FIXTURES","140");env.setdefault("GOOL_PREMATCH_ODDS_EVENTS","60");env.setdefault("GOOL_STRONG_MIN_SCORE","80");env.setdefault("GOOL_REMOTE_BEST_BET_STATE",str(HOME/"remote_best_bet_state.json"));env.setdefault("GOOL_REMOTE_BEST_BET_POLL_SECONDS","75");env.setdefault("SIGNAL_JOURNAL_FILE",str(HOME/"remote_best_bet_journal.json"));return env
 def start(script,env,cwd=HOME):
  if not script.exists():raise FileNotFoundError(script)
  return subprocess.Popen([sys.executable,"-u",str(script)],cwd=str(cwd),env=env)
@@ -37,18 +37,21 @@ def stop(p):
    try:p.kill()
    except Exception:pass
 def main():
- print("GOOL MONKEY MARKET+PROGRUZ+BEST_BET starting",flush=True)
- sync_bestbet();sync_asset("browser_market_node.py",COLLECTOR);sync_asset("browser_market_all.py",ALL_COLLECTOR);sync_asset("prematch_market_node.py",PREMATCH);sync_asset("strong_proguz_feed.py",FEED);install_requirements();env=child_env();live=start(ALL_COLLECTOR,env);prematch=start(PREMATCH,env);bestbet=start_bestbet(env);feed=start(FEED,env);print(f"GOOL MONKEY ONLINE live_pid={live.pid} prematch_pid={prematch.pid} bestbet_pid={bestbet.pid} feed_pid={feed.pid} strong>=80 odds_scope=ALL_LIVE",flush=True)
+ print("GOOL MONKEY MARKET-SERVER+PROGRUZ+BEST-BET starting",flush=True)
+ sync_bestbet()
+ for name,path in (("browser_market_node.py",COLLECTOR),("browser_market_all.py",ALL_COLLECTOR),("prematch_market_node.py",PREMATCH),("strong_proguz_feed.py",FEED),("market_store.py",STORE),("market_store_bridge.py",STORE_BRIDGE)):sync_asset(name,path)
+ install_requirements();env=child_env();live=start(ALL_COLLECTOR,env);prematch=start(PREMATCH,env);store=start(STORE_BRIDGE,env);bestbet=start_bestbet(env);feed=start(FEED,env);print(f"GOOL MONKEY ONLINE live={live.pid} prematch={prematch.pid} store={store.pid} bestbet={bestbet.pid} feed={feed.pid} sqlite=on strong>=80",flush=True)
  stopping=False
  def sig(*_):
   nonlocal stopping;stopping=True
  signal.signal(signal.SIGTERM,sig);signal.signal(signal.SIGINT,sig)
  try:
   while not stopping:
-   if live.poll() is not None:print(f"GOOL MONKEY live exited rc={live.returncode}; restarting",flush=True);time.sleep(2);live=start(ALL_COLLECTOR,env)
-   if prematch.poll() is not None:print(f"GOOL MONKEY prematch exited rc={prematch.returncode}; restarting",flush=True);time.sleep(2);prematch=start(PREMATCH,env)
-   if bestbet.poll() is not None:print(f"GOOL MONKEY bestbet exited rc={bestbet.returncode}; restarting",flush=True);time.sleep(3);bestbet=start_bestbet(env)
-   if feed.poll() is not None:print(f"GOOL MONKEY feed exited rc={feed.returncode}; restarting",flush=True);time.sleep(2);feed=start(FEED,env)
+   for name,p,script,cwd in (("live",live,ALL_COLLECTOR,HOME),("prematch",prematch,PREMATCH,HOME),("store",store,STORE_BRIDGE,HOME),("bestbet",bestbet,BESTBET_DIR/"gool_bot"/"best_bet_remote_worker.py",BESTBET_DIR/"gool_bot"),("feed",feed,FEED,HOME)):
+    if p.poll() is not None:
+     print(f"GOOL MONKEY {name} exited rc={p.returncode}; supervisor restart required",flush=True);return
    time.sleep(3)
- finally:stop(feed);stop(bestbet);stop(prematch);stop(live);print("GOOL MONKEY stopped",flush=True)
+ finally:
+  for p in (feed,bestbet,store,prematch,live):stop(p)
+  print("GOOL MONKEY stopped",flush=True)
 if __name__=="__main__":main()
