@@ -47,10 +47,11 @@ def _record(m,p,s,recs,reason):
  if record_reason in {"signal","reentry"}:
   meta=_PENDING_META.pop((eid,minute),{});c=[r for r in all_signals() if r.get("kind")=="live" and str(r.get("event_id"))==eid and int(r.get("minute") or 0)==minute and str(r.get("reason") or "signal") in {"signal","reentry"}]
   if c:
-   row=max(c,key=lambda x:int(x.get("created_ts",0) or 0));fields={"journal_version":6,"stake_units":1.0,"next_goal_hit":False,"signal_result":"pending"};primary=_selected_primary(recs)
+   row=max(c,key=lambda x:int(x.get("created_ts",0) or 0));fields={"journal_version":7,"stake_units":1.0,"next_goal_hit":False,"signal_result":"pending","score_at_signal":score,"last_score":score,"last_minute":minute,"entry_score_source":"live_match_snapshot"};primary=_selected_primary(recs)
    if primary:fields["primary"]=primary;fields["odd"]=primary.get("odd");fields["market_status"]=primary.get("external_market_status") or primary.get("market_status") or primary.get("market_consensus")
    if meta.get("master") is not None:fields["master"]=float(meta["master"])
    update_signal(str(row.get("dedupe_key")),**fields)
+   logger.info("CORE_ENTRY_SCORE_ANCHORED %s minute=%s score=%s",eid,minute,score)
  return result
 def mark_latest_entry_goal(event_id,final_score=None,goal_minute=None):
  eid=str(event_id or "");rows=[r for r in all_signals() if r.get("kind")=="live" and str(r.get("event_id"))==eid and str(r.get("reason") or "signal") in {"signal","reentry"} and str(r.get("result") or "pending").strip().lower() in _PENDING]
