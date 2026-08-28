@@ -46,6 +46,7 @@ import report_journal_detail_patch
 import clv_tracker
 import live_status_heartbeat
 import fast_goal_watch
+import core_live_stats_reliability_patch
 import multi_engine_runtime
 import live_button_patch
 import live_button_emergency_patch
