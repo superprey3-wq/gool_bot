@@ -1,6 +1,6 @@
 """Lightweight journal calibration/drift guard for BEST BET.
 
-No training job is run in production.  Metrics are cached for five minutes and
+No training job is run in production. Metrics are cached for five minutes and
 only penalize a market after a meaningful settled sample exists.
 """
 from __future__ import annotations
@@ -20,8 +20,9 @@ def metrics():
  if now-_CACHE[0]<300:return _CACHE[1]
  agg={}
  for r in all_signals():
-  if r.get("kind")!="best_bet" or str(r.get("result")) not in {"win","loss","push"}:continue
-  g=_group(r);a=agg.setdefault(g,{"n":0,"wins":0,"losses":0,"pushes":0,"pnl":0.0,"clv":[]});a["n"]+=1;a[str(r.get("result"))+"es" if r.get("result")!="loss" else "losses"]+=1
+  result=str(r.get("result") or "")
+  if r.get("kind")!="best_bet" or result not in {"win","loss","push"}:continue
+  g=_group(r);a=agg.setdefault(g,{"n":0,"wins":0,"losses":0,"pushes":0,"pnl":0.0,"clv":[]});a["n"]+=1;a[{"win":"wins","loss":"losses","push":"pushes"}[result]]+=1
   try:a["pnl"]+=float(r.get("bet_pnl_units") or 0)
   except Exception:pass
   for key in ("clv_120_implied_pp","clv_60_implied_pp"):
