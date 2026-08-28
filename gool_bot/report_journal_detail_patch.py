@@ -1,4 +1,4 @@
-"""Compact on-demand GOOL report with auditable results and BEST BET status."""
+"""Compact on-demand GOOL report with auditable daily performance and BEST BET status."""
 from __future__ import annotations
 import json
 import logging
@@ -32,6 +32,14 @@ def _counts(rows,state_fn):
     states=[state_fn(r) for r in rows]
     return (sum(s=='win' for s in states),sum(s=='loss' for s in states),sum(s=='push' for s in states),sum(s=='pending' for s in states))
 
+def _rate(w,l):
+    n=w+l
+    return (100.0*w/n) if n else None
+
+def _rate_txt(w,l):
+    r=_rate(w,l)
+    return '—' if r is None else f'{r:.1f}%'
+
 def _line(r,label,state):
     score0=str(r.get('score_at_signal') or '—')
     score1=str(r.get('next_goal_score') or r.get('final_score') or '—')
@@ -40,7 +48,7 @@ def _line(r,label,state):
 def _best_lines(rows):
     bb=[r for r in rows if r.get('kind')=='best_bet']
     w,l,p,wait=_counts(bb,_aux_state)
-    lines=[f"🏆 <b>BEST BET:</b> {len(bb)} · ✅ {w} · ❌ {l} · ⏳ {wait}"]
+    lines=[f"🏆 <b>BEST BET:</b> {len(bb)} · ✅ {w} · ❌ {l} · ⏳ {wait} · WR {_rate_txt(w,l)}"]
     if bb:
         r=bb[-1];p0=r.get('primary') or {};name=p0.get('label') or p0.get('market') or p0.get('market_type') or 'рынок';odd=p0.get('odd');od=f" @{float(odd):.2f}" if odd else ''
         lines.append(f"Последняя: {_mark(r.get('result'))} {r.get('home')} — {r.get('away')} | {name}{od}")
@@ -53,19 +61,32 @@ def _best_lines(rows):
         except Exception:pass
     return lines
 
+def _master_line(core):
+    vals=[]
+    for r in core:
+        try:vals.append(float(r.get('master')))
+        except (TypeError,ValueError):pass
+    if not vals:return None
+    return f"⭐ CORE MASTER: средний <b>{sum(vals)/len(vals):.1f}/100</b> · 80+: <b>{sum(v>=80 for v in vals)}/{len(vals)}</b>"
+
 def build_report_text():
     rows=report_now._today_rows();core=report_now._live_signal_rows(rows);fh=report_now._engine_rows(rows,FIRST_HALF_GOAL);sh=report_now._engine_rows(rows,SECOND_HALF_OVER15)
     cw,cl,_,cp=_counts(core,_goal_state);fw,fl,fp,fwait=_counts(fh,_aux_state);sw,sl,sp,swait=_counts(sh,_aux_state)
     initial=sum(1 for r in core if str(r.get('reason') or 'signal')=='signal');reentries=sum(1 for r in core if str(r.get('reason') or 'signal')=='reentry')
+    total_w=cw+fw+sw;total_l=cl+fl+sl;total_push=fp+sp;total_pending=cp+fwait+swait;total_entries=len(core)+len(fh)+len(sh)
     from datetime import datetime
     lines=[
-        '📊 <b>GOOL 2.0 — СЕЙЧАС</b>',
+        '📊 <b>GOOL 2.0 — ИТОГ СЕГОДНЯ</b>',
         f"🗓 {datetime.now(report_now.MOSCOW).strftime('%d.%m.%Y %H:%M')}",
         '',
-        f"🟡 <b>CORE:</b> {len(core)} входов ({initial}+{reentries}) · ✅ {cw} · ❌ {cl} · ⏳ {cp}",
-        f"🔵 <b>1H GOAL:</b> {len(fh)} · ✅ {fw} · ❌ {fl} · ↩️ {fp} · ⏳ {fwait}",
-        f"🟣 <b>2H ТБ1.5:</b> {len(sh)} · ✅ {sw} · ❌ {sl} · ↩️ {sp} · ⏳ {swait}",
+        f"🎯 <b>ОБЩИЙ WR:</b> {_rate_txt(total_w,total_l)} · ✅ {total_w} / ❌ {total_l} · закрыто {total_w+total_l+total_push}/{total_entries} · ⏳ {total_pending}",
+        '',
+        f"🟡 <b>CORE:</b> {len(core)} ({initial}+{reentries}) · ✅ {cw} · ❌ {cl} · ⏳ {cp} · <b>WR {_rate_txt(cw,cl)}</b>",
+        f"🔵 <b>1H GOAL:</b> {len(fh)} · ✅ {fw} · ❌ {fl} · ↩️ {fp} · ⏳ {fwait} · <b>WR {_rate_txt(fw,fl)}</b>",
+        f"🟣 <b>2H ТБ1.5:</b> {len(sh)} · ✅ {sw} · ❌ {sl} · ↩️ {sp} · ⏳ {swait} · <b>WR {_rate_txt(sw,sl)}</b>",
     ]
+    master=_master_line(core)
+    if master:lines.append(master)
     lines += _best_lines(rows)
 
     settled=[]
@@ -82,8 +103,8 @@ def build_report_text():
     if settled:
         lines += ['', '<b>Последние результаты:</b>']
         lines += [_line(r,label,st) for _,r,label,st in settled[-6:]]
-    lines += ['', '<i>Полный JSON-журнал: команда /journal</i>']
+    lines += ['', '<i>/journal — полный журнал</i>']
     return '\n'.join(lines)
 
 report_now.build_report_text=build_report_text
-log.info('REPORT_JOURNAL_DETAIL compact enabled')
+log.info('REPORT_JOURNAL_DETAIL daily-performance enabled')
