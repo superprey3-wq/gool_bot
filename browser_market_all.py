@@ -1,13 +1,13 @@
 """Monkey LIVE TOTAL O/U collector restored from the old Bot-Hosting sources.
 
-Flashscore is only the live match pool. Pricing is attempted in this order:
+Flashscore is the live match pool. Pricing sources:
 1) old LSApp LIVE lobtm -> ole2;
 2) old BetB2B/1xBet live feed;
 3) old Kambi/BetRivers live totals fallback.
 Both OVER and UNDER are normalized into the same TOTAL market state.
 """
 from __future__ import annotations
-import os,time
+import os
 import browser_market_node as node
 
 node.MAX_EVENTS=max(20,min(100,int(os.getenv("GOOL_MARKET_MAX_EVENTS","100"))))
@@ -41,8 +41,16 @@ def _live_events(rows):
  return out
 
 
+def _score_part(v):
+ return "" if v is None or str(v).strip()=="" else str(v).strip()
+
+
 def _base(event,bid,book,scope,line,side,odd,source,ts):
- return {"event_id":event["event_id"],"home":event.get("home"),"away":event.get("away"),"score":f"{event.get('home_score') or ''}:{event.get('away_score') or ''}","status":event.get("status"),"bookmaker_id":bid,"bookmaker":book,"market":"TOTAL","market_raw":"OVER_UNDER","scope":scope,"line":line,"side":side,"odd":odd,"opening":None,"timestamp":ts,"source":source}
+ # Do not use `value or ''`: score 0 is a valid live score.  Propagate the
+ # Flashscore minute into every price row so the final recommendation can be
+ # validated against the same live snapshot that supplied the match pool.
+ hs=_score_part(event.get("home_score"));aw=_score_part(event.get("away_score"))
+ return {"event_id":event["event_id"],"home":event.get("home"),"away":event.get("away"),"score":f"{hs}:{aw}","score_live":f"{hs}:{aw}","minute":event.get("minute"),"status":event.get("status"),"bookmaker_id":bid,"bookmaker":book,"market":"TOTAL","market_raw":"OVER_UNDER","scope":scope,"line":line,"side":side,"odd":odd,"opening":None,"timestamp":ts,"source":source}
 
 
 def _lsapp_rows(event,ts):
@@ -65,8 +73,7 @@ def _betb2b_rows(event,ts):
  if betb2b is None:return []
  try:
   k=betb2b._key(event.get("home"),event.get("away"))
-  with betb2b._LOCK:
-   mapped=(betb2b._EVENT_MAP.get(k) or {}).copy()
+  with betb2b._LOCK:mapped=(betb2b._EVENT_MAP.get(k) or {}).copy()
   eid=mapped.get("id")
   if not eid:return []
   detail=betb2b._request("/LiveFeed/GetGameZip",{"id":eid,"lng":"en","cfview":0,"isSubGames":"true","GroupEvents":"true","allEventsGroupSubGames":"true","countevents":250,"grMode":2})
@@ -98,9 +105,7 @@ def _kambi_rows(event,ts):
   if not matched:return []
   kid=matched.get("id");data=kambi._event_data(str(kid));out=[]
   for offer in data.get("betOffers") or []:
-   type_name=str((offer.get("betOfferType") or {}).get("name") or "")
-   criterion=str((offer.get("criterion") or {}).get("label") or "")
-   key=f"{type_name} {criterion}".lower()
+   type_name=str((offer.get("betOfferType") or {}).get("name") or "");criterion=str((offer.get("criterion") or {}).get("label") or "");key=f"{type_name} {criterion}".lower()
    if not any(x in key for x in ("over/under","total goals")):continue
    if "asian" in key or " by " in key or any(x in key for x in ("corner","card","shot","booking")):continue
    scope=kambi._scope_from_offer(criterion,type_name)
@@ -127,17 +132,14 @@ def _fetch_event_odds(lib,events):
  records=[];probes=[];ts=node._now_iso()
  for event in events[:node.MAX_ODDS_EVENTS]:
   a=_lsapp_rows(event,ts);b=_betb2b_rows(event,ts);c=_kambi_rows(event,ts);merged=a+b+c
-  records.extend(merged[:node.MAX_RECORDS_PER_EVENT])
-  over=sum(1 for x in merged if x.get("side")=="OVER");under=sum(1 for x in merged if x.get("side")=="UNDER")
+  records.extend(merged[:node.MAX_RECORDS_PER_EVENT]);over=sum(1 for x in merged if x.get("side")=="OVER");under=sum(1 for x in merged if x.get("side")=="UNDER")
   probes.append({"event_id":event["event_id"],"home":event.get("home"),"away":event.get("away"),"status":200,"ok":bool(merged),"records":len(merged),"entries":len(a),"source":"OLD_MULTI","lsapp":len(a),"betb2b":len(b),"kambi":len(c),"over":over,"under":under})
-  node.LOG.info("OLD_PROGRUZ event=%s lsapp=%d betb2b=%d kambi=%d over=%d under=%d records=%d",event["event_id"],len(a),len(b),len(c),over,under,len(merged))
+  node.LOG.info("OLD_PROGRUZ event=%s score=%s:%s minute=%s lsapp=%d betb2b=%d kambi=%d over=%d under=%d records=%d",event["event_id"],event.get("home_score"),event.get("away_score"),event.get("minute"),len(a),len(b),len(c),over,under,len(merged))
   if len(records)>=node.MAX_RECORDS:break
  node.LOG.info("OLD_PROGRUZ_CYCLE live=%d betb2b_priced=%d records=%d",len(events),b2,len(records))
  return node._apply_history(records[:node.MAX_RECORDS]),probes,[]
 
-node._flash_events=_live_events
-node._fetch_event_odds=_fetch_event_odds
-
+node._flash_events=_live_events;node._fetch_event_odds=_fetch_event_odds
 if __name__=="__main__":
- node.LOG.info("GOOL_MARKET_LIVE source=OLD_BOT_HOSTING_MULTI TOTAL_OVER+TOTAL_UNDER all_live=on")
+ node.LOG.info("GOOL_MARKET_LIVE source=OLD_BOT_HOSTING_MULTI TOTAL_OVER+TOTAL_UNDER fresh_score_minute=on all_live=on")
  node.main()
