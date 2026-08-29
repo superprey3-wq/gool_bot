@@ -1,6 +1,6 @@
 """GOOL Market Server: precise LIVE TOTAL O/U PROGRUZ ranking."""
 from __future__ import annotations
-import json,os,statistics,time,sqlite3,threading
+import json,os,statistics,time,sqlite3,threading,re
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -44,6 +44,18 @@ def _is_live(r):
  if st in {"FT","FINISHED","ENDED","NOT_STARTED","SCHEDULED","NS"}:return False
  if st in {"LIVE","1H","2H","HT","HALFTIME","BREAK","IN_PLAY","INPLAY"}:return True
  return bool(r.get("score") or r.get("minute") or r.get("live"))
+def _scope(r):
+ s=str(r.get("scope") or r.get("bettingScope") or "FULL_TIME").upper().replace("-","_").replace(" ","_")
+ if s in {"FULL_TIME","FULLTIME","MATCH","REGULAR_TIME","FT"}:return "FULL_TIME"
+ if s in {"FIRST_HALF","1ST_HALF","1H"}:return "FIRST_HALF"
+ if s in {"SECOND_HALF","2ND_HALF","2H"}:return "SECOND_HALF"
+ return s
+def _score_total(r):
+ raw=str(r.get("score") or r.get("score_live") or "").strip()
+ m=re.search(r"(\d+)\s*[:\-]\s*(\d+)",raw)
+ if not m:return None
+ try:return int(m.group(1))+int(m.group(2))
+ except Exception:return None
 def _betb2b_confirmation(home,away,side):
  if not BETB2B_AVAILABLE:return {"available":False,"confirmed":False}
  try:
@@ -57,6 +69,11 @@ def _source_name(r):
  if "OLE2" in s or "LSAPP" in s or "LSAPP" in b.upper():return "LSApp"
  return b or s or "unknown"
 def _candidate(key,rows):
+ side=key[4]
+ try:line=float(key[3])
+ except Exception:return None
+ # PROGRUZ is only a full-match total. Never mix 1H/2H totals with FT.
+ if key[2]!="FULL_TIME":return None
  moving=[]
  for x in rows:
   f=x.get("flow") or {}
@@ -64,28 +81,29 @@ def _candidate(key,rows):
   except Exception:continue
   if p<-.6 and not bool(f.get("reversal")):moving.append((x,p))
  if not moving:return None
- sources={_source_name(x) for x,_ in moving};pcts=[p for _,p in moving];persist=sum(int(bool((x.get("flow") or {}).get("persistence"))) for x,_ in moving);r=min(moving,key=lambda z:z[1])[0];b2b=_betb2b_confirmation(r.get("home") or "",r.get("away") or "",key[4]);med=statistics.median(pcts);best=min(pcts)
- # A strong pick needs two independently moving sources. BetB2B direction can be the second confirmation.
+ # A FULL_TIME UNDER that is already mathematically dead must never be sent.
+ score_total=_score_total(moving[0][0])
+ if side=="UNDER" and score_total is not None and score_total>=line:return None
+ sources={_source_name(x) for x,_ in moving};pcts=[p for _,p in moving];persist=sum(int(bool((x.get("flow") or {}).get("persistence"))) for x,_ in moving);r=min(moving,key=lambda z:z[1])[0];b2b=_betb2b_confirmation(r.get("home") or "",r.get("away") or "",side);med=statistics.median(pcts);best=min(pcts)
  confirmations=len(sources)+(1 if b2b.get("confirmed") and "1xBet" not in sources else 0)
  if confirmations<2:return None
- # Prefer sustained consensus over a single violent tick. 80 means strong, 90+ exceptional.
  score=58+min(16,confirmations*5)+min(14,abs(med)*3.0)+min(8,persist*2)+(5 if b2b.get("confirmed") else 0)
  score=round(min(100,score),1)
  if score<MIN_SCORE:return None
  try:odd=float(r.get("odd"))
  except Exception:odd=None
  if odd is None or odd<1.30 or odd>3.20:return None
- return {"id":"|".join(key),"event_id":key[0],"home":r.get("home") or "","away":r.get("away") or "","score_live":r.get("score") or "","status":r.get("status") or "","market":"TOTAL","scope":key[2],"line":r.get("line"),"side":key[4],"odd":odd,"books":confirmations,"moving_sources":sorted(sources),"median_delta_pct":round(med,3),"best_delta_pct":round(best,3),"persistent_books":persist,"strength":score,"betb2b":b2b,"ts":time.time()}
+ return {"id":"|".join(key),"event_id":key[0],"home":r.get("home") or "","away":r.get("away") or "","score_live":r.get("score") or "","status":r.get("status") or "","market":"TOTAL","scope":"FULL_TIME","line":line,"side":side,"odd":odd,"books":confirmations,"moving_sources":sorted(sources),"median_delta_pct":round(med,3),"best_delta_pct":round(best,3),"persistent_books":persist,"strength":score,"betb2b":b2b,"ts":time.time()}
 def strong_rows():
  records,source,meta=_records();groups=defaultdict(list);total_live=0
  for r in records:
   if not isinstance(r,dict) or not _is_total(r) or not _is_live(r):continue
-  side=_ou_side(r)
-  if not side:continue
-  total_live+=1;key=(str(r.get("event_id") or ""),"TOTAL",str(r.get("scope") or "FULL_TIME"),str(r.get("line") if r.get("line") is not None else ""),side)
+  side=_ou_side(r);scope=_scope(r)
+  if not side or scope!="FULL_TIME":continue
+  total_live+=1;key=(str(r.get("event_id") or ""),"TOTAL",scope,str(r.get("line") if r.get("line") is not None else ""),side)
   if key[0] and key[3]:groups[key].append(r)
  candidates=[c for k,v in groups.items() if (c:=_candidate(k,v))]
- # One precise TOTAL pick per match. Competing OVER/UNDER/lines never spam Telegram.
+ # OVER and UNDER are symmetric candidates. Keep exactly one strongest FT total per match.
  best={}
  for c in candidates:
   eid=c["event_id"];rank=(c["strength"],c["books"],c["persistent_books"],abs(c["median_delta_pct"]),c["odd"])
@@ -106,9 +124,9 @@ class H(BaseHTTPRequestHandler):
   if path not in ("/","/strong","/bestbet","/health","/markets"):self.send_response(404);self.end_headers();return
   if path=="/bestbet":body=best_bet_payload()
   else:
-   strong,source,meta,n,total_live=strong_rows();common={"ok":True,"ts":time.time(),"mode":"LIVE_TOTAL_OU_PRECISE","market_source":source,"market_records":n,"live_total_rows":total_live,"betb2b_1xbet":BETB2B_AVAILABLE,"snapshot":meta}
+   strong,source,meta,n,total_live=strong_rows();common={"ok":True,"ts":time.time(),"mode":"LIVE_FT_TOTAL_OU_PRECISE","market_source":source,"market_records":n,"live_total_rows":total_live,"betb2b_1xbet":BETB2B_AVAILABLE,"snapshot":meta}
    body={**common,"strong":strong,"best_bet":best_bet_payload().get("signal")} if path not in ("/health","/markets") else ({**common,"db":str(DB),"best_bet_state_exists":BEST_STATE.exists()} if path=="/health" else common)
   raw=json.dumps(body,ensure_ascii=False).encode();self.send_response(200);self.send_header("Content-Type","application/json; charset=utf-8");self.send_header("Content-Length",str(len(raw)));self.end_headers();self.wfile.write(raw)
  def log_message(self,fmt,*args):return
 if __name__=="__main__":
- threading.Thread(target=_betb2b_loop,name="betb2b-confirm",daemon=True).start();print(f"GOOL_MARKET_SERVER PRECISE TOTAL O/U port={PORT} strong>={MIN_SCORE} one_pick_per_match=on",flush=True);ThreadingHTTPServer((HOST,PORT),H).serve_forever()
+ threading.Thread(target=_betb2b_loop,name="betb2b-confirm",daemon=True).start();print(f"GOOL_MARKET_SERVER PRECISE FT TOTAL OVER+UNDER port={PORT} strong>={MIN_SCORE} one_pick_per_match=on score_guard=on",flush=True);ThreadingHTTPServer((HOST,PORT),H).serve_forever()
