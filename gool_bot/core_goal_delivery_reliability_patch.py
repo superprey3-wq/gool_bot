@@ -1,19 +1,59 @@
 """Guarantee CORE goal-card delivery without confirming a goal that happened before entry.
 
-A live score increase may reflect a score/journal sync lag.  Never use the current
-match minute as the goal minute: fetch the summary, extract the actual last goal
-minute, and only schedule confirmation when that goal is strictly after ENTRY.
+This patch also enforces two hard invariants:
+1) the journal entry score/minute must be the exact fresh snapshot used by the entry card;
+2) a green confirmation card can only be sent when the current total goals are strictly
+   greater than the pending entry baseline.
 """
 from __future__ import annotations
 import logging,time
 import core_primary_reconcile as cpr
 import fast_goal_watch
 import score_sync_patch
+import telegram_image_signal_patch as tip
 from daily_report import _score_from_summary
 from live_engine import fetch_summary
 from signal_journal import all_signals,update_signal
 
 log=logging.getLogger("core_goal_delivery_reliability")
+
+# The entry image patch refreshes the match before rendering, but historically it
+# refreshed only a copy.  The journal recorder then received the stale original
+# object and could store 2:1 while the visible card already showed 2:3.  Mutate the
+# original object with that same fresh snapshot so card and journal share one truth.
+_orig_sync_entry_match=tip._sync_entry_match
+def _sync_entry_match_truth(match):
+    synced=_orig_sync_entry_match(match)
+    if synced is not None:
+        try:
+            tip._merge_live_fields(match,synced)
+            log.info("CORE_ENTRY_CARD_JOURNAL_SYNC %s minute=%s score=%s:%s",
+                     getattr(match,"event_id",""),getattr(match,"minute",None),
+                     getattr(match,"home_score",0),getattr(match,"away_score",0))
+        except Exception:
+            log.exception("CORE_ENTRY_CARD_JOURNAL_SYNC_FAILED %s",getattr(match,"event_id",""))
+    return synced
+tip._sync_entry_match=_sync_entry_match_truth
+
+# Last gate before Telegram delivery.  Even if any older TRACK/candidate state is
+# stale, never show a green card unless score increased versus the actual pending
+# entry row.  This directly blocks 2:3 -> 2:3 confirmations.
+_orig_send_photo_all=tip._send_photo_all
+def _send_photo_all_truth(match,pressure,recs,kind,master=None):
+    if kind=="goal":
+        eid=str(getattr(match,"event_id","") or "")
+        row=tip._pending_row(eid)
+        if row is None:
+            log.warning("CORE_GOAL_CARD_REJECT_NO_PENDING %s",eid)
+            return False
+        entry=cpr._score(row.get("score_at_signal"))
+        current=(int(getattr(match,"home_score",0) or 0),int(getattr(match,"away_score",0) or 0))
+        if sum(current)<=sum(entry):
+            log.error("CORE_GOAL_CARD_REJECT_SAME_SCORE %s entry=%s:%s current=%s:%s entry_minute=%s current_minute=%s",
+                      eid,entry[0],entry[1],current[0],current[1],row.get("minute"),getattr(match,"minute",None))
+            return False
+    return _orig_send_photo_all(match,pressure,recs,kind,master)
+tip._send_photo_all=_send_photo_all_truth
 
 
 def reconcile(live)->int:
@@ -31,9 +71,6 @@ def reconcile(live)->int:
             fh,fa=int(m.home_score),int(m.away_score)
             if fh+fa<=sh+sa:
                 continue
-            # A list-score ahead of the journal is NOT enough proof of a new goal.
-            # Read the summary and use the actual last-goal minute.  This prevents a
-            # pre-entry goal from being confirmed one minute after a freshly sent signal.
             try:
                 body=fetch_summary(eid)
                 current,goal_minute=score_sync_patch._summary_state(body)
@@ -51,7 +88,6 @@ def reconcile(live)->int:
                 log.warning("CORE_GOAL_CARD_QUEUE_FAILED %s %s:%s; keeping pending",eid,current[0],current[1])
             continue
 
-        # Match disappeared: keep the conservative final-settlement path.
         age=now-float(row.get("created_ts",0) or 0)
         if age<12*60:
             continue
@@ -72,4 +108,4 @@ def reconcile(live)->int:
     return fixed
 
 cpr.reconcile=reconcile
-log.info("CORE goal delivery reliability active | stale pre-entry goals rejected")
+log.info("CORE goal delivery reliability active | card/journal same snapshot | same-score green cards blocked")
