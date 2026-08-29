@@ -11,7 +11,7 @@ def sync_repo(path,branch):
  else:run(["git","clone","--depth","1","--branch",branch,REPO,str(path)])
 def sync_asset(name,path,base=RAW_BASE):data=urllib.request.urlopen(base+name,timeout=20).read();path.write_bytes(data);print(f"GOOL asset {name} bytes={len(data)}",flush=True)
 def env():
- e=os.environ.copy();e.setdefault("PYTHONUNBUFFERED","1");e.setdefault("GOOL_MARKET_STATE",str(HOME/"market_node_state.json"));e.setdefault("GOOL_MARKET_HISTORY",str(HOME/"market_node_history_v6.json"));e.setdefault("GOOL_MARKET_MAX_EVENTS","60");e.setdefault("GOOL_MARKET_ODDS_EVENTS","24");e.setdefault("GOOL_MARKET_MAX_RECORDS","1200");e.setdefault("GOOL_MARKET_PER_EVENT","140");e.setdefault("GOOL_STRONG_MIN_SCORE","80");e.setdefault("GOOL_BETB2B_POLL_SECONDS","45");e.setdefault("GOOL_REMOTE_BEST_BET_STATE",str(HOME/"remote_best_bet_state.json"));e.setdefault("GOOL_REMOTE_BEST_BET_POLL_SECONDS","75");e.setdefault("GOOL_MARKET_DB",str(HOME/"gool_market.sqlite3"));e.setdefault("GOOL_MONKEY_LIVE_CONTEXT",str(HOME/"monkey_live_context.json"));e.setdefault("GOOL_MONKEY_LIVE_POLL_SECONDS","20");e.setdefault("GOOL_PROGRUZ_FLOW_LOOKBACK_SECONDS","900");e.setdefault("GOOL_PROGRUZ_MIN_FAIR_MOVE_PP","1.0");return e
+ e=os.environ.copy();e.setdefault("PYTHONUNBUFFERED","1");e.setdefault("GOOL_MARKET_STATE",str(HOME/"market_node_state.json"));e.setdefault("GOOL_MARKET_HISTORY",str(HOME/"market_node_history_v6.json"));e.setdefault("GOOL_MARKET_MAX_EVENTS","60");e.setdefault("GOOL_MARKET_ODDS_EVENTS","24");e.setdefault("GOOL_MARKET_MAX_RECORDS","1200");e.setdefault("GOOL_MARKET_PER_EVENT","140");e.setdefault("GOOL_STRONG_MIN_SCORE","80");e.setdefault("GOOL_BETB2B_POLL_SECONDS","45");e.setdefault("GOOL_REMOTE_BEST_BET_STATE",str(HOME/"remote_best_bet_state.json"));e.setdefault("GOOL_REMOTE_BEST_BET_POLL_SECONDS","75");e.setdefault("GOOL_MARKET_DB",str(HOME/"gool_market.sqlite3"));e.setdefault("GOOL_MONKEY_LIVE_CONTEXT",str(HOME/"monkey_live_context.json"));e.setdefault("GOOL_MONKEY_LIVE_POLL_SECONDS","20");e.setdefault("GOOL_PROGRUZ_FLOW_LOOKBACK_SECONDS","900");e.setdefault("GOOL_PROGRUZ_MIN_FAIR_MOVE_PP","1.0");e.setdefault("GOOL_PROGRUZ_AUDIT",str(HOME/"proguz_v10_audit.jsonl"));return e
 def start(script,e,cwd=HOME):return subprocess.Popen([sys.executable,"-u",str(script)],cwd=str(cwd),env=e)
 def stop(p):
  if p and p.poll() is None:
@@ -20,9 +20,9 @@ def stop(p):
    try:p.kill()
    except Exception:pass
 def main():
- print("GOOL MONKEY unified Flashscore truth + PROGRUZ V9 microstructure + BEST BET",flush=True);sync_repo(BESTBET_DIR,BESTBET_BRANCH)
+ print("GOOL MONKEY unified Flashscore truth + PROGRUZ V10 market intelligence + BEST BET",flush=True);sync_repo(BESTBET_DIR,BESTBET_BRANCH)
  for n,p in (("browser_market_node.py",COLLECTOR),("browser_market_all.py",LIVE),("strong_proguz_feed.py",FEED_BASE),("strong_proguz_v9.py",FEED),("proguz_market_flow.py",FLOW),("proguz_fair_probability.py",FAIR),("market_store_bridge.py",BRIDGE),("monkey_live_context.py",CONTEXT)):sync_asset(n,p)
- sync_asset("betb2b_market_signal.py",BETB2B,OLD_RAW_BASE);e=env();spec={"context":(CONTEXT,HOME),"live":(LIVE,HOME),"feed":(FEED,HOME),"store":(BRIDGE,HOME),"bestbet":(BESTBET_DIR/"gool_bot"/"best_bet_remote_worker.py",BESTBET_DIR/"gool_bot")};procs={name:start(script,e,cwd) for name,(script,cwd) in spec.items()};print("GOOL MONKEY ONLINE flashscore_truth=on live_stats=on proguz_v9=on market_flow=on bestbet=on",flush=True)
+ sync_asset("betb2b_market_signal.py",BETB2B,OLD_RAW_BASE);e=env();spec={"context":(CONTEXT,HOME),"live":(LIVE,HOME),"feed":(FEED,HOME),"store":(BRIDGE,HOME),"bestbet":(BESTBET_DIR/"gool_bot"/"best_bet_remote_worker.py",BESTBET_DIR/"gool_bot")};procs={name:start(script,e,cwd) for name,(script,cwd) in spec.items()};print("GOOL MONKEY ONLINE flashscore_truth=on live_stats=on proguz_v10=on devig=on lead_lag=on source_agreement=on audit=on bestbet=on",flush=True)
  stopping=False
  def sig(*_):
   nonlocal stopping;stopping=True
