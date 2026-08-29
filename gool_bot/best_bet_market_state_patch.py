@@ -5,7 +5,7 @@ avoids a second stats request per event and makes BEST BET analyse the exact sam
 snapshot as PROGRUZ. Detailed rejection diagnostics explain why a pick did not fire.
 """
 from __future__ import annotations
-import json,logging,os,re,time,unicodedata,sqlite3
+import inspect,json,logging,os,re,time,unicodedata,sqlite3
 from difflib import SequenceMatcher
 from pathlib import Path
 import best_bet_engine as bbe
@@ -96,8 +96,11 @@ def _fair_probs(rows):
    if len(probs)==len(grp):
     for x,p in zip(grp,probs):x["market_fair_prob"]=p;x["pair_confirmed"]=True
 def _rank_market(row,m,p,hist):
- try:return bbe._rank(row,m,p,hist)
- except TypeError:return bbe._rank(row,m,p)
+ """Call the installed BEST BET ranker without hiding real TypeErrors from inside it."""
+ try:n=len(inspect.signature(bbe._rank).parameters)
+ except Exception:n=4
+ if n>=4:return bbe._rank(row,m,p,hist)
+ return bbe._rank(row,m,p)
 def evaluate_match(m):
  eid=str(m.event_id);now=time.time()
  if bbe._pending(eid) or (eid in bbe._ACTIVE and now-bbe._ACTIVE[eid]<bbe.COOLDOWN):return False
@@ -112,7 +115,9 @@ def evaluate_match(m):
   try:r["gool_model_prob"]=_model_probability(r,m,stats)
   except Exception:r["gool_model_prob"]=None
   if r.get("gool_model_prob") is None:continue
-  modelled+=1;x=_rank_market(r,m,p,hist)
+  modelled+=1
+  try:x=_rank_market(r,m,p,hist)
+  except Exception as exc:log.exception("BEST_BET_RANK_FAILED event=%s market=%s err=%s",eid,r.get("market_type"),type(exc).__name__);continue
   if x:ranked.append(x)
  ranked.sort(key=lambda x:x["score"],reverse=True)
  if not ranked:log.info("BEST_BET_REJECT event=%s reason=no_ranked rows=%d modelled=%d source=%s",eid,len(rows),modelled,src);return False
@@ -125,4 +130,4 @@ def evaluate_match(m):
  return sent
 if not hasattr(bbe,"_legacy_model_probability"):bbe._legacy_model_probability=bbe.model_probability
 bbe.evaluate_match=evaluate_match
-log.info("BEST BET Monkey truth input V2 | sqlite=%s | uses preloaded Flashscore stats | diagnostics=on",DB)
+log.info("BEST BET Monkey truth input V3 | sqlite=%s | rank_signature_compat=on | diagnostics=on",DB)
