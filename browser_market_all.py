@@ -1,164 +1,113 @@
-"""MonkeyBytes LIVE TOTAL O/U collector using the old Bot-Hosting LSApp flow.
+"""Monkey LIVE TOTAL O/U collector restored from the old Bot-Hosting sources.
 
-The old working branch did not use the generic `_hash=oce` payload for in-play
-pricing.  It first loaded the live betting-type menu (`lobtm`) and then queried
-an active bookmaker/market with `ole2`.  Restore that exact path here while
-keeping the lightweight v6 state/history machinery around it.
+Flashscore is only the live match pool. Pricing is attempted in this order:
+1) old LSApp LIVE lobtm -> ole2;
+2) old BetB2B/1xBet live feed;
+3) old Kambi/BetRivers live totals fallback.
+All outputs are normalized into the existing market-state/history format.
 """
 from __future__ import annotations
-
-import os
-import time
-from typing import Any
-
-import requests
+import os,time,logging
 import browser_market_node as node
 
-node.MAX_EVENTS=max(20,min(100,int(os.getenv("GOOL_MARKET_MAX_EVENTS","60"))))
-node.MAX_ODDS_EVENTS=max(4,min(24,int(os.getenv("GOOL_MARKET_ODDS_EVENTS","24"))))
-node.MAX_RECORDS=max(200,min(2200,int(os.getenv("GOOL_MARKET_MAX_RECORDS","1200"))))
-node.MAX_RECORDS_PER_EVENT=max(40,min(220,int(os.getenv("GOOL_MARKET_PER_EVENT","140"))))
-node.ALLOWED_MARKETS={"OVER_UNDER"}
-node.MARKET_NAMES={"OVER_UNDER":"TOTAL"}
-node.MAX_ODD_BY_MARKET={"OVER_UNDER":12.0}
+node.MAX_EVENTS=max(20,min(100,int(os.getenv("GOOL_MARKET_MAX_EVENTS","100"))))
+node.MAX_ODDS_EVENTS=100
+node.MAX_RECORDS=max(500,min(4000,int(os.getenv("GOOL_MARKET_MAX_RECORDS","2400"))))
+node.MAX_RECORDS_PER_EVENT=max(40,min(240,int(os.getenv("GOOL_MARKET_PER_EVENT","160"))))
+node.ALLOWED_MARKETS={"OVER_UNDER"};node.MARKET_NAMES={"OVER_UNDER":"TOTAL"};node.MAX_ODD_BY_MARKET={"OVER_UNDER":12.0}
 
-# Exact settings from live-only-quant-foundation/gool_bot/live_odds.py.
-ROOTS=("https://2.ds.lsapp.eu/pq_graphql","https://global.ds.lsapp.eu/pq_graphql")
-PROJECT_ID=os.getenv("LIVE_ODDS_PROJECT_ID","2")
-GEO=os.getenv("LIVE_ODDS_GEO","US")
-SUBDIVISION=os.getenv("LIVE_ODDS_SUBDIVISION","USAZ")
-HEADERS={
-    "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36",
-    "Accept":"application/json, text/plain, */*",
-    "Referer":"https://www.flashscore.com/",
-}
+# Import the exact old modules synced by the supervisor. Kambi may live in gool_bot.
+try:
+ import betb2b_market_signal as betb2b
+except Exception:
+ betb2b=None
+try:
+ from gool_bot import kambi_live_odds as kambi
+except Exception:
+ try: import kambi_live_odds as kambi
+ except Exception: kambi=None
+try:
+ from gool_bot import live_odds as old_live
+except Exception:
+ try: import live_odds as old_live
+ except Exception: old_live=None
 
 
 def _live_events(rows):
-    events=[]
-    for r in rows:
-        if str(r.get("AB") or "") != "2":
-            continue
-        eid=r.get("AA")
-        if not eid:
-            continue
-        events.append({
-            "source":"flashscore", "event_id":str(eid),
-            "home":r.get("AE") or r.get("CX") or "",
-            "away":r.get("AF") or r.get("CX_2") or "",
-            "home_score":r.get("AG"), "away_score":r.get("AH"),
-            "status":r.get("AC") or r.get("BC") or "LIVE",
-            "start_ts":r.get("AD"), "live_flag":"2", "minute":r.get("BA"),
-            "raw":{k:r[k] for k in list(r)[:32]},
-        })
-        if len(events)>=node.MAX_EVENTS:
-            break
-    return events
+ out=[]
+ for r in rows:
+  if str(r.get("AB") or "")!="2":continue
+  eid=r.get("AA")
+  if not eid:continue
+  out.append({"source":"flashscore","event_id":str(eid),"home":r.get("AE") or r.get("CX") or "","away":r.get("AF") or r.get("CX_2") or "","home_score":r.get("AG"),"away_score":r.get("AH"),"status":r.get("AC") or r.get("BC") or "LIVE","start_ts":r.get("AD"),"live_flag":"2","minute":r.get("BA"),"raw":{k:r[k] for k in list(r)[:32]}})
+  if len(out)>=node.MAX_EVENTS:break
+ return out
 
 
-def _query(params:dict[str,Any]):
-    last_status=None
-    for root in ROOTS:
-        try:
-            r=requests.get(root,params=params,headers=HEADERS,timeout=12)
-            last_status=r.status_code
-            if r.status_code==200:
-                payload=r.json()
-                if isinstance(payload,dict):
-                    return payload, root, r.status_code
-        except (requests.RequestException,ValueError):
-            continue
-    return {}, None, last_status
+def _base(event,bid,book,scope,line,side,odd,source,ts):
+ return {"event_id":event["event_id"],"home":event.get("home"),"away":event.get("away"),"score":f"{event.get('home_score') or ''}:{event.get('away_score') or ''}","status":event.get("status"),"bookmaker_id":bid,"bookmaker":book,"market":"TOTAL","market_raw":"OVER_UNDER","scope":scope,"line":line,"side":side,"odd":odd,"opening":None,"timestamp":ts,"source":source}
 
 
-def _live_menu(event_id):
-    payload,root,status=_query({
-        "_hash":"lobtm", "eventId":event_id, "projectId":PROJECT_ID,
-        "geoIpCode":GEO, "geoIpSubdivisionCode":SUBDIVISION,
-    })
-    return (payload.get("data") or {}).get("getLiveOddsBettingTypeMenu") or {},root,status
+def _lsapp_rows(event,ts):
+ if old_live is None:return []
+ try: rows=old_live.fetch_live_odds(event["event_id"])
+ except Exception as exc:
+  node.LOG.info("OLD_LSAPP_FAIL event=%s %s",event["event_id"],type(exc).__name__);return []
+ out=[]
+ for row in rows or []:
+  bid=row.get("bookmakerId");scope=str(row.get("bettingScope") or "FULL_TIME")
+  for x in row.get("odds") or []:
+   try: odd=float(x.get("value"));line=float((x.get("handicap") or {}).get("value"))
+   except (TypeError,ValueError):continue
+   side=str(x.get("selection") or "").upper()
+   if side in {"OVER","UNDER"} and 1.01<odd<=12:out.append(_base(event,bid,f"lsapp_{bid}",scope,line,side,odd,"LIVE_OLE2",ts))
+ return out
 
 
-def _live_bookmaker_market(event_id,bookmaker_id,scope):
-    payload,root,status=_query({
-        "_hash":"ole2", "eventId":event_id, "bookmakerId":bookmaker_id,
-        "betType":"OVER_UNDER", "betScope":scope,
-    })
-    return (payload.get("data") or {}).get("findLiveOddsForBookmaker") or {},root,status
+def _betb2b_rows(event,ts):
+ if betb2b is None:return []
+ try:
+  k=betb2b._key(event.get("home"),event.get("away"))
+  with betb2b._LOCK: pts=list(betb2b._POINTS.get(k) or [])
+  if not pts:return []
+  p=pts[-1]
+  return [_base(event,100000,"1xBet/BetB2B","FULL_TIME",p.line,"OVER",float(p.odds),"BETB2B_1XBET",ts)] if p.line is not None and p.odds>1 else []
+ except Exception:return []
 
 
-def _normalise(event,bid,scope,market,ts):
-    overview=market.get("eventOddsOverview") or {}
-    if str(overview.get("type") or "") != "OVER_UNDER":
-        return []
-    out=[]
-    for op in overview.get("opportunities") or []:
-        try: line=float((op.get("handicap") or {}).get("value"))
-        except (TypeError,ValueError): continue
-        for side,key in (("OVER","over"),("UNDER","under")):
-            item=op.get(key) or {}
-            if item.get("active") is False or item.get("value") in (None,""):
-                continue
-            try: odd=float(item.get("value"))
-            except (TypeError,ValueError): continue
-            if odd<=1.01 or odd>12.0:
-                continue
-            out.append({
-                "event_id":event.get("event_id"), "home":event.get("home"), "away":event.get("away"),
-                "score":f"{event.get('home_score') or ''}:{event.get('away_score') or ''}",
-                "status":event.get("status"), "bookmaker_id":int(bid), "bookmaker":f"book_{bid}",
-                "market":"TOTAL", "market_raw":"OVER_UNDER", "scope":scope,
-                "line":line, "side":side, "odd":odd, "opening":None,
-                "timestamp":ts, "source":"LIVE_OLE2",
-            })
-    return out
+def _kambi_rows(event,ts):
+ if kambi is None:return []
+ try: rows=kambi.get_live_goal_totals(event.get("home") or "",event.get("away") or "") or []
+ except Exception as exc:
+  node.LOG.info("KAMBI_TOTAL_FAIL event=%s %s",event["event_id"],type(exc).__name__);return []
+ out=[]
+ for x in rows:
+  try: line=float(x.get("line"));odd=float(x.get("odd"))
+  except (TypeError,ValueError):continue
+  if odd>1.01:out.append(_base(event,200000,"Kambi/BetRivers",str(x.get("scope") or "FULL_TIME"),line,"OVER",odd,"KAMBI",ts))
+ return out
 
 
-def _fetch_event_odds_live_ole2(lib,events):
-    records=[];probes=[]
-    chosen=events[:node.MAX_ODDS_EVENTS]
-    ts=node._now_iso()
-    for event in chosen:
-        eid=event["event_id"]
-        menu,menu_root,menu_status=_live_menu(eid)
-        items=menu.get("items") or []
-        seen=set();before=len(records);market_calls=0
-        for item in items:
-            if item.get("isActive") is False or str(item.get("bettingType") or "")!="OVER_UNDER":
-                continue
-            scope=str(item.get("bettingScope") or "FULL_TIME")
-            if scope not in {"FIRST_HALF","SECOND_HALF","FULL_TIME"}:
-                continue
-            for bookmaker_id in item.get("bookmakerIds") or []:
-                try: bid=int(bookmaker_id)
-                except (TypeError,ValueError): continue
-                key=(bid,scope)
-                if key in seen: continue
-                seen.add(key);market_calls+=1
-                market,_,_=_live_bookmaker_market(eid,bid,scope)
-                records.extend(_normalise(event,bid,scope,market,ts))
-                if len(records)>=node.MAX_RECORDS or len(records)-before>=node.MAX_RECORDS_PER_EVENT:
-                    break
-            if len(records)>=node.MAX_RECORDS or len(records)-before>=node.MAX_RECORDS_PER_EVENT:
-                break
-        parsed=len(records)-before
-        probes.append({
-            "event_id":eid,"home":event.get("home"),"away":event.get("away"),
-            "status":menu_status,"ok":bool(menu),"records":parsed,
-            "entries":len(items),"market_calls":market_calls,"source":"LIVE_OLE2",
-            "root":menu_root,
-        })
-        node.LOG.info("LIVE_OLE2 event=%s menu=%d calls=%d records=%d",eid,len(items),market_calls,parsed)
-        if len(records)>=node.MAX_RECORDS: break
-        time.sleep(0.08)
-    return node._apply_history(records[:node.MAX_RECORDS]),probes,[]
+def _fetch_event_odds(lib,events):
+ # Refresh the old direct 1xBet live pool once per collector cycle.
+ b2=0
+ if betb2b is not None:
+  try:b2=betb2b.sample_live(force=True)
+  except Exception as exc:node.LOG.info("BETB2B_CYCLE_FAIL %s",type(exc).__name__)
+ records=[];probes=[];ts=node._now_iso()
+ for event in events[:node.MAX_ODDS_EVENTS]:
+  a=_lsapp_rows(event,ts);b=_betb2b_rows(event,ts);c=_kambi_rows(event,ts)
+  merged=a+b+c
+  records.extend(merged[:node.MAX_RECORDS_PER_EVENT])
+  probes.append({"event_id":event["event_id"],"home":event.get("home"),"away":event.get("away"),"status":200,"ok":bool(merged),"records":len(merged),"entries":len(a),"source":"OLD_MULTI","lsapp":len(a),"betb2b":len(b),"kambi":len(c)})
+  node.LOG.info("OLD_PROGRUZ event=%s lsapp=%d betb2b=%d kambi=%d records=%d",event["event_id"],len(a),len(b),len(c),len(merged))
+  if len(records)>=node.MAX_RECORDS:break
+ node.LOG.info("OLD_PROGRUZ_CYCLE live=%d betb2b_priced=%d records=%d",len(events),b2,len(records))
+ return node._apply_history(records[:node.MAX_RECORDS]),probes,[]
 
 node._flash_events=_live_events
-node._fetch_event_odds=_fetch_event_odds_live_ole2
+node._fetch_event_odds=_fetch_event_odds
 
 if __name__=="__main__":
-    node.LOG.info(
-        "GOOL_MARKET_LIVE source=LIVE_OLE2 old_bot_hosting mode=LIVE_TOTAL_OU live_only=AB2 odds_events=%d records=%d",
-        node.MAX_ODDS_EVENTS,node.MAX_RECORDS,
-    )
-    node.main()
+ node.LOG.info("GOOL_MARKET_LIVE source=OLD_BOT_HOSTING_MULTI LSApp+BetB2B/1xBet+Kambi live_only=AB2 all_live=on")
+ node.main()
