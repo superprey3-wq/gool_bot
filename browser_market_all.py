@@ -1,13 +1,6 @@
-"""Monkey LIVE TOTAL O/U collector restored from the old Bot-Hosting sources.
-
-Flashscore is the live match pool. Pricing sources:
-1) old LSApp LIVE lobtm -> ole2;
-2) old BetB2B/1xBet live feed;
-3) old Kambi/BetRivers live totals fallback.
-Both OVER and UNDER are normalized into the same TOTAL market state.
-"""
+"""Monkey LIVE TOTAL O/U collector restored from the old Bot-Hosting sources."""
 from __future__ import annotations
-import os,re
+import os,re,time
 import browser_market_node as node
 node.MAX_EVENTS=max(20,min(100,int(os.getenv("GOOL_MARKET_MAX_EVENTS","100"))));node.MAX_ODDS_EVENTS=100;node.MAX_RECORDS=max(500,min(4000,int(os.getenv("GOOL_MARKET_MAX_RECORDS","2400"))));node.MAX_RECORDS_PER_EVENT=max(40,min(240,int(os.getenv("GOOL_MARKET_PER_EVENT","160"))));node.ALLOWED_MARKETS={"OVER_UNDER"};node.MARKET_NAMES={"OVER_UNDER":"TOTAL"};node.MAX_ODD_BY_MARKET={"OVER_UNDER":12.0}
 try:import betb2b_market_signal as betb2b
@@ -22,16 +15,28 @@ except Exception:
  except Exception:old_live=None
 
 def _num(v):
- m=re.search(r"(\d{1,3})",str(v or ""))
- return int(m.group(1)) if m else None
+ m=re.search(r"(\d{1,3})",str(v or ""));return int(m.group(1)) if m else None
 def _status_text(r):return str(r.get("AC") or r.get("BC") or "LIVE").upper()
+def _kickoff_elapsed(r):
+ try:
+  ts=float(r.get("AD"));
+  if ts>10_000_000_000:ts/=1000.0
+  mins=(time.time()-ts)/60.0
+  return mins if -5<=mins<=180 else None
+ except Exception:return None
 def _absolute_minute(r):
- """Flashscore BA can be elapsed minute inside the current half (e.g. 13 in 2H).
-Normalize it to match minute. Never blindly add 45 when BA is already absolute."""
- raw=r.get("BA");m=_num(raw);st=_status_text(r)
+ """Normalize Flashscore BA to absolute match minute.
+
+Some feed variants expose BA as minute INSIDE the current half (e.g. BA=13 while
+match is around 58'). AC/BC is not reliable enough to identify 2H, so kickoff
+elapsed wall time is used as a second signal. If BA<=45 and kickoff is >55 minutes
+ago, the match cannot still be on minute 13 of the first half; treat BA as 2H clock.
+"""
+ raw=r.get("BA");m=_num(raw);st=_status_text(r);elapsed=_kickoff_elapsed(r)
  if m is None:return None
- second=("2H" in st or "SECOND" in st or st.strip() in {"2","2ND"})
- if second and m<=45:return m+45
+ second_status=("2H" in st or "SECOND" in st or st.strip() in {"2","2ND"})
+ second_elapsed=(elapsed is not None and elapsed>=55 and m<=45)
+ if (second_status or second_elapsed) and m<=45:return m+45
  return m
 def _live_events(rows):
  out=[]
@@ -39,8 +44,8 @@ def _live_events(rows):
   if str(r.get("AB") or "")!="2":continue
   eid=r.get("AA")
   if not eid:continue
-  minute=_absolute_minute(r);status=r.get("AC") or r.get("BC") or "LIVE"
-  out.append({"source":"flashscore","event_id":str(eid),"home":r.get("AE") or r.get("CX") or "","away":r.get("AF") or r.get("CX_2") or "","home_score":r.get("AG"),"away_score":r.get("AH"),"status":status,"start_ts":r.get("AD"),"live_flag":"2","minute":minute,"minute_raw":r.get("BA"),"raw":{k:r[k] for k in list(r)[:32]}})
+  minute=_absolute_minute(r);status=r.get("AC") or r.get("BC") or "LIVE";elapsed=_kickoff_elapsed(r)
+  out.append({"source":"flashscore","event_id":str(eid),"home":r.get("AE") or r.get("CX") or "","away":r.get("AF") or r.get("CX_2") or "","home_score":r.get("AG"),"away_score":r.get("AH"),"status":status,"start_ts":r.get("AD"),"live_flag":"2","minute":minute,"minute_raw":r.get("BA"),"elapsed_wall_min":round(elapsed,1) if elapsed is not None else None,"raw":{k:r[k] for k in list(r)[:32]}})
   if len(out)>=node.MAX_EVENTS:break
  return out
 def _score_part(v):return "" if v is None or str(v).strip()=="" else str(v).strip()
@@ -113,8 +118,8 @@ def _fetch_event_odds(lib,events):
  records=[];probes=[];ts=node._now_iso()
  for event in events[:node.MAX_ODDS_EVENTS]:
   a=_lsapp_rows(event,ts);b=_betb2b_rows(event,ts);c=_kambi_rows(event,ts);merged=a+b+c;records.extend(merged[:node.MAX_RECORDS_PER_EVENT]);over=sum(1 for x in merged if x.get("side")=="OVER");under=sum(1 for x in merged if x.get("side")=="UNDER")
-  probes.append({"event_id":event["event_id"],"home":event.get("home"),"away":event.get("away"),"status":200,"ok":bool(merged),"records":len(merged),"entries":len(a),"source":"OLD_MULTI","lsapp":len(a),"betb2b":len(b),"kambi":len(c),"over":over,"under":under});node.LOG.info("OLD_PROGRUZ event=%s score=%s:%s status=%s minute_raw=%s minute=%s lsapp=%d betb2b=%d kambi=%d over=%d under=%d records=%d",event["event_id"],event.get("home_score"),event.get("away_score"),event.get("status"),event.get("minute_raw"),event.get("minute"),len(a),len(b),len(c),over,under,len(merged))
+  probes.append({"event_id":event["event_id"],"home":event.get("home"),"away":event.get("away"),"status":200,"ok":bool(merged),"records":len(merged),"entries":len(a),"source":"OLD_MULTI","lsapp":len(a),"betb2b":len(b),"kambi":len(c),"over":over,"under":under});node.LOG.info("OLD_PROGRUZ event=%s score=%s:%s status=%s minute_raw=%s elapsed=%.1f minute=%s lsapp=%d betb2b=%d kambi=%d over=%d under=%d records=%d",event["event_id"],event.get("home_score"),event.get("away_score"),event.get("status"),event.get("minute_raw"),float(event.get("elapsed_wall_min") or 0),event.get("minute"),len(a),len(b),len(c),over,under,len(merged))
   if len(records)>=node.MAX_RECORDS:break
  node.LOG.info("OLD_PROGRUZ_CYCLE live=%d betb2b_priced=%d records=%d",len(events),b2,len(records));return node._apply_history(records[:node.MAX_RECORDS]),probes,[]
 node._flash_events=_live_events;node._fetch_event_odds=_fetch_event_odds
-if __name__=="__main__":node.LOG.info("GOOL_MARKET_LIVE TOTAL_OVER+TOTAL_UNDER absolute_minute_guard=on all_live=on");node.main()
+if __name__=="__main__":node.LOG.info("GOOL_MARKET_LIVE TOTAL_OVER+TOTAL_UNDER minute_v2=kickoff_elapsed_guard all_live=on");node.main()
