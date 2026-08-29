@@ -12,7 +12,7 @@ from signal_card_archive import save_entry_card
 from signal_journal import all_signals
 from market_settlement import fully_won_now
 logger=logging.getLogger("telegram_image_signal_patch")
-_orig_send=lc._send;_GOAL_CANDIDATES={};_GOAL_LOCK=threading.Lock();_ENTRY_LOCK=threading.Lock();_ENTRY_SENT=set();GOAL_CONFIRM_MIN_SECONDS=40;GOAL_CONFIRM_RETRIES=3;GOAL_CONFIRM_RETRY_SECONDS=20;ENTRY_REFRESH_RETRIES=2;ENTRY_REFRESH_RETRY_SECONDS=2;_PENDING_VALUES={"","pending","wait","waiting"}
+_orig_send=lc._send;_GOAL_CANDIDATES={};_GOAL_LOCK=threading.Lock();_ENTRY_LOCK=threading.Lock();_ENTRY_SENT=set();GOAL_CONFIRM_MIN_SECONDS=40;GOAL_CONFIRM_RETRIES=3;GOAL_CONFIRM_RETRY_SECONDS=20;ENTRY_REFRESH_RETRIES=2;ENTRY_REFRESH_RETRY_SECONDS=2;_PENDING_VALUES={"","pending","wait","waiting"};CORE_ENTRY_MIN_MASTER=80.0;CORE_ENTRY_MIN_PGOAL=75.0
 def _score_tuple(value):
  try:a,b=str(value).split(":",1);return int(a),int(b)
  except:return 0,0
@@ -53,6 +53,15 @@ def _display_probabilities(match,master,xg):
  lam=max(0.0,min(5.0,lam));p1=(1.0-math.exp(-lam))*100.;p2=(1.0-math.exp(-lam)*(1.0+lam))*100.;first_half=None
  if minute<=45 and not getattr(match,"is_halftime",False) and full_remaining>0:fh_remaining=max(0.,47.-minute);fh_lam=lam*(fh_remaining/full_remaining);first_half=(1.-math.exp(-fh_lam))*100.
  return {"first_half_goal":None if first_half is None else round(first_half),"one_goal":round(p1),"two_goals":round(p2),"lambda":round(lam,3)}
+def _entry_quality_ok(match,master,probs):
+ try:m=float(master or 0)
+ except (TypeError,ValueError):m=0.0
+ try:p=float((probs or {}).get("one_goal",0) or 0)
+ except (TypeError,ValueError):p=0.0
+ ok=m>=CORE_ENTRY_MIN_MASTER and p>=CORE_ENTRY_MIN_PGOAL
+ if not ok:logger.info("CORE_ENTRY_FINAL_GATE_REJECT event=%s minute=%s score=%s:%s master=%.1f/%.0f pgoal=%.1f/%.0f",getattr(match,"event_id",""),getattr(match,"minute",0),getattr(match,"home_score",0),getattr(match,"away_score",0),m,CORE_ENTRY_MIN_MASTER,p,CORE_ENTRY_MIN_PGOAL)
+ else:logger.info("CORE_ENTRY_FINAL_GATE_OK event=%s minute=%s master=%.1f pgoal=%.1f",getattr(match,"event_id",""),getattr(match,"minute",0),m,p)
+ return ok
 def _primary_label(primary):
  if not isinstance(primary,dict):return "ВЫБРАННАЯ СТАВКА"
  kind=str(primary.get("market_type") or primary.get("market") or "TOTAL_OVER").upper();line=primary.get("line");team=str(primary.get("team_name") or "КОМАНДЫ")
@@ -71,6 +80,7 @@ def _send_photo_all(match,pressure,recs,kind,master=None):
  token=unified_bot.BOT_TOKEN;recipients=get_subscribers()
  if not token or not recipients:return False
  xg=gx._cached(match) if kind=="entry" else None;probs=_display_probabilities(match,master,xg) if kind=="entry" else None
+ if kind=="entry" and not _entry_quality_ok(match,master,probs):return False
  try:png=render_signal_card(match,pressure,recs,kind=kind,master=master,probabilities=probs)
  except Exception as exc:logger.warning("GOOL image render failed: %s",exc);png=None
  primary=(recs or [None])[0];caption="🔥 GOOL AI • МОЖНО ЗАХОДИТЬ" if kind=="entry" else f"✅ GOOL AI • СТАВКА ЗАШЛА • {_primary_label(primary)}";fallback=_compact_fallback(match,recs,kind,master,xg);delivered=0;archived=False
@@ -106,7 +116,6 @@ def _fresh_live_match(event_id):
 def _merge_live_fields(dst,src):
  for name in ("minute","home_score","away_score","is_halftime","league"):
   if hasattr(src,name):setattr(dst,name,getattr(src,name))
- # Preserve/refresh live statistics when discovery actually carries them.
  for name in ("stats","raw_stats","statistics","xg","xgot","shots","shots_on_target"):
   val=getattr(src,name,None)
   if val not in (None,{},[]):setattr(dst,name,copy.deepcopy(val))
@@ -178,4 +187,4 @@ def _send(m,p,recs,text):
  if delivered:_mark_sent_entry(eid)
  return delivered
 lc._send=_send
-logger.info("CORE card patch | one-entry-per-event | fresh-live-fields")
+logger.info("CORE card patch | final-entry-gate master>=80 displayed_pgoal>=75 | one-entry-per-event | fresh-live-fields")
