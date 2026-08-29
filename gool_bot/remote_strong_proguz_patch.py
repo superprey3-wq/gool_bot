@@ -38,11 +38,22 @@ def _side(side):
  s=str(side or "").upper()
  return "ТБ" if s=="OVER" else "ТМ" if s=="UNDER" else s
 
+def _live_line(x):
+ score=str(x.get("score_live") or x.get("score") or "").strip()
+ minute=x.get("minute")
+ bits=[]
+ if score and score not in {":","None:None"}:bits.append(f"Счёт <b>{score}</b>")
+ if minute not in (None,""):
+  m=str(minute).strip()
+  if m:bits.append(f"Минута <b>{m}'</b>" if m.isdigit() else f"Минута <b>{m}</b>")
+ return ("⚽ " + " | ".join(bits) + "\n") if bits else ""
+
 def _fmt(x):
  line="" if x.get("line") in (None,"") else f" {x.get('line')}"
  odd=x.get("odd");odd_txt=f" @ {float(odd):.2f}" if isinstance(odd,(int,float)) else ""
  return ("🔥 <b>СИЛЬНЫЙ ПРОГРУЗ</b>\n\n"
          f"⚽ <b>{x.get('home','')} — {x.get('away','')}</b>\n"
+         f"{_live_line(x)}"
          f"⏱ <b>{_period(x.get('scope'))}</b>\n"
          f"📊 <b>{_side(x.get('side'))}{line}{odd_txt}</b>\n"
          f"🏦 Подтверждений: <b>{int(x.get('books',0) or 0)}</b>\n"
@@ -60,7 +71,7 @@ def poll_once():
   key=str(x.get("id") or "")
   if not key or now-float(sent.get(key,0) or 0)<COOLDOWN:continue
   delivered=_send(_fmt(x))
-  if delivered:sent[key]=now;n+=1;log.info("STRONG_PROGRUZ_SENT event=%s scope=%s side=%s strength=%.1f books=%s",x.get("event_id"),x.get("scope"),x.get("side"),strength,x.get("books"))
+  if delivered:sent[key]=now;n+=1;log.info("STRONG_PROGRUZ_SENT event=%s scope=%s side=%s score=%s minute=%s strength=%.1f books=%s",x.get("event_id"),x.get("scope"),x.get("side"),x.get("score_live"),x.get("minute"),strength,x.get("books"))
   if n>=3:break
  _save(sent);return n
 
