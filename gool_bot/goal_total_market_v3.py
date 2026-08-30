@@ -1,17 +1,16 @@
 """Market selector for GOOL V3 FULL_TIME / FIRST_HALF / SECOND_HALF totals."""
 from __future__ import annotations
-import math
+import math,os,sqlite3,time
+from pathlib import Path
 from live_odds import fetch_live_odds
 
 SCOPE_MAP={"FULL_TIME":"FULL_TIME","FIRST_HALF":"FIRST_HALF","SECOND_HALF":"SECOND_HALF"}
+LOCAL_DB=Path(os.getenv("GOOL_MARKET_DB","/home/container/gool_market.sqlite3"))
 
-def _pois(k,lam):
-    return math.exp(-lam)*(lam**k)/math.factorial(k)
+def _pois(k,lam):return math.exp(-lam)*(lam**k)/math.factorial(k)
 
 def outcome_probs(current_goals:float,line:float,side:str,lam:float):
-    win=push=0.0
-    maxk=max(12,int(math.ceil(lam+8*max(1.0,lam**.5))))
-    total_mass=0.0
+    win=push=0.0;maxk=max(12,int(math.ceil(lam+8*max(1.0,lam**.5))));total_mass=0.0
     for k in range(maxk+1):
         p=_pois(k,lam);total_mass+=p;final=current_goals+k
         if side=="OVER":
@@ -22,14 +21,37 @@ def outcome_probs(current_goals:float,line:float,side:str,lam:float):
             elif abs(final-line)<1e-9:push+=p
     tail=max(0.0,1.0-total_mass)
     if side=="OVER":win+=tail
-    loss=max(0.0,1.0-win-push)
-    return win,push,loss
+    return win,push,max(0.0,1.0-win-push)
 
 def fair_odd(win:float,push:float)->float|None:
-    if win<=0:return None
-    return (1.0-push)/win
+    return None if win<=0 else (1.0-push)/win
+
+def _local_rows(event_id,period,max_age=150):
+    """Read the freshest normalized Monkey market snapshot for this event/scope.
+
+    This is intentionally primary on the all-in-one host: the market collector is
+    already pricing the live pool, so V3 must not independently miss the same odds
+    by making another LSApp request.
+    """
+    if not LOCAL_DB.exists():return []
+    scope=SCOPE_MAP.get(period,period);cut=time.time()-max_age
+    try:
+        c=sqlite3.connect(str(LOCAL_DB),timeout=3)
+        rows=c.execute("SELECT ts,source,bookmaker,line,side,odd FROM odds WHERE event_id=? AND market='TOTAL' AND scope=? AND ts>=? AND line IS NOT NULL AND odd IS NOT NULL ORDER BY ts DESC",(str(event_id),scope,cut)).fetchall();c.close()
+    except Exception:return []
+    out=[];seen=set()
+    for ts,source,book,line,side,odd in rows:
+        try:line=float(line);odd=float(odd);side=str(side).upper()
+        except Exception:continue
+        if side not in {"OVER","UNDER"} or odd<=1.05 or odd>5.0:continue
+        key=(str(book),side,line)
+        if key in seen:continue
+        seen.add(key);out.append({"period":period,"side":side,"line":line,"odd":odd,"source":f"Monkey/{source or book or 'market'}"})
+    return out
 
 def fetch_period_totals(event_id:str,period:str):
+    local=_local_rows(event_id,period)
+    if local:return local
     scope=SCOPE_MAP.get(period,period);rows=[]
     try:entries=fetch_live_odds(str(event_id))
     except Exception:return []
@@ -55,9 +77,7 @@ def select_best(dec,rows,min_probability=0.58,min_value_pp=4.0,history_mult=1.0)
         if not fair:continue
         implied=1.0/odd;value_pp=(win-implied)*100.0;ev=win*(odd-1.0)-loss
         if win<min_probability or value_pp<min_value_pp or ev<0.025:continue
-        expected=dec.current_goals+effective_lam;distance=abs(line-expected)
-        quality=win*100+value_pp*1.8+ev*12-distance*2.0
+        expected=dec.current_goals+effective_lam;distance=abs(line-expected);quality=win*100+value_pp*1.8+ev*12-distance*2.0
         scored.append((quality,{**r,"model_probability":round(win*100,1),"push_probability":round(push*100,1),"fair_odd":round(fair,2),"value_edge":round(value_pp,1),"ev":round(ev,3),"effective_lambda":round(effective_lam,3),"history_mult":round(history_mult,3)}))
     if not scored:return None
-    scored.sort(key=lambda x:x[0],reverse=True)
-    return scored[0][1]
+    scored.sort(key=lambda x:x[0],reverse=True);return scored[0][1]
