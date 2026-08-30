@@ -49,7 +49,6 @@ import fast_goal_watch
 import core_goal_delivery_reliability_patch
 import core_live_stats_reliability_patch
 import core_quality_v2_patch
-import multi_engine_runtime
 import goal_distribution_v3_runtime
 import live_button_patch
 import live_button_emergency_patch
@@ -64,13 +63,11 @@ async def run_live():
  try:
   started=time.monotonic();live=await visual_feed_unified_bot.unified_bot.discover_live_matches();discovery=time.monotonic()-started
   score_sync_patch.reuse_once(live)
-  await visual_feed_unified_bot.unified_bot.scan_live_once()
   engine_live=await asyncio.to_thread(filter_for_multi_engine,live)
-  await asyncio.to_thread(multi_engine_runtime.scan_engines,engine_live)
-  v3=await asyncio.to_thread(goal_distribution_v3_runtime.scan,engine_live)
+  sent=await asyncio.to_thread(goal_distribution_v3_runtime.scan,engine_live)
   await asyncio.to_thread(core_primary_reconcile.reconcile,live)
   await asyncio.to_thread(clv_tracker.sample,live)
-  logger.info("GOOL_CYCLE_DONE live=%d aux=%d v3_shadow=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),v3,discovery,time.monotonic()-started)
+  logger.info("GOOL_CYCLE_DONE live=%d analyzed=%d v3_sent=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),sent,discovery,time.monotonic()-started)
  except Exception:logger.exception("LIVE scan failed; runner will continue")
 async def status_loop():
  while True:
@@ -83,7 +80,7 @@ async def resource_loop():
   logger.info("RESOURCE_WATCH rss=%.1fMB available=%.1fMB load_ratio=%.2f status=%s",s['rss_mb'],s['mem_available_mb'],s['load_ratio'],reason)
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");resources=asyncio.create_task(resource_loop(),name="resource-watch")
- logger.info("GOOL LIVE | CORE V2 delivery + CORE V3 Goal Distribution shadow | FT+1H+2H OVER/UNDER/NO_BET | BEST BET=off | strong_proguz_relay=on")
+ logger.info("GOOL LIVE | 3 SYSTEMS: FULL MATCH + FIRST HALF + SECOND HALF | V3 exact TOTAL OVER/UNDER | odds+value | old CORE/1H/2H delivery=off | BEST BET=off | strong_proguz_relay=on")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
