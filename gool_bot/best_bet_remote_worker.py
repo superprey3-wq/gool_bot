@@ -9,7 +9,7 @@ STATE=Path(os.getenv("GOOL_REMOTE_BEST_BET_STATE","/home/container/remote_best_b
 import visual_feed_unified_bot
 import xg_proxy_patch,live_only_recommendation_patch,live_candidate_patch,candidate_enrichment_patch,scores365_enrichment_patch,deep_stats_consensus_patch,context_adjustment_patch,period_market_patch,phase_market_patch,multi_source_odds_patch,live_odds_freshness_patch,btts_period_sources_patch,team_total_sources_patch,sportsgameodds_patch,best_market_selector_patch,score_sync_patch,market_math_patch,gool_xg_consensus,odds_nonblocking_patch,best_bet_input_reliability_patch
 import best_bet_engine as bbe
-import best_bet_consensus_patch,best_bet_delivery_reliability_patch,best_bet_market_state_patch
+import best_bet_consensus_patch,best_bet_delivery_reliability_patch,best_bet_market_state_patch,best_bet_directional_quality_patch
 _last_capture=None
 def _capture_send(_png,caption):
  global _last_capture
@@ -58,7 +58,7 @@ async def cycle():
   _write({"ts":int(time.time()),"live":0,"sent":0,"signal":None,"capture":None,"truth_age":round(truth_age,1),"truth_synced":synced});return
  score_sync_patch.reuse_once(live);sent=await asyncio.to_thread(bbe.scan,live);row=_latest_best_bet();payload={"ts":int(time.time()),"live":len(live),"sent":int(sent),"signal":row if sent and row else None,"capture":_last_capture,"truth_age":round(truth_age,1),"truth_synced":synced};_write(payload);log.info("REMOTE_BEST_BET_SCAN live=%d truth_synced=%d truth_age=%.1f sent=%d signal=%s",len(live),synced,truth_age,sent,(row or {}).get('primary'))
 async def main():
- log.info("GOOL REMOTE BEST BET worker online unified_flash_truth=required poll=%ss",POLL)
+ log.info("GOOL REMOTE BEST BET worker online unified_flash_truth=required directional_quality=on poll=%ss",POLL)
  while True:
   started=time.monotonic()
   try:await cycle()
