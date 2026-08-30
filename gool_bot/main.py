@@ -49,6 +49,7 @@ import live_status_heartbeat
 import fast_goal_watch
 import core_goal_delivery_reliability_patch
 import core_live_stats_reliability_patch
+import core_quality_v2_patch
 import multi_engine_runtime
 import live_button_patch
 import live_button_emergency_patch
@@ -89,7 +90,7 @@ async def resource_loop():
   logger.info("RESOURCE_WATCH rss=%.1fMB available=%.1fMB load_ratio=%.2f status=%s",s['rss_mb'],s['mem_available_mb'],s['load_ratio'],reason)
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");resources=asyncio.create_task(resource_loop(),name="resource-watch")
- logger.info("GOOL LIVE | CORE+1H+2H | BEST BET=Monkey relay | strong_proguz_relay=on | goal-card-race-fix=on | resource_guard=on")
+ logger.info("GOOL LIVE | CORE+1H+2H | CORE_QUALITY_V2=on | BEST BET=Monkey relay | strong_proguz_relay=on | goal-card-race-fix=on | resource_guard=on")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
