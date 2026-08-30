@@ -64,37 +64,37 @@ def _effective_lambda(dec,history_mult):
     return max(.01,min(4.5,float(dec.lambda_remaining)*max(.88,min(1.12,float(history_mult or 1.0)))))
 
 def _direction_allowed(dec,side):
-    if side=="OVER":return dec.threat>=55 and dec.potential>=55 and dec.p_goal_10m>=14
-    return dec.threat<=42 and dec.p_goal_10m<=18
+    """The market layer may price a V3 decision, but must never invent its own direction."""
+    side=str(side).upper();direction=str(getattr(dec,"direction","NO_BET") or "NO_BET").upper()
+    if direction not in {"OVER","UNDER"} or side!=direction or getattr(dec,"line",None) is None:return False
+    if side=="OVER":return dec.threat>=70 and dec.potential>=55 and dec.p_goal_10m>=14
+    return dec.threat<=32 and dec.p_goal_10m<=18
 
 def _model_only(dec,history_mult=1.0,min_probability=.68):
-    """Choose a concrete half-goal total from football analysis even without a price."""
-    lam=_effective_lambda(dec,history_mult);current=float(dec.current_goals);expected=current+lam;scored=[]
-    for step in range(1,8):
-        line=current-0.5+step
-        if line<0.5:continue
-        for side in ("OVER","UNDER"):
-            if not _direction_allowed(dec,side):continue
-            win,push,loss=outcome_probs(current,line,side,lam)
-            if win<min_probability:continue
-            # Prefer a useful line near the model expectation, not a trivial very-distant total.
-            quality=win*100-abs(line-expected)*4.0
-            fair=fair_odd(win,push)
-            scored.append((quality,{"period":dec.period,"side":side,"line":line,"odd":None,"source":"MODEL_ONLY","model_probability":round(win*100,1),"push_probability":round(push*100,1),"fair_odd":round(fair,2) if fair else None,"value_edge":None,"ev":None,"effective_lambda":round(lam,3),"history_mult":round(history_mult,3),"price_verified":False}))
-    if not scored:return None
-    scored.sort(key=lambda x:x[0],reverse=True);return scored[0][1]
+    """Use V3's own canonical half-goal line; never manufacture an easy distant total."""
+    side=str(getattr(dec,"direction","NO_BET") or "NO_BET").upper()
+    if not _direction_allowed(dec,side):return None
+    try:line=float(dec.line)
+    except (TypeError,ValueError):return None
+    lam=_effective_lambda(dec,history_mult);win,push,loss=outcome_probs(float(dec.current_goals),line,side,lam)
+    if win<min_probability:return None
+    fair=fair_odd(win,push)
+    return {"period":dec.period,"side":side,"line":line,"odd":None,"source":"MODEL_ONLY","model_probability":round(win*100,1),"push_probability":round(push*100,1),"fair_odd":round(fair,2) if fair else None,"value_edge":None,"ev":None,"effective_lambda":round(lam,3),"history_mult":round(history_mult,3),"price_verified":False}
 
-def select_best(dec,rows,min_probability=0.58,min_value_pp=4.0,history_mult=1.0,allow_model_only=True):
-    """Choose one exact total. A bookmaker price improves the pick but never blocks it."""
-    scored=[];effective_lam=_effective_lambda(dec,history_mult)
+def select_best(dec,rows,min_probability=0.58,min_value_pp=4.0,history_mult=1.0,allow_model_only=True,max_line_distance=1.0):
+    """Price the V3 football decision. Odds are optional and cannot reverse/create a signal."""
+    direction=str(getattr(dec,"direction","NO_BET") or "NO_BET").upper()
+    if direction not in {"OVER","UNDER"} or getattr(dec,"line",None) is None:return None
+    scored=[];effective_lam=_effective_lambda(dec,history_mult);anchor=float(dec.line)
     for r in rows or []:
-        side=r["side"];line=float(r["line"]);odd=float(r["odd"])
+        side=str(r["side"]).upper();line=float(r["line"]);odd=float(r["odd"])
         if not _direction_allowed(dec,side):continue
+        if abs(line-anchor)>float(max_line_distance):continue
         win,push,loss=outcome_probs(dec.current_goals,line,side,effective_lam);fair=fair_odd(win,push)
         if not fair:continue
         implied=1.0/odd;value_pp=(win-implied)*100.0;ev=win*(odd-1.0)-loss
         if win<min_probability or value_pp<min_value_pp or ev<0.025:continue
-        expected=dec.current_goals+effective_lam;distance=abs(line-expected);quality=win*100+value_pp*1.8+ev*12-distance*2.0
+        distance=abs(line-anchor);quality=win*100+value_pp*1.8+ev*12-distance*4.0
         scored.append((quality,{**r,"model_probability":round(win*100,1),"push_probability":round(push*100,1),"fair_odd":round(fair,2),"value_edge":round(value_pp,1),"ev":round(ev,3),"effective_lambda":round(effective_lam,3),"history_mult":round(history_mult,3),"price_verified":True}))
     if scored:
         scored.sort(key=lambda x:x[0],reverse=True);return scored[0][1]
