@@ -27,12 +27,6 @@ def fair_odd(win:float,push:float)->float|None:
     return None if win<=0 else (1.0-push)/win
 
 def _local_rows(event_id,period,max_age=150):
-    """Read the freshest normalized Monkey market snapshot for this event/scope.
-
-    This is intentionally primary on the all-in-one host: the market collector is
-    already pricing the live pool, so V3 must not independently miss the same odds
-    by making another LSApp request.
-    """
     if not LOCAL_DB.exists():return []
     scope=SCOPE_MAP.get(period,period);cut=time.time()-max_age
     try:
@@ -66,18 +60,42 @@ def fetch_period_totals(event_id:str,period:str):
             rows.append({"period":period,"side":side,"line":line,"odd":odd,"source":"Flashscore/LSApp"})
     return rows
 
-def select_best(dec,rows,min_probability=0.58,min_value_pp=4.0,history_mult=1.0):
-    """Choose one exact market. Recent form is only a bounded prior, never a trigger."""
-    scored=[];effective_lam=max(.01,min(4.5,float(dec.lambda_remaining)*max(.88,min(1.12,float(history_mult or 1.0)))))
+def _effective_lambda(dec,history_mult):
+    return max(.01,min(4.5,float(dec.lambda_remaining)*max(.88,min(1.12,float(history_mult or 1.0)))))
+
+def _direction_allowed(dec,side):
+    if side=="OVER":return dec.threat>=55 and dec.potential>=55 and dec.p_goal_10m>=14
+    return dec.threat<=42 and dec.p_goal_10m<=18
+
+def _model_only(dec,history_mult=1.0,min_probability=.68):
+    """Choose a concrete half-goal total from football analysis even without a price."""
+    lam=_effective_lambda(dec,history_mult);current=float(dec.current_goals);expected=current+lam;scored=[]
+    for step in range(1,8):
+        line=current-0.5+step
+        if line<0.5:continue
+        for side in ("OVER","UNDER"):
+            if not _direction_allowed(dec,side):continue
+            win,push,loss=outcome_probs(current,line,side,lam)
+            if win<min_probability:continue
+            # Prefer a useful line near the model expectation, not a trivial very-distant total.
+            quality=win*100-abs(line-expected)*4.0
+            fair=fair_odd(win,push)
+            scored.append((quality,{"period":dec.period,"side":side,"line":line,"odd":None,"source":"MODEL_ONLY","model_probability":round(win*100,1),"push_probability":round(push*100,1),"fair_odd":round(fair,2) if fair else None,"value_edge":None,"ev":None,"effective_lambda":round(lam,3),"history_mult":round(history_mult,3),"price_verified":False}))
+    if not scored:return None
+    scored.sort(key=lambda x:x[0],reverse=True);return scored[0][1]
+
+def select_best(dec,rows,min_probability=0.58,min_value_pp=4.0,history_mult=1.0,allow_model_only=True):
+    """Choose one exact total. A bookmaker price improves the pick but never blocks it."""
+    scored=[];effective_lam=_effective_lambda(dec,history_mult)
     for r in rows or []:
         side=r["side"];line=float(r["line"]);odd=float(r["odd"])
-        if side=="OVER" and not (dec.threat>=55 and dec.potential>=55 and dec.p_goal_10m>=14):continue
-        if side=="UNDER" and not (dec.threat<=42 and dec.p_goal_10m<=18):continue
+        if not _direction_allowed(dec,side):continue
         win,push,loss=outcome_probs(dec.current_goals,line,side,effective_lam);fair=fair_odd(win,push)
         if not fair:continue
         implied=1.0/odd;value_pp=(win-implied)*100.0;ev=win*(odd-1.0)-loss
         if win<min_probability or value_pp<min_value_pp or ev<0.025:continue
         expected=dec.current_goals+effective_lam;distance=abs(line-expected);quality=win*100+value_pp*1.8+ev*12-distance*2.0
-        scored.append((quality,{**r,"model_probability":round(win*100,1),"push_probability":round(push*100,1),"fair_odd":round(fair,2),"value_edge":round(value_pp,1),"ev":round(ev,3),"effective_lambda":round(effective_lam,3),"history_mult":round(history_mult,3)}))
-    if not scored:return None
-    scored.sort(key=lambda x:x[0],reverse=True);return scored[0][1]
+        scored.append((quality,{**r,"model_probability":round(win*100,1),"push_probability":round(push*100,1),"fair_odd":round(fair,2),"value_edge":round(value_pp,1),"ev":round(ev,3),"effective_lambda":round(effective_lam,3),"history_mult":round(history_mult,3),"price_verified":True}))
+    if scored:
+        scored.sort(key=lambda x:x[0],reverse=True);return scored[0][1]
+    return _model_only(dec,history_mult) if allow_model_only else None
