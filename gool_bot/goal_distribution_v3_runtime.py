@@ -84,28 +84,31 @@ def _settle(live,state):
    d=D();d.potential=float(row.get("potential",0));d.threat=float(row.get("threat",0));d.p_goal_10m=float(row.get("p_goal_10m",0));d.lambda_remaining=float(row.get("lambda_remaining",0));d.p0=float(row.get("p0",0));d.p1=float(row.get("p1",0));d.p2plus=float(row.get("p2plus",0));d.reason="результат по выбранному тоталу"
    bet={"side":side,"line":line,"odd":row.get("odd"),"model_probability":row.get("model_probability"),"fair_odd":row.get("fair_odd"),"value_edge":row.get("value_edge"),"source":row.get("market_source")};_send(m,period,d,bet,result)
 
-def _evaluate_one(m,period,current_goals,stats,prev,margin,s,hist):
- dec=evaluate(period,int(m.minute),current_goals,stats,prev,margin,0,PERIODS[period][2]);rows=fetch_period_totals(str(m.event_id),period);bet=select_best(dec,rows,history_mult=float(hist.get("mult",1.0) or 1.0));row={"ts":time.time(),"event_id":str(m.event_id),"home":m.home,"away":m.away,"score":f"{m.home_score}:{m.away_score}",**dec.dict(),"market_count":len(rows),"selected":bet,"history":hist};_audit(row)
+def _evaluate_one(m,period,current_goals,stats,prev,margin,s,hist,diag):
+ diag["period_eval"]+=1;dec=evaluate(period,int(m.minute),current_goals,stats,prev,margin,0,PERIODS[period][2]);rows=fetch_period_totals(str(m.event_id),period);diag["markets_rows"]+=len(rows);bet=select_best(dec,rows,history_mult=float(hist.get("mult",1.0) or 1.0));row={"ts":time.time(),"event_id":str(m.event_id),"home":m.home,"away":m.away,"score":f"{m.home_score}:{m.away_score}",**dec.dict(),"market_count":len(rows),"selected":bet,"history":hist};_audit(row)
  LOG.info("CORE_V3_DECISION event=%s period=%s minute=%s score=%s potential=%.1f threat=%.1f lambda=%.2f markets=%d bet=%s",m.event_id,period,m.minute,row["score"],dec.potential,dec.threat,dec.lambda_remaining,len(rows),bet)
- if not bet:return 0
- if _already(period,m.event_id):return 0
+ if not rows:diag["no_market"]+=1
+ if not bet:diag["no_bet"]+=1;return 0
+ diag["bet_candidates"]+=1
+ if _already(period,m.event_id):diag["duplicate"]+=1;return 0
  if _record(m,period,dec,bet,hist) and _send(m,period,dec,bet):return 1
  return 0
 
 def scan(live):
- state=_load();now=time.time();sent=0;_settle(live,state)
+ state=_load();now=time.time();sent=0;diag={"discovered":len(live),"stats_body":0,"stats_ok":0,"no_stats_body":0,"no_stats_parse":0,"no_baseline":0,"period_eval":0,"markets_rows":0,"no_market":0,"no_bet":0,"bet_candidates":0,"duplicate":0};_settle(live,state)
  for m in live:
   minute=int(getattr(m,"minute",0) or 0);eid=str(m.event_id);total=int(m.home_score)+int(m.away_score);margin=int(m.home_score)-int(m.away_score);s=state.setdefault(eid,{"ts":now});s["ts"]=now
   if bool(getattr(m,"is_halftime",False)) or 45<=minute<=47:s.setdefault("ht_total",total)
   body=fetch_stats(eid)
-  if not body:continue
-  stats=parse_stats(body)
-  if not stats:continue
-  prev=get_previous_values(eid,minute,8);hist=_history(m,s)
-  if prev is not None and PERIODS["FULL_TIME"][0]<=minute<=PERIODS["FULL_TIME"][1] and not bool(getattr(m,"is_halftime",False)):sent+=_evaluate_one(m,"FULL_TIME",total,stats,prev,margin,s,hist)
-  if prev is not None and PERIODS["FIRST_HALF"][0]<=minute<=PERIODS["FIRST_HALF"][1] and not bool(getattr(m,"is_halftime",False)):sent+=_evaluate_one(m,"FIRST_HALF",total,stats,prev,margin,s,hist)
-  if prev is not None and PERIODS["SECOND_HALF"][0]<=minute<=PERIODS["SECOND_HALF"][1] and "ht_total" in s:sent+=_evaluate_one(m,"SECOND_HALF",max(0,total-int(s["ht_total"])),stats,prev,margin,s,hist)
+  if not body:diag["no_stats_body"]+=1;LOG.info("CORE_V3_REJECT event=%s minute=%s reason=no_stats_body",eid,minute);continue
+  diag["stats_body"]+=1;stats=parse_stats(body)
+  if not stats:diag["no_stats_parse"]+=1;LOG.info("CORE_V3_REJECT event=%s minute=%s reason=no_stats_parse",eid,minute);continue
+  diag["stats_ok"]+=1;prev=get_previous_values(eid,minute,8);hist=_history(m,s)
+  if prev is None:diag["no_baseline"]+=1;LOG.info("CORE_V3_WAIT event=%s minute=%s reason=no_8m_baseline",eid,minute)
+  if prev is not None and PERIODS["FULL_TIME"][0]<=minute<=PERIODS["FULL_TIME"][1] and not bool(getattr(m,"is_halftime",False)):sent+=_evaluate_one(m,"FULL_TIME",total,stats,prev,margin,s,hist,diag)
+  if prev is not None and PERIODS["FIRST_HALF"][0]<=minute<=PERIODS["FIRST_HALF"][1] and not bool(getattr(m,"is_halftime",False)):sent+=_evaluate_one(m,"FIRST_HALF",total,stats,prev,margin,s,hist,diag)
+  if prev is not None and PERIODS["SECOND_HALF"][0]<=minute<=PERIODS["SECOND_HALF"][1] and "ht_total" in s:sent+=_evaluate_one(m,"SECOND_HALF",max(0,total-int(s["ht_total"])),stats,prev,margin,s,hist,diag)
   save_snapshot(eid,StatsSnapshot(int(time.time()),minute,stats))
- _save(state);LOG.info("CORE_V3_CYCLE matches=%d sent=%d systems=FT+1H+2H",len(live),sent);return sent
+ _save(state);LOG.info("CORE_V3_CYCLE matches=%d sent=%d systems=FT+1H+2H",len(live),sent);LOG.info("CORE_V3_POOL_DIAG %s",diag);return sent
 
-LOG.info("CORE V3 PRODUCTION active | FULL_TIME+FIRST_HALF+SECOND_HALF | exact TOTAL OVER/UNDER | odds+value required | max 1 signal/period/event")
+LOG.info("CORE V3 PRODUCTION active | FULL_TIME+FIRST_HALF+SECOND_HALF | exact TOTAL OVER/UNDER | odds+value required | max 1 signal/period/event | full-pool diagnostics=on")
