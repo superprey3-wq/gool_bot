@@ -1,6 +1,6 @@
 """24/7 GOOL LIVE production runner."""
 from __future__ import annotations
-import asyncio,logging,os,sys,time
+import asyncio,hashlib,logging,os,sys,time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
@@ -50,13 +50,12 @@ import core_goal_delivery_reliability_patch
 import core_live_stats_reliability_patch
 import core_quality_v2_patch
 import goal_distribution_v3_runtime
+import goal_total_market_v3
 import live_button_patch
 import live_button_emergency_patch
 import runtime_resource_guard
 from telegram_subscribers import polling_loop
 import production_logging
-# This legacy TOP-load gate is unrelated to V3/Strong Proguz.  Some lightweight
-# hosts intentionally do not install aiohttp, so it must never stop MAIN startup.
 try:
  import late_premarket_alert_filter_patch
 except ModuleNotFoundError as exc:
@@ -65,12 +64,12 @@ except ModuleNotFoundError as exc:
 import remote_strong_proguz_patch
 import v3_reporting_patch
 runtime_resource_guard.log_startup()
+def _module_sha(mod):
+ try:return hashlib.sha256(Path(mod.__file__).read_bytes()).hexdigest()[:12]
+ except Exception:return "unknown"
 async def run_live():
  try:
   started=time.monotonic();live=await visual_feed_unified_bot.unified_bot.discover_live_matches();discovery=time.monotonic()-started
-  # V3 must see the complete Flashscore LIVE pool.  The legacy league gate was
-  # built for the retired FIRST_HALF_GOAL / SECOND_HALF_OVER15 strategies and
-  # could remove valid early matches before the new bidirectional analyzer saw them.
   score_sync_patch.reuse_once(live)
   sent=await asyncio.to_thread(goal_distribution_v3_runtime.scan,live)
   await asyncio.to_thread(core_primary_reconcile.reconcile,live)
@@ -88,7 +87,8 @@ async def resource_loop():
   logger.info("RESOURCE_WATCH rss=%.1fMB available=%.1fMB load_ratio=%.2f status=%s",s['rss_mb'],s['mem_available_mb'],s['load_ratio'],reason)
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");resources=asyncio.create_task(resource_loop(),name="resource-watch")
- logger.info("GOOL LIVE | 3 SYSTEMS: FULL MATCH + FIRST HALF + SECOND HALF | V3 exact TOTAL OVER/UNDER | FULL LIVE POOL | odds+value | old CORE/1H/2H delivery=off | BEST BET=off | strong_proguz_relay=on | v3_reports=on")
+ logger.info("CORE_V3_BUILD model-only-v2 runtime_sha=%s selector_sha=%s",_module_sha(goal_distribution_v3_runtime),_module_sha(goal_total_market_v3))
+ logger.info("GOOL LIVE | 3 SYSTEMS: FULL MATCH + FIRST HALF + SECOND HALF | V3 exact TOTAL OVER/UNDER | FULL LIVE POOL | odds optional | MODEL_ONLY fallback=on | old CORE/1H/2H delivery=off | BEST BET=off | strong_proguz_relay=on | v3_reports=on")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
