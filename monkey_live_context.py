@@ -1,14 +1,14 @@
-"""Unified Flashscore live truth for Monkey PROGRUZ and GOOL MAIN V3.
+"""Unified Flashscore live truth for Monkey Strong PROGRUZ only.
 
-Uses the migrated MAIN runtime live_engine. One JSON snapshot is the single source
-of truth for score, absolute minute, status, parsed live stats and rolling 8-minute
-pressure. Its history is also available read-only to MAIN V3 as a warm baseline.
+This runtime is intentionally independent from GOOL MAIN.  The supervisor places the
+small production live_engine/feed parser beside this file, so Monkey can provide score,
+minute, live stats and rolling pressure without cloning/running the full Telegram bot.
 """
 from __future__ import annotations
 import asyncio,json,logging,os,sys,time
 from dataclasses import asdict
 from pathlib import Path
-HOME=Path(os.getenv("GOOL_HOME","/home/container"));RUNTIME=HOME/"main_runtime"/"gool_bot";STATE=Path(os.getenv("GOOL_MONKEY_LIVE_CONTEXT",str(HOME/"monkey_live_context.json")));POLL=max(12,int(os.getenv("GOOL_MONKEY_LIVE_POLL_SECONDS","20")))
+HOME=Path(os.getenv("GOOL_HOME","/home/container"));RUNTIME=Path(os.getenv("GOOL_PROGRUZ_LIVE_RUNTIME",str(HOME/"proguz_live_runtime")));STATE=Path(os.getenv("GOOL_MONKEY_LIVE_CONTEXT",str(HOME/"monkey_live_context.json")));POLL=max(12,int(os.getenv("GOOL_MONKEY_LIVE_POLL_SECONDS","20")))
 os.environ.setdefault("LIVE_STATE_FILE",str(HOME/"monkey_live_stats_history.json"))
 if str(RUNTIME) not in sys.path:sys.path.insert(0,str(RUNTIME))
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");log=logging.getLogger("monkey_live_context")
@@ -47,7 +47,7 @@ async def cycle():
   log.info("MONKEY_LIVE event=%s score=%s minute=%s status=%s stats=%d pressure=%s momentum=%s",eid,r["score"],r["minute"],r["status"],len(stats),pressure.get("score"),pressure.get("momentum"))
  _write(rows);log.info("MONKEY_LIVE_COMMIT events=%d state=%s",len(rows),STATE)
 async def main():
- log.info("GOOL MONKEY LIVE TRUTH main_runtime + rolling pressure poll=%ss",POLL)
+ log.info("GOOL MONKEY LIVE TRUTH standalone | production Flashscore engine | rolling pressure | poll=%ss",POLL)
  while True:
   started=time.monotonic()
   try:await cycle()
