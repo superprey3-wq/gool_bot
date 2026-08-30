@@ -1,11 +1,12 @@
 """24/7 GOOL LIVE production runner."""
 from __future__ import annotations
-import asyncio,hashlib,logging,os,sys,time
+import asyncio,logging,os,sys,time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
-os.environ.setdefault("LIVE_SIGNAL_THRESHOLD","80");os.environ.setdefault("LIVE_COOLDOWN_MINUTES","12")
+os.environ.setdefault("LIVE_SIGNAL_THRESHOLD","75");os.environ.setdefault("LIVE_COOLDOWN_MINUTES","12")
 LIVE_INTERVAL_SECONDS=max(30,int(os.getenv("LIVE_INTERVAL_SECONDS","60")))
+REMOTE_BESTBET_ONLY=str(os.getenv("GOOL_REMOTE_BEST_BET_ONLY","1")).strip().lower() not in {"0","false","no","off"}
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s");logger=logging.getLogger("gool_live_24x7")
 import visual_feed_unified_bot
 import xg_proxy_patch
@@ -49,11 +50,16 @@ import fast_goal_watch
 import core_goal_delivery_reliability_patch
 import core_live_stats_reliability_patch
 import core_quality_v2_patch
-import goal_distribution_v3_runtime
-import goal_total_market_v3
+import multi_engine_runtime
 import live_button_patch
 import live_button_emergency_patch
+import best_bet_input_reliability_patch
+import best_bet_engine
+import best_bet_consensus_patch
+import best_bet_delivery_reliability_patch
+import best_bet_diagnostics_patch
 import runtime_resource_guard
+from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop
 import production_logging
 try:
@@ -62,19 +68,20 @@ except ModuleNotFoundError as exc:
  if exc.name=="aiohttp":logger.info("LEGACY_TOPLOAD_GATE disabled reason=no_aiohttp")
  else:raise
 import remote_strong_proguz_patch
-import v3_reporting_patch
+import remote_best_bet_relay
 runtime_resource_guard.log_startup()
-def _module_sha(mod):
- try:return hashlib.sha256(Path(mod.__file__).read_bytes()).hexdigest()[:12]
- except Exception:return "unknown"
 async def run_live():
  try:
   started=time.monotonic();live=await visual_feed_unified_bot.unified_bot.discover_live_matches();discovery=time.monotonic()-started
+  best_settled=await asyncio.to_thread(best_bet_engine.update_results,live)
   score_sync_patch.reuse_once(live)
-  sent=await asyncio.to_thread(goal_distribution_v3_runtime.scan,live)
+  await visual_feed_unified_bot.unified_bot.scan_live_once()
+  engine_live=await asyncio.to_thread(filter_for_multi_engine,live)
+  await asyncio.to_thread(multi_engine_runtime.scan_engines,engine_live)
+  best_sent=0 if REMOTE_BESTBET_ONLY else await asyncio.to_thread(best_bet_engine.scan,engine_live)
   await asyncio.to_thread(core_primary_reconcile.reconcile,live)
   await asyncio.to_thread(clv_tracker.sample,live)
-  logger.info("GOOL_CYCLE_DONE live=%d analyzed=%d v3_sent=%d discovery=%.1fs total=%.1fs full_pool=1",len(live),len(live),sent,discovery,time.monotonic()-started)
+  logger.info("GOOL_CYCLE_DONE live=%d aux=%d best_local=%d settled=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),best_sent,best_settled,discovery,time.monotonic()-started)
  except Exception:logger.exception("LIVE scan failed; runner will continue")
 async def status_loop():
  while True:
@@ -87,8 +94,7 @@ async def resource_loop():
   logger.info("RESOURCE_WATCH rss=%.1fMB available=%.1fMB load_ratio=%.2f status=%s",s['rss_mb'],s['mem_available_mb'],s['load_ratio'],reason)
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");resources=asyncio.create_task(resource_loop(),name="resource-watch")
- logger.info("CORE_V3_BUILD model-only-v2 runtime_sha=%s selector_sha=%s",_module_sha(goal_distribution_v3_runtime),_module_sha(goal_total_market_v3))
- logger.info("GOOL LIVE | 3 SYSTEMS: FULL MATCH + FIRST HALF + SECOND HALF | V3 exact TOTAL OVER/UNDER | FULL LIVE POOL | odds optional | MODEL_ONLY fallback=on | old CORE/1H/2H delivery=off | BEST BET=off | strong_proguz_relay=on | v3_reports=on")
+ logger.info("GOOL LIVE | CORE+1H+2H | CORE_QUALITY_V2=on | V3=off | BEST BET=Monkey relay | strong_proguz_relay=on | goal-card-race-fix=on | resource_guard=on")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
