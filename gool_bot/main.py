@@ -61,6 +61,7 @@ import best_bet_diagnostics_patch
 import runtime_resource_guard
 from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop
+from signal_journal import purge_engine
 import production_logging
 try:
  import late_premarket_alert_filter_patch
@@ -70,6 +71,8 @@ except ModuleNotFoundError as exc:
 import remote_strong_proguz_patch
 import remote_best_bet_relay
 runtime_resource_guard.log_startup()
+_removed_v3=purge_engine("GOAL_DISTRIBUTION_V3")
+logger.info("LEGACY_JOURNAL_CLEANUP engine=GOAL_DISTRIBUTION_V3 removed=%d preserved=CORE+1H+2H",_removed_v3)
 async def run_live():
  try:
   started=time.monotonic();live=await visual_feed_unified_bot.unified_bot.discover_live_matches();discovery=time.monotonic()-started
