@@ -58,6 +58,7 @@ from telegram_subscribers import polling_loop
 import production_logging
 import late_premarket_alert_filter_patch
 import remote_strong_proguz_patch
+import v3_reporting_patch
 runtime_resource_guard.log_startup()
 async def run_live():
  try:
@@ -80,7 +81,7 @@ async def resource_loop():
   logger.info("RESOURCE_WATCH rss=%.1fMB available=%.1fMB load_ratio=%.2f status=%s",s['rss_mb'],s['mem_available_mb'],s['load_ratio'],reason)
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");resources=asyncio.create_task(resource_loop(),name="resource-watch")
- logger.info("GOOL LIVE | 3 SYSTEMS: FULL MATCH + FIRST HALF + SECOND HALF | V3 exact TOTAL OVER/UNDER | odds+value | old CORE/1H/2H delivery=off | BEST BET=off | strong_proguz_relay=on")
+ logger.info("GOOL LIVE | 3 SYSTEMS: FULL MATCH + FIRST HALF + SECOND HALF | V3 exact TOTAL OVER/UNDER | odds+value | old CORE/1H/2H delivery=off | BEST BET=off | strong_proguz_relay=on | v3_reports=on")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
