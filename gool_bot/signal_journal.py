@@ -79,3 +79,19 @@ def update_signal(dedupe_key: str, **fields: Any) -> bool:
 def all_signals() -> list[dict[str, Any]]:
     with _LOCK:
         return list(_load_unlocked().get("signals", []))
+
+
+def purge_engine(engine: str) -> int:
+    """Remove only rows belonging to one retired engine, preserving all legacy history."""
+    target = str(engine or "").strip()
+    if not target:
+        return 0
+    with _LOCK:
+        data = _load_unlocked()
+        rows = list(data.setdefault("signals", []))
+        kept = [row for row in rows if str(row.get("engine") or "") != target]
+        removed = len(rows) - len(kept)
+        if removed:
+            data["signals"] = kept
+            _save_unlocked(data)
+        return removed
