@@ -1,8 +1,7 @@
 """GOOL CORE V3: bidirectional remaining-goals distribution.
 
-The model does not assume that a live match must produce another goal.  It
-estimates a state-conditioned remaining-goals mean and derives OVER/UNDER/NO BET
-views for FULL_TIME, FIRST_HALF and SECOND_HALF.
+The model estimates a state-conditioned remaining-goals mean and derives
+OVER/UNDER/NO BET views for FULL_TIME, FIRST_HALF and SECOND_HALF.
 """
 from __future__ import annotations
 import math
@@ -55,6 +54,39 @@ def _threat(stats:Mapping,previous:Mapping|None)->tuple[float,int,dict]:
  confirmations=sum((d["xg"]>=.15,d["shots_on_target"]>=1,d["shots"]>=3,d["big_chances"]>=1,d["shots_inside_box"]>=2,d["touches_box"]>=6,d["corners"]>=2))
  return round(_clip(raw),1),int(confirmations),d
 
+def _outcome_prob(current:float,line:float,side:str,lam:float)->float:
+ """Win probability for a half-goal total under the remaining-goals Poisson."""
+ need=max(0,int(math.floor(line-current))+1)
+ if side=="OVER":
+  if current>line:return 1.0
+  return max(0.0,1.0-sum(_pois(k,lam) for k in range(need)))
+ # Half-goal UNDER wins when final total stays below line.
+ max_add=int(math.ceil(line-current)-1)
+ if max_add<0:return 0.0
+ return min(1.0,sum(_pois(k,lam) for k in range(max_add+1)))
+
+def _meaningful_line(period:str,current_goals:int,lam:float,side:str)->tuple[float,float]:
+ """Pick a useful total near the model expectation, never the trivial next-goal line.
+
+ FULL_TIME should express a view on the match total, not merely 'one more goal'.
+ Half systems use the same principle for their own period total.
+ """
+ expected=float(current_goals)+float(lam)
+ # Half-goal lines around expected total; bounded to realistic nearby choices.
+ lo=max(.5,float(current_goals)+.5)
+ candidates=[]
+ for n in range(0,12):
+  line=.5+n
+  if line<lo:continue
+  p=_outcome_prob(float(current_goals),line,side,lam)
+  # Avoid fake 90%+ certainty created by an easy line. Prefer actionable 60-80% zone.
+  if .60<=p<=.80:
+   candidates.append((abs(line-expected),abs(p-.68),line,p))
+ if candidates:
+  candidates.sort(key=lambda x:(x[0],x[1]));_,_,line,p=candidates[0];return line,p
+ # No qualifying useful line means NO BET; do not fall back to current_goals+0.5.
+ return None,0.0
+
 def evaluate(period:str,minute:int,current_goals:int,stats:Mapping,previous:Mapping|None,score_margin:int=0,period_start_minute:int=0,period_end_minute:int=94)->DistributionDecision:
  minute=max(0,int(minute or 0));current_goals=max(0,int(current_goals or 0));left=max(0.0,float(period_end_minute-minute));potential=_potential(stats);threat,confirm,d=_threat(stats,previous)
  base_rate=2.70/94.0
@@ -66,23 +98,22 @@ def evaluate(period:str,minute:int,current_goals:int,stats:Mapping,previous:Mapp
  lam=max(.01,min(3.8,base_rate*left*live_mult))
  p0=_pois(0,lam);p1=_pois(1,lam);p2=max(0.0,1-p0-p1);pany=1-p0
  lam10=max(.001,lam*min(10.0,left)/max(left,1.0));p10=1-math.exp(-lam10)
- line=float(current_goals)+.5
- pover=pany;punder=p0
- direction="NO_BET";prob=max(pover,punder);chosen=None
+ direction="NO_BET";prob=max(pany,p0);chosen=None
 
- # Production gate: strong probability plus matching live football evidence.
- # The previous 68%/70-threat combination was so restrictive that valid states
- # almost never reached delivery.  Keep selectivity, but remove starvation.
- over_prob_gate=.64
- under_prob_gate=.64
+ # First decide football direction from live evidence, then choose a meaningful
+ # period-total line near expected final goals. Never manufacture a next-goal bet.
  if previous is not None:
-  if pover>=over_prob_gate and threat>=55 and potential>=48 and confirm>=2:
-   direction="OVER";prob=pover;chosen=line
-  elif punder>=under_prob_gate and threat<=35 and potential<=55 and confirm<=1:
-   direction="UNDER";prob=punder;chosen=line
+  if threat>=55 and potential>=48 and confirm>=2:
+   line,p=_meaningful_line(period,current_goals,lam,"OVER")
+   if line is not None and p>=.64:
+    direction="OVER";prob=p;chosen=line
+  elif threat<=35 and potential<=55 and confirm<=1:
+   line,p=_meaningful_line(period,current_goals,lam,"UNDER")
+   if line is not None and p>=.64:
+    direction="UNDER";prob=p;chosen=line
 
  confidence=_clip(abs(prob-.5)*200)
  fair=(1.0/prob) if direction!="NO_BET" and prob>0 else None
  reason=(f"confirm={confirm}; dxG={d.get('xg',0):.2f}; dSOT={d.get('shots_on_target',0):.0f}; "
-         f"potential={potential:.1f}; threat={threat:.1f}; pAny={pany*100:.1f}; p0={p0*100:.1f}")
+         f"potential={potential:.1f}; threat={threat:.1f}; pAny={pany*100:.1f}; p0={p0*100:.1f}; expected={current_goals+lam:.2f}")
  return DistributionDecision(period,minute,current_goals,round(left,1),potential,threat,round(lam,3),round(p0*100,1),round(p1*100,1),round(p2*100,1),round(p10*100,1),round(pany*100,1),direction,chosen,round(prob*100,1),round(fair,2) if fair else None,round(confidence,1),reason)
