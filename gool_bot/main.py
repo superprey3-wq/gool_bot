@@ -53,7 +53,6 @@ import goal_distribution_v3_runtime
 import live_button_patch
 import live_button_emergency_patch
 import runtime_resource_guard
-from league_signal_gate import filter_for_multi_engine
 from telegram_subscribers import polling_loop
 import production_logging
 import late_premarket_alert_filter_patch
@@ -63,12 +62,14 @@ runtime_resource_guard.log_startup()
 async def run_live():
  try:
   started=time.monotonic();live=await visual_feed_unified_bot.unified_bot.discover_live_matches();discovery=time.monotonic()-started
+  # V3 must see the complete Flashscore LIVE pool.  The legacy league gate was
+  # built for the retired FIRST_HALF_GOAL / SECOND_HALF_OVER15 strategies and
+  # could remove valid early matches before the new bidirectional analyzer saw them.
   score_sync_patch.reuse_once(live)
-  engine_live=await asyncio.to_thread(filter_for_multi_engine,live)
-  sent=await asyncio.to_thread(goal_distribution_v3_runtime.scan,engine_live)
+  sent=await asyncio.to_thread(goal_distribution_v3_runtime.scan,live)
   await asyncio.to_thread(core_primary_reconcile.reconcile,live)
   await asyncio.to_thread(clv_tracker.sample,live)
-  logger.info("GOOL_CYCLE_DONE live=%d analyzed=%d v3_sent=%d discovery=%.1fs total=%.1fs",len(live),len(engine_live),sent,discovery,time.monotonic()-started)
+  logger.info("GOOL_CYCLE_DONE live=%d analyzed=%d v3_sent=%d discovery=%.1fs total=%.1fs full_pool=1",len(live),len(live),sent,discovery,time.monotonic()-started)
  except Exception:logger.exception("LIVE scan failed; runner will continue")
 async def status_loop():
  while True:
@@ -81,7 +82,7 @@ async def resource_loop():
   logger.info("RESOURCE_WATCH rss=%.1fMB available=%.1fMB load_ratio=%.2f status=%s",s['rss_mb'],s['mem_available_mb'],s['load_ratio'],reason)
 async def main():
  poller=asyncio.create_task(polling_loop(),name="telegram-command-poller");heartbeat=asyncio.create_task(status_loop(),name="live-status-heartbeat");goal_watch=asyncio.create_task(fast_goal_watch.loop(),name="fast-goal-watch");resources=asyncio.create_task(resource_loop(),name="resource-watch")
- logger.info("GOOL LIVE | 3 SYSTEMS: FULL MATCH + FIRST HALF + SECOND HALF | V3 exact TOTAL OVER/UNDER | odds+value | old CORE/1H/2H delivery=off | BEST BET=off | strong_proguz_relay=on | v3_reports=on")
+ logger.info("GOOL LIVE | 3 SYSTEMS: FULL MATCH + FIRST HALF + SECOND HALF | V3 exact TOTAL OVER/UNDER | FULL LIVE POOL | odds+value | old CORE/1H/2H delivery=off | BEST BET=off | strong_proguz_relay=on | v3_reports=on")
  try:
   while True:
    started=time.monotonic();await run_live();await asyncio.sleep(max(2.0,LIVE_INTERVAL_SECONDS-(time.monotonic()-started)))
