@@ -64,11 +64,9 @@ def _effective_lambda(dec,history_mult):
     return max(.01,min(4.5,float(dec.lambda_remaining)*max(.88,min(1.12,float(history_mult or 1.0)))))
 
 def _direction_allowed(dec,side):
-    """The market layer may price a V3 decision, but must never invent its own direction."""
+    """Only the football model decides direction. The market layer must not add a second quality gate."""
     side=str(side).upper();direction=str(getattr(dec,"direction","NO_BET") or "NO_BET").upper()
-    if direction not in {"OVER","UNDER"} or side!=direction or getattr(dec,"line",None) is None:return False
-    if side=="OVER":return dec.threat>=70 and dec.potential>=55 and dec.p_goal_10m>=14
-    return dec.threat<=32 and dec.p_goal_10m<=18
+    return direction in {"OVER","UNDER"} and side==direction and getattr(dec,"line",None) is not None
 
 def _model_only(dec,history_mult=1.0,min_probability=.68):
     """Use V3's own canonical half-goal line; never manufacture an easy distant total."""
@@ -77,6 +75,9 @@ def _model_only(dec,history_mult=1.0,min_probability=.68):
     try:line=float(dec.line)
     except (TypeError,ValueError):return None
     lam=_effective_lambda(dec,history_mult);win,push,loss=outcome_probs(float(dec.current_goals),line,side,lam)
+    # The V3 model has already cleared its football-quality gate. Keep only the
+    # probability floor here so history adjustment cannot turn a strong model
+    # decision into a contradictory low-probability pick.
     if win<min_probability:return None
     fair=fair_odd(win,push)
     return {"period":dec.period,"side":side,"line":line,"odd":None,"source":"MODEL_ONLY","model_probability":round(win*100,1),"push_probability":round(push*100,1),"fair_odd":round(fair,2) if fair else None,"value_edge":None,"ev":None,"effective_lambda":round(lam,3),"history_mult":round(history_mult,3),"price_verified":False}
