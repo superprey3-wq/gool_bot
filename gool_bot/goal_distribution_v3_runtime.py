@@ -31,12 +31,6 @@ def _context_events():
   return p.get("events",{}) if isinstance(p.get("events"),dict) else {}
  except Exception:return {}
 def _norm_prev(current,old,window):
- """Convert a 3-10 minute observed delta to an 8-minute-equivalent delta.
-
-This lets a restarted server become useful after a few minutes without treating
-cumulative match totals as recent pressure.  Scaling is bounded so a short noisy
-window cannot explode the model.
- """
  if not isinstance(old,dict) or window<=0:return old
  factor=max(.8,min(2.0,8.0/float(window)));out={}
  keys=set(current)|set(old)
@@ -48,7 +42,6 @@ window cannot explode the model.
   except Exception:out[k]=old.get(k,current.get(k,(0,0)))
  return out
 def _adaptive_previous(eid,minute,current):
- """Prefer ~8m history, but accept a real 3-10m local snapshot after restart."""
  try:rows=load_state().get(str(eid),[]) or []
  except Exception:rows=[]
  candidates=[]
@@ -60,7 +53,6 @@ def _adaptive_previous(eid,minute,current):
  if not candidates:return None,0
  _,_,gap,prev=min(candidates,key=lambda x:(x[0],x[1]));return _norm_prev(current,prev,gap),gap
 def _warm_previous(eid,minute,current):
- """Optional Monkey history fallback. MAIN never writes it."""
  try:d=json.loads(MONKEY_HISTORY.read_text("utf-8"));rows=d.get(str(eid),[]) if isinstance(d,dict) else []
  except Exception:return None,0
  candidates=[]
@@ -87,14 +79,19 @@ def _send(m,period,dec,bet,result=None):
  if not token or not subs:return False
  try:png=render(m,period,dec,bet,result)
  except Exception:LOG.exception("CORE_V3_CARD_FAIL");return False
- pick=("ТБ" if bet.get("side")=="OVER" else "ТМ")+f" {float(bet.get('line')):g}";caption=f"🎯 GOOL • {period} • {pick}"+(f" @ {float(bet['odd']):.2f}" if bet.get("odd") else "") if result is None else f"{'✅' if result=='win' else '↔️' if result=='push' else '❌'} GOOL • {period} • {pick} • {result.upper()}"
+ pick=("ТБ" if bet.get("side")=="OVER" else "ТМ")+f" {float(bet.get('line')):g}"
+ price=f" @ {float(bet['odd']):.2f}" if bet.get("odd") else " • MODEL"
+ caption=f"🎯 GOOL • {period} • {pick}{price}" if result is None else f"{'✅' if result=='win' else '↔️' if result=='push' else '❌'} GOOL • {period} • {pick} • {result.upper()}"
  ok=0
  for cid in subs:
   try:r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",data={"chat_id":str(cid),"caption":caption},files={"photo":("gool-v3.png",png,"image/png")},timeout=25);ok+=int(r.ok)
   except requests.RequestException:pass
- LOG.info("CORE_V3_DELIVERED event=%s period=%s result=%s ok=%d/%d",m.event_id,period,result or "signal",ok,len(subs));return ok>0
+ LOG.info("CORE_V3_DELIVERED event=%s period=%s result=%s source=%s ok=%d/%d",m.event_id,period,result or "signal",bet.get("source"),ok,len(subs));return ok>0
+def _f(v):
+ try:return float(v) if v is not None else None
+ except (TypeError,ValueError):return None
 def _record(m,period,dec,bet,hist):
- row={"journal_version":10,"kind":"live_total_v3","engine":"GOAL_DISTRIBUTION_V3","period":period,"event_id":str(m.event_id),"home":m.home,"away":m.away,"league":getattr(m,"league","") or "","minute":int(m.minute),"score_at_signal":f"{m.home_score}:{m.away_score}","period_goals_at_signal":int(dec.current_goals),"side":bet["side"],"line":float(bet["line"]),"odd":float(bet["odd"]),"model_probability":float(bet["model_probability"]),"fair_odd":float(bet["fair_odd"]),"value_edge":float(bet["value_edge"]),"ev":float(bet["ev"]),"potential":dec.potential,"threat":dec.threat,"lambda_remaining":float(bet.get("effective_lambda",dec.lambda_remaining)),"p_goal_10m":dec.p_goal_10m,"p0":dec.p0,"p1":dec.p1,"p2plus":dec.p2plus,"history_context":hist,"market_source":bet.get("source"),"result":"pending","signal_result":"pending","stake_units":1.0};return add_signal(row,_key(period,m.event_id))
+ row={"journal_version":11,"kind":"live_total_v3","engine":"GOAL_DISTRIBUTION_V3","period":period,"event_id":str(m.event_id),"home":m.home,"away":m.away,"league":getattr(m,"league","") or "","minute":int(m.minute),"score_at_signal":f"{m.home_score}:{m.away_score}","period_goals_at_signal":int(dec.current_goals),"side":bet["side"],"line":float(bet["line"]),"odd":_f(bet.get("odd")),"model_probability":float(bet["model_probability"]),"fair_odd":_f(bet.get("fair_odd")),"value_edge":_f(bet.get("value_edge")),"ev":_f(bet.get("ev")),"price_verified":bool(bet.get("price_verified")),"potential":dec.potential,"threat":dec.threat,"lambda_remaining":float(bet.get("effective_lambda",dec.lambda_remaining)),"p_goal_10m":dec.p_goal_10m,"p0":dec.p0,"p1":dec.p1,"p2plus":dec.p2plus,"history_context":hist,"market_source":bet.get("source"),"result":"pending","signal_result":"pending","stake_units":1.0};return add_signal(row,_key(period,m.event_id))
 def _period_goals(m,row,state):
  total=int(m.home_score)+int(m.away_score);period=row.get("period")
  if period=="SECOND_HALF":
@@ -122,10 +119,12 @@ def _evaluate_one(m,period,current_goals,stats,prev,margin,s,hist,diag):
  if not rows:diag["no_market"]+=1
  if not bet:diag["no_bet"]+=1;return 0
  diag["bet_candidates"]+=1
+ if str(bet.get("source"))=="MODEL_ONLY":diag["model_only"]+=1
+ else:diag["priced_bet"]+=1
  if _already(period,m.event_id):diag["duplicate"]+=1;return 0
  return 1 if _record(m,period,dec,bet,hist) and _send(m,period,dec,bet) else 0
 def scan(live):
- state=_load();ctx=_context_events();now=time.time();sent=0;diag={"discovered":len(live),"context_stats":0,"stats_body":0,"stats_ok":0,"no_stats_body":0,"no_stats_parse":0,"baseline_local":0,"baseline_monkey":0,"baseline_3_10m":0,"no_baseline":0,"period_eval":0,"markets_rows":0,"no_market":0,"no_bet":0,"bet_candidates":0,"duplicate":0};_settle(live,state)
+ state=_load();ctx=_context_events();now=time.time();sent=0;diag={"discovered":len(live),"context_stats":0,"stats_body":0,"stats_ok":0,"no_stats_body":0,"no_stats_parse":0,"baseline_local":0,"baseline_monkey":0,"baseline_3_10m":0,"no_baseline":0,"period_eval":0,"markets_rows":0,"no_market":0,"no_bet":0,"bet_candidates":0,"model_only":0,"priced_bet":0,"duplicate":0};_settle(live,state)
  for m in live:
   minute=int(getattr(m,"minute",0) or 0);eid=str(m.event_id);total=int(m.home_score)+int(m.away_score);margin=int(m.home_score)-int(m.away_score);s=state.setdefault(eid,{"ts":now});s["ts"]=now
   if bool(getattr(m,"is_halftime",False)) or 45<=minute<=47:s.setdefault("ht_total",total)
@@ -136,17 +135,17 @@ def scan(live):
    if not body:diag["no_stats_body"]+=1;LOG.info("CORE_V3_REJECT event=%s minute=%s reason=no_stats_body",eid,minute);continue
    diag["stats_body"]+=1;stats=parse_stats(body)
    if not stats:diag["no_stats_parse"]+=1;LOG.info("CORE_V3_REJECT event=%s minute=%s reason=no_stats_parse",eid,minute);continue
-  diag["stats_ok"]+=1;prev,gap=_adaptive_previous(eid,minute,stats)
+  diag["stats_ok"]+=1;prev,gap=_adaptive_previous(eid,minute,stats);baseline_source="local"
   if prev is not None:diag["baseline_local"]+=1;diag["baseline_3_10m"]+=1
   else:
-   prev,gap=_warm_previous(eid,minute,stats)
+   prev,gap=_warm_previous(eid,minute,stats);baseline_source="history"
    if prev is not None:diag["baseline_monkey"]+=1;diag["baseline_3_10m"]+=1
   hist=_history(m,s)
   if prev is None:diag["no_baseline"]+=1;LOG.info("CORE_V3_WAIT event=%s minute=%s reason=no_3m_baseline",eid,minute)
-  else:LOG.info("CORE_V3_BASELINE event=%s minute=%s window=%dm source=%s",eid,minute,gap,"local" if diag["baseline_local"] else "history")
+  else:LOG.info("CORE_V3_BASELINE event=%s minute=%s window=%dm source=%s",eid,minute,gap,baseline_source)
   if prev is not None and PERIODS["FULL_TIME"][0]<=minute<=PERIODS["FULL_TIME"][1] and not bool(getattr(m,"is_halftime",False)):sent+=_evaluate_one(m,"FULL_TIME",total,stats,prev,margin,s,hist,diag)
   if prev is not None and PERIODS["FIRST_HALF"][0]<=minute<=PERIODS["FIRST_HALF"][1] and not bool(getattr(m,"is_halftime",False)):sent+=_evaluate_one(m,"FIRST_HALF",total,stats,prev,margin,s,hist,diag)
   if prev is not None and PERIODS["SECOND_HALF"][0]<=minute<=PERIODS["SECOND_HALF"][1] and "ht_total" in s:sent+=_evaluate_one(m,"SECOND_HALF",max(0,total-int(s["ht_total"])),stats,prev,margin,s,hist,diag)
   save_snapshot(eid,StatsSnapshot(int(time.time()),minute,stats))
  _save(state);LOG.info("CORE_V3_CYCLE matches=%d sent=%d systems=FT+1H+2H",len(live),sent);LOG.info("CORE_V3_POOL_DIAG %s",diag);return sent
-LOG.info("CORE V3 PRODUCTION active | adaptive baseline=3-10m normalized-to-8m | FULL_TIME+FIRST_HALF+SECOND_HALF")
+LOG.info("CORE V3 PRODUCTION active | odds optional | MODEL_ONLY fallback=on | adaptive baseline=3-10m | FULL_TIME+FIRST_HALF+SECOND_HALF")
