@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json,logging,os,time,requests
 from pathlib import Path
-from live_engine import fetch_stats,parse_stats,get_previous_values,save_snapshot,StatsSnapshot
+from live_engine import fetch_stats,parse_stats,load_state,save_snapshot,StatsSnapshot
 from goal_distribution_v3 import evaluate
 from goal_total_market_v3 import fetch_period_totals,select_best
 from goal_distribution_v3_card import render
@@ -12,6 +12,7 @@ import unified_bot
 LOG=logging.getLogger("goal_distribution_v3");AUDIT=Path("goal_distribution_v3_audit.jsonl");STATE=Path("goal_distribution_v3_state.json")
 MONKEY_CONTEXT=Path(os.getenv("GOOL_MONKEY_LIVE_CONTEXT","/home/container/monkey_live_context.json"));MONKEY_HISTORY=Path(os.getenv("GOOL_MONKEY_LIVE_HISTORY","/home/container/monkey_live_stats_history.json"))
 PERIODS={"FULL_TIME":(12,82,94),"FIRST_HALF":(15,40,47),"SECOND_HALF":(52,84,94)}
+TREND=("xg","xgot","shots","shots_on_target","big_chances","corners","shots_inside_box","touches_box")
 def _load():
  try:d=json.loads(STATE.read_text("utf-8"));return d if isinstance(d,dict) else {}
  except Exception:return {}
@@ -29,12 +30,47 @@ def _context_events():
   if time.time()-float(p.get("ts",0) or 0)>50:return {}
   return p.get("events",{}) if isinstance(p.get("events"),dict) else {}
  except Exception:return {}
-def _warm_previous(eid,minute,lookback=8):
- """Read Monkey's independently maintained stats history; MAIN never writes it."""
- try:d=json.loads(MONKEY_HISTORY.read_text("utf-8"));rows=d.get(str(eid),[]) if isinstance(d,dict) else [];target=int(minute)-lookback;c=[r for r in rows if int(r.get("minute",999))<=target]
- except Exception:return None
- if not c:return None
- vals=c[-1].get("values",{});return {k:tuple(v) for k,v in vals.items()} if isinstance(vals,dict) else None
+def _norm_prev(current,old,window):
+ """Convert a 3-10 minute observed delta to an 8-minute-equivalent delta.
+
+This lets a restarted server become useful after a few minutes without treating
+cumulative match totals as recent pressure.  Scaling is bounded so a short noisy
+window cannot explode the model.
+ """
+ if not isinstance(old,dict) or window<=0:return old
+ factor=max(.8,min(2.0,8.0/float(window)));out={}
+ keys=set(current)|set(old)
+ for k in keys:
+  try:
+   ca,cb=current.get(k,(0,0));oa,ob=old.get(k,(0,0));
+   if k in TREND:out[k]=(max(0.,float(ca)-max(0.,float(ca)-float(oa))*factor),max(0.,float(cb)-max(0.,float(cb)-float(ob))*factor))
+   else:out[k]=(float(oa),float(ob))
+  except Exception:out[k]=old.get(k,current.get(k,(0,0)))
+ return out
+def _adaptive_previous(eid,minute,current):
+ """Prefer ~8m history, but accept a real 3-10m local snapshot after restart."""
+ try:rows=load_state().get(str(eid),[]) or []
+ except Exception:rows=[]
+ candidates=[]
+ for r in rows:
+  try:
+   gap=int(minute)-int(r.get("minute",999));vals=r.get("values",{})
+   if 3<=gap<=10 and isinstance(vals,dict):candidates.append((abs(gap-8),-gap,gap,{k:tuple(v) for k,v in vals.items()}))
+  except Exception:pass
+ if not candidates:return None,0
+ _,_,gap,prev=min(candidates,key=lambda x:(x[0],x[1]));return _norm_prev(current,prev,gap),gap
+def _warm_previous(eid,minute,current):
+ """Optional Monkey history fallback. MAIN never writes it."""
+ try:d=json.loads(MONKEY_HISTORY.read_text("utf-8"));rows=d.get(str(eid),[]) if isinstance(d,dict) else []
+ except Exception:return None,0
+ candidates=[]
+ for r in rows:
+  try:
+   gap=int(minute)-int(r.get("minute",999));vals=r.get("values",{})
+   if 3<=gap<=10 and isinstance(vals,dict):candidates.append((abs(gap-8),-gap,gap,{k:tuple(v) for k,v in vals.items()}))
+  except Exception:pass
+ if not candidates:return None,0
+ _,_,gap,prev=min(candidates,key=lambda x:(x[0],x[1]));return _norm_prev(current,prev,gap),gap
 def _history(m,s):
  cached=s.get("history")
  if isinstance(cached,dict):return cached
@@ -89,7 +125,7 @@ def _evaluate_one(m,period,current_goals,stats,prev,margin,s,hist,diag):
  if _already(period,m.event_id):diag["duplicate"]+=1;return 0
  return 1 if _record(m,period,dec,bet,hist) and _send(m,period,dec,bet) else 0
 def scan(live):
- state=_load();ctx=_context_events();now=time.time();sent=0;diag={"discovered":len(live),"context_stats":0,"stats_body":0,"stats_ok":0,"no_stats_body":0,"no_stats_parse":0,"baseline_local":0,"baseline_monkey":0,"no_baseline":0,"period_eval":0,"markets_rows":0,"no_market":0,"no_bet":0,"bet_candidates":0,"duplicate":0};_settle(live,state)
+ state=_load();ctx=_context_events();now=time.time();sent=0;diag={"discovered":len(live),"context_stats":0,"stats_body":0,"stats_ok":0,"no_stats_body":0,"no_stats_parse":0,"baseline_local":0,"baseline_monkey":0,"baseline_3_10m":0,"no_baseline":0,"period_eval":0,"markets_rows":0,"no_market":0,"no_bet":0,"bet_candidates":0,"duplicate":0};_settle(live,state)
  for m in live:
   minute=int(getattr(m,"minute",0) or 0);eid=str(m.event_id);total=int(m.home_score)+int(m.away_score);margin=int(m.home_score)-int(m.away_score);s=state.setdefault(eid,{"ts":now});s["ts"]=now
   if bool(getattr(m,"is_halftime",False)) or 45<=minute<=47:s.setdefault("ht_total",total)
@@ -100,16 +136,17 @@ def scan(live):
    if not body:diag["no_stats_body"]+=1;LOG.info("CORE_V3_REJECT event=%s minute=%s reason=no_stats_body",eid,minute);continue
    diag["stats_body"]+=1;stats=parse_stats(body)
    if not stats:diag["no_stats_parse"]+=1;LOG.info("CORE_V3_REJECT event=%s minute=%s reason=no_stats_parse",eid,minute);continue
-  diag["stats_ok"]+=1;prev=get_previous_values(eid,minute,8)
-  if prev is not None:diag["baseline_local"]+=1
+  diag["stats_ok"]+=1;prev,gap=_adaptive_previous(eid,minute,stats)
+  if prev is not None:diag["baseline_local"]+=1;diag["baseline_3_10m"]+=1
   else:
-   prev=_warm_previous(eid,minute,8)
-   if prev is not None:diag["baseline_monkey"]+=1
+   prev,gap=_warm_previous(eid,minute,stats)
+   if prev is not None:diag["baseline_monkey"]+=1;diag["baseline_3_10m"]+=1
   hist=_history(m,s)
-  if prev is None:diag["no_baseline"]+=1;LOG.info("CORE_V3_WAIT event=%s minute=%s reason=no_8m_baseline",eid,minute)
+  if prev is None:diag["no_baseline"]+=1;LOG.info("CORE_V3_WAIT event=%s minute=%s reason=no_3m_baseline",eid,minute)
+  else:LOG.info("CORE_V3_BASELINE event=%s minute=%s window=%dm source=%s",eid,minute,gap,"local" if diag["baseline_local"] else "history")
   if prev is not None and PERIODS["FULL_TIME"][0]<=minute<=PERIODS["FULL_TIME"][1] and not bool(getattr(m,"is_halftime",False)):sent+=_evaluate_one(m,"FULL_TIME",total,stats,prev,margin,s,hist,diag)
   if prev is not None and PERIODS["FIRST_HALF"][0]<=minute<=PERIODS["FIRST_HALF"][1] and not bool(getattr(m,"is_halftime",False)):sent+=_evaluate_one(m,"FIRST_HALF",total,stats,prev,margin,s,hist,diag)
   if prev is not None and PERIODS["SECOND_HALF"][0]<=minute<=PERIODS["SECOND_HALF"][1] and "ht_total" in s:sent+=_evaluate_one(m,"SECOND_HALF",max(0,total-int(s["ht_total"])),stats,prev,margin,s,hist,diag)
   save_snapshot(eid,StatsSnapshot(int(time.time()),minute,stats))
  _save(state);LOG.info("CORE_V3_CYCLE matches=%d sent=%d systems=FT+1H+2H",len(live),sent);LOG.info("CORE_V3_POOL_DIAG %s",diag);return sent
-LOG.info("CORE V3 PRODUCTION active | Monkey truth reuse=on | warm baseline=on | local market DB primary | FULL_TIME+FIRST_HALF+SECOND_HALF")
+LOG.info("CORE V3 PRODUCTION active | adaptive baseline=3-10m normalized-to-8m | FULL_TIME+FIRST_HALF+SECOND_HALF")
