@@ -20,7 +20,7 @@ def _to_number(v):
  try:return float(str(v).strip().replace("%",""))
  except ValueError:return 0.
 def _feed(path:str)->str:
- headers={"User-Agent":UA,"x-fsign":FSIGN,"Origin":"https://www.flashscore.com","Referer":"https://www.flashscore.com/","Accept":"*/*"}
+ headers={"User-Agent":UA,"x-fsign":FSIGN,"Origin":"https://www.flashscore.com","Referer":"https://www.flashscore.com/","Accept":"*/*","Cache-Control":"no-cache"}
  for host in FEED_HOSTS:
   try:
    r=requests.get(f"https://{host}.flashscore.ninja/2/x/feed/{path}",headers=headers,timeout=12)
@@ -63,12 +63,33 @@ def calculate_goal_pressure(match,values,previous=None):
  if dtouches>=8:reasons.append(f"+{int(dtouches)} касаний в штрафной")
  if not reasons and score>=70:reasons.append("высокое суммарное давление")
  return GoalPressureResult(round(score,1),round(momentum,1),round(quality,1),round(context,1),reasons)
+
 async def discover_live_matches():
- """Lightweight master-feed discovery; no browser/Chromium fallback."""
- body=_feed("f_1_0_0_en_1")
- if not body:return []
+ """Full-world master-feed discovery.
+
+Flashscore currently exposes overlapping football master feeds.  The old GOOL
+runner only read f_1_0_0_en_1; on some rotations that feed is only a subset of
+all LIVE football.  Monkey's validated collector uses f_1_0_3_en_1 and sees the
+larger pool.  Read both and union by Flashscore event id so a partial feed cannot
+silently hide matches from FT/1H/2H analysis.
+ """
  from feed_live_discovery import parse_master_live
- return parse_master_live(body)
+ paths=("f_1_0_3_en_1","f_1_0_0_en_1")
+ merged={};seen_any=False
+ for path in paths:
+  body=_feed(path)
+  if not body:
+   logger.warning("MASTER_FEED_SOURCE path=%s unavailable",path);continue
+  seen_any=True
+  parsed=parse_master_live(body)
+  logger.info("MASTER_FEED_SOURCE path=%s bytes=%d live=%d",path,len(body.encode("utf-8",errors="ignore")),len(parsed))
+  for m in parsed:merged[str(m.event_id)]=m
+ matches=list(merged.values())
+ matches.sort(key=lambda m:(int(getattr(m,"minute",0) or 0),str(getattr(m,"league","") or ""),str(getattr(m,"home","") or "")))
+ if not seen_any:logger.warning("Flashscore master feeds unavailable; no browser fallback")
+ logger.info("MASTER_FEED_UNION live=%d sources=%d",len(matches),len(paths))
+ return matches
+
 def get_previous_values(event_id,current_minute,lookback_minutes=8):
  state=load_state().get(event_id,[]);target=current_minute-lookback_minutes;c=[r for r in state if int(r.get("minute",999))<=target]
  if not c:return None
