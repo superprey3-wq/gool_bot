@@ -55,7 +55,13 @@ import live_button_emergency_patch
 import runtime_resource_guard
 from telegram_subscribers import polling_loop
 import production_logging
-import late_premarket_alert_filter_patch
+# This legacy TOP-load gate is unrelated to V3/Strong Proguz.  Some lightweight
+# hosts intentionally do not install aiohttp, so it must never stop MAIN startup.
+try:
+ import late_premarket_alert_filter_patch
+except ModuleNotFoundError as exc:
+ if exc.name=="aiohttp":logger.info("LEGACY_TOPLOAD_GATE disabled reason=no_aiohttp")
+ else:raise
 import remote_strong_proguz_patch
 import v3_reporting_patch
 runtime_resource_guard.log_startup()
